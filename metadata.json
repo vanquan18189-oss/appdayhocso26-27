@@ -1,0 +1,6 @@
+{
+  "name": "DẠY VÀ HỌC SỐ PK TRỰC KHANG",
+  "description": "Hệ thống Quản lý Dạy và Học Số PK Trực Khang với các phân hệ chuyên sâu: Tổng quan, Bài giảng 5E, Quản lý đề kiểm tra, Bài tập, Ngân hàng câu hỏi, Trò chơi học tập, Quản lý người dùng và Sổ tổng kết Học bạ số chuẩn Tiểu học tích hợp Trợ lý AI sư phạm.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

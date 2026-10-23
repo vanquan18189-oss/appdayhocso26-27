@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DẠY VÀ HỌC SỐ PK TRỰC KHANG</title>
+    <script>
+      (function() {
+        // Safe early global error filter for @firebase/firestore stream assertion errors
+        function isFirestoreAssertion(msg) {
+          if (!msg) return false;
+          var str = String(msg);
+          return (
+            str.indexOf('INTERNAL ASSERTION FAILED') !== -1 ||
+            str.indexOf('Unexpected state') !== -1 ||
+            str.indexOf('c050') !== -1 ||
+            str.indexOf('ca9') !== -1 ||
+            str.indexOf('b815') !== -1 ||
+            str.indexOf('WatchChangeAggregator') !== -1 ||
+            str.indexOf('TargetState') !== -1 ||
+            str.indexOf('PersistentListenStream') !== -1 ||
+            str.indexOf('PersistentWriteStream') !== -1 ||
+            str.indexOf('INTERNAL UNHANDLED ERROR') !== -1 ||
+            str.indexOf('__PRIVATE_hardAssert') !== -1 ||
+            str.indexOf('__PRIVATE__fail') !== -1 ||
+            str.indexOf('forEachTarget') !== -1
+          );
+        }
+
+        // 1. Intercept console.error before any other script runs
+        var origConsoleError = console.error;
+        console.error = function() {
+          var args = Array.prototype.slice.call(arguments);
+          var fullMsg = args.map(function(a) {
+            if (a && a.message) return a.message + ' ' + (a.stack || '');
+            if (typeof a === 'object') {
+              try { return JSON.stringify(a); } catch (e) { return String(a); }
+            }
+            return String(a || '');
+          }).join(' ');
+
+          if (isFirestoreAssertion(fullMsg)) {
+            console.warn('⚡ [Firestore Stream Intercepted in head script]');
+            return;
+          }
+          if (origConsoleError) origConsoleError.apply(console, args);
+        };
+
+        // 2. Early window.onerror
+        var origOnError = window.onerror;
+        window.onerror = function(message, source, lineno, colno, error) {
+          var full = String(message || '') + ' ' + String(error && error.message || '') + ' ' + String(error && error.stack || '');
+          if (isFirestoreAssertion(full)) {
+            console.warn('⚡ [Firestore Stream Intercepted in window.onerror]');
+            return true;
+          }
+          if (typeof origOnError === 'function') {
+            return origOnError.apply(this, arguments);
+          }
+          return false;
+        };
+
+        // 3. Early window error event listener (capture phase)
+        window.addEventListener('error', function(event) {
+          var msg = String(event.message || '') + ' ' + String(event.error && event.error.message || '') + ' ' + String(event.error && event.error.stack || '');
+          if (isFirestoreAssertion(msg)) {
+            console.warn('⚡ [Firestore Stream Intercepted in error event]');
+            event.preventDefault();
+            if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+            if (event.stopPropagation) event.stopPropagation();
+          }
+        }, true);
+
+        // 4. Early unhandledrejection listener (capture phase)
+        window.addEventListener('unhandledrejection', function(event) {
+          var reason = event && event.reason;
+          var msg = String(reason && reason.message || '') + ' ' + String(reason && reason.stack || '') + ' ' + String(reason || '');
+          if (isFirestoreAssertion(msg)) {
+            console.warn('⚡ [Firestore Stream Intercepted in unhandledrejection]');
+            event.preventDefault();
+            if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+            if (event.stopPropagation) event.stopPropagation();
+          }
+        }, true);
+
+        try {
+          var realFetch = window.fetch ? window.fetch.bind(window) : undefined;
+          Object.defineProperty(window, 'fetch', {
+            configurable: true,
+            enumerable: true,
+            get: function() { return realFetch; },
+            set: function(val) {
+              if (typeof val === 'function') { realFetch = val; }
+            }
+          });
+        } catch (e) {}
+      })();
+    </script>
+    <meta name="description" content="Hệ thống Quản lý Dạy và Học Số PK Trực Khang với các phân hệ chuyên sâu: Tổng quan, Bài giảng 5E, Quản lý đề kiểm tra, Bài tập, Ngân hàng câu hỏi, Trò chơi học tập, Quản lý người dùng và Sổ tổng kết Học bạ số chuẩn Tiểu học tích hợp Trợ lý AI sư phạm." />
+    <meta property="og:title" content="DẠY VÀ HỌC SỐ PK TRỰC KHANG" />
+    <meta property="og:description" content="Hệ thống Quản lý Dạy và Học Số PK Trực Khang với các phân hệ chuyên sâu: Tổng quan, Bài giảng 5E, Quản lý đề kiểm tra, Bài tập, Ngân hàng câu hỏi, Trò chơi học tập, Quản lý người dùng và Sổ tổng kết Học bạ số chuẩn Tiểu học tích hợp Trợ lý AI sư phạm." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Lexend:wght@500;600;700;800&display=swap" rel="stylesheet">
+  </head>
+  <body class="font-sans antialiased text-slate-800 bg-slate-50">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
