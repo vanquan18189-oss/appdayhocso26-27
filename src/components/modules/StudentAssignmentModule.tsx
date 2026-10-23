@@ -472,7 +472,8 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       matrix: { nhanBiet: 0, thongHieu: 0, vanDung: 0, vanDungCao: 0 },
       questions: solvingAssignment.questions || [],
       createdBy: solvingAssignment.teacherName || 'Giáo viên',
-      createdAt: solvingAssignment.createdAt || new Date().toISOString()
+      createdAt: solvingAssignment.createdAt || new Date().toISOString(),
+      enableRealtimeLeaderboard: solvingAssignment.enableRealtimeLeaderboard
     };
 
     return (

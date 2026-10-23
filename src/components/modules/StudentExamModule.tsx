@@ -42,6 +42,7 @@ import { db } from '../../services/firebase';
 import { doc, runTransaction } from 'firebase/firestore';
 import { getFirestoreDebugStatus } from '../../services/firestoreWriteVerificationService';
 import { formatScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
+import { stableShuffle, getMatchingPairColor } from '../../utils/arrayUtils';
 
 export interface ExamSubmissionItem {
   id: string;
@@ -460,6 +461,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
   allowMultipleAttempts
 }) => {
   const [studentInfo, setStudentInfo] = useState(() => getEffectiveStudentClassAndGrade());
+  const [selectingLeftItem, setSelectingLeftItem] = useState<{ [qIdx: number]: number | null }>({});
 
   useEffect(() => {
     const handleUpdate = () => {
@@ -635,7 +637,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
   // Sync live quiz session with Firestore & real-time peers (Chỉ áp dụng cho Bài tập / mode === 'assignment')
   useEffect(() => {
     if (!activeExamSession) return;
-    if (mode !== 'assignment') return;
+    if (mode !== 'assignment' || !activeExamSession.exam.enableRealtimeLeaderboard) return;
 
     const exam = activeExamSession.exam;
     const examId = exam.id || 'ex-session';
@@ -680,7 +682,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
   // Update real-time progress on answers change (Chỉ áp dụng cho Bài tập / mode === 'assignment')
   useEffect(() => {
     if (!activeExamSession) return;
-    if (mode !== 'assignment') return;
+    if (mode !== 'assignment' || !activeExamSession.exam.enableRealtimeLeaderboard) return;
     const examId = activeExamSession.exam.id || 'ex-session';
     const totalQ = (activeExamSession.exam.questions || []).length || 10;
 
@@ -2194,34 +2196,21 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                                           </span>
                                         </div>
 
-                                        {/* Dropdown ghép nối với Cột 2 */}
+                                        {/* Hiển thị ghép nối (Click để chọn) */}
                                         <div className="pt-1 flex items-center gap-2">
-                                          <span className="text-xs font-extrabold text-indigo-700 whitespace-nowrap">➔ Nối với Cột 2:</span>
-                                          <select
-                                            value={selectedRightVal}
-                                            onChange={(e) => {
-                                              const val = e.target.value;
-                                              setActiveExamSession(prev => {
-                                                if (!prev) return null;
-                                                const answers = { ...prev.answers };
-                                                const currentAns = answers[idx] && typeof answers[idx] === 'object' ? answers[idx] : {};
-                                                const updatedMatching = { ...currentAns, [pIdx]: val };
-                                                answers[idx] = updatedMatching;
-                                                return { ...prev, answers, currentQuestionIndex: idx };
-                                              });
-                                            }}
-                                            className="flex-1 px-3 py-2 bg-indigo-50/70 hover:bg-indigo-50 border-2 border-indigo-200 focus:border-indigo-600 focus:ring-2 focus:ring-indigo-100 rounded-xl text-slate-800 text-xs sm:text-sm font-bold focus:outline-none transition-all cursor-pointer"
+                                          <button
+                                            type="button"
+                                            onClick={() => setSelectingLeftItem({ ...selectingLeftItem, [idx]: pIdx })}
+                                            className={`flex-1 px-3 py-2 border-2 rounded-xl text-xs sm:text-sm font-bold transition-all ${
+                                              selectingLeftItem[idx] === pIdx 
+                                                ? 'bg-indigo-100 border-indigo-500 text-indigo-900' 
+                                                : selectedRightVal 
+                                                  ? `text-white ${getMatchingPairColor(pIdx)}`
+                                                  : 'bg-slate-50 border-slate-200 text-slate-500 hover:border-indigo-200'
+                                            }`}
                                           >
-                                            <option value="" className="font-bold text-slate-400">-- Chọn vế tương ứng ở Cột 2 --</option>
-                                            {(q.matchingPairs || []).map((pRight, optIdx) => {
-                                              const letterLabel = String.fromCharCode(65 + optIdx);
-                                              return (
-                                                <option key={optIdx} value={pRight.right} className="font-semibold text-slate-800">
-                                                  {letterLabel}. {pRight.right}
-                                                </option>
-                                              );
-                                            })}
-                                          </select>
+                                            {selectedRightVal ? `➔ ${selectedRightVal}` : 'Nhấn để chọn đáp án ở Cột 2...'}
+                                          </button>
                                         </div>
                                       </div>
                                     );
@@ -2236,14 +2225,36 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                                   <span className="text-[10px] bg-emerald-100 px-2.5 py-0.5 rounded-full text-emerald-800 font-extrabold">Nhãn chữ cái (A, B, C...)</span>
                                 </div>
                                 <div className="space-y-3">
-                                  {(q.matchingPairs || []).map((pair, rIdx) => {
+                                  {(stableShuffle(q.matchingPairs || [], q.id + (activeExamSession?.startTime || 0))).map((pair, rIdx) => {
                                     const letterLabel = String.fromCharCode(65 + rIdx);
+                                    const answersForThisQuestion = activeExamSession.answers[idx] || {};
+                                    const leftIndexForKey = Object.keys(answersForThisQuestion).find(k => answersForThisQuestion[k] === pair.right);
+                                    const isSelected = leftIndexForKey !== undefined;
+                                    const colorClass = isSelected ? `text-white ${getMatchingPairColor(parseInt(leftIndexForKey!))}` : 'bg-white border-emerald-200 hover:border-emerald-500';
+                                    
                                     return (
-                                      <div key={rIdx} className="p-3.5 bg-white border-2 border-slate-200 rounded-2xl flex items-start gap-3 shadow-2xs">
-                                        <div className="w-7 h-7 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-black text-xs shrink-0 mt-0.5 shadow-2xs">
+                                      <div 
+                                        key={rIdx} 
+                                        onClick={() => {
+                                          if (selectingLeftItem[idx] !== undefined && selectingLeftItem[idx] !== null) {
+                                            const pIdx = selectingLeftItem[idx]!;
+                                            setActiveExamSession(prev => {
+                                              if (!prev) return null;
+                                              const answers = { ...prev.answers };
+                                              const currentAns = answers[idx] && typeof answers[idx] === 'object' ? answers[idx] : {};
+                                              const updatedMatching = { ...currentAns, [pIdx]: pair.right };
+                                              answers[idx] = updatedMatching;
+                                              return { ...prev, answers, currentQuestionIndex: idx };
+                                            });
+                                            setSelectingLeftItem({ ...selectingLeftItem, [idx]: null });
+                                          }
+                                        }}
+                                        className={`p-3.5 border-2 rounded-2xl flex items-start gap-3 shadow-2xs cursor-pointer transition-all ${colorClass}`}
+                                      >
+                                        <div className={`w-7 h-7 rounded-xl ${isSelected ? 'bg-white text-emerald-900' : 'bg-emerald-600 text-white'} flex items-center justify-center font-black text-xs shrink-0 mt-0.5 shadow-2xs`}>
                                           {letterLabel}
                                         </div>
-                                        <span className="text-xs sm:text-sm font-bold text-slate-900 leading-relaxed flex-1">
+                                        <span className="text-xs sm:text-sm font-bold leading-relaxed flex-1">
                                           {pair.right}
                                         </span>
                                       </div>
@@ -2317,7 +2328,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                               const currentAnswers = activeExamSession.answers[idx];
                               const currentOrder: string[] = Array.isArray(currentAnswers)
                                 ? currentAnswers
-                                : (q.options || []);
+                                : stableShuffle(q.options || [], q.id);
 
                               return (
                                 <div className="space-y-2.5">
@@ -2542,12 +2553,12 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                                 <span>Đọc kỹ các nhận định dưới đây và chọn Đúng hoặc Sai độc lập cho mỗi ý:</span>
                               </div>
                               <div className="space-y-3">
-                                {q.statements.map((st, sIdx) => {
+                                {stableShuffle(q.statements.map((st, origIdx) => ({st, origIdx})), q.id).map(({st, origIdx}, sIdx) => {
                                   const currentAnswers = activeExamSession.answers[idx] || {};
-                                  const ansState = currentAnswers[sIdx]; // true, false, or undefined
+                                  const ansState = currentAnswers[origIdx]; // Use origIdx to retrieve answer
 
                                   return (
-                                    <div key={sIdx} className="p-4 bg-white border border-slate-150 hover:border-slate-250 rounded-2xl flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4 transition-all">
+                                    <div key={origIdx} className="p-4 bg-white border border-slate-150 hover:border-slate-250 rounded-2xl flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4 transition-all">
                                       <div className="flex-1 flex items-start gap-3">
                                         <div className="w-6 h-6 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center font-black text-xs shrink-0 mt-0.5">
                                           {sIdx + 1}
@@ -2563,7 +2574,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                                               if (!prev) return null;
                                               const answers = { ...prev.answers };
                                               const currentAns = answers[idx] && typeof answers[idx] === 'object' ? answers[idx] : {};
-                                              const updatedAns = { ...currentAns, [sIdx]: true };
+                                              const updatedAns = { ...currentAns, [origIdx]: true };
                                               answers[idx] = updatedAns;
                                               return { ...prev, answers, currentQuestionIndex: idx };
                                             });
@@ -2584,7 +2595,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                                               if (!prev) return null;
                                               const answers = { ...prev.answers };
                                               const currentAns = answers[idx] && typeof answers[idx] === 'object' ? answers[idx] : {};
-                                              const updatedAns = { ...currentAns, [sIdx]: false };
+                                              const updatedAns = { ...currentAns, [origIdx]: false };
                                               answers[idx] = updatedAns;
                                               return { ...prev, answers, currentQuestionIndex: idx };
                                             });
@@ -2708,7 +2719,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           </div>
 
           {/* Right Column: Bảng Xếp Hạng & Đang Làm Bài (Moon.vn style - Chỉ hiển thị cho màn hình LÀM BÀI TẬP mode === 'assignment') */}
-          {mode === 'assignment' && (
+          {mode === 'assignment' && activeExamSession.exam.enableRealtimeLeaderboard && (
             <QuizLiveSidebar
               targetTitle={activeExamSession.exam.title}
               subject={activeExamSession.exam.subject || 'Tin học'}

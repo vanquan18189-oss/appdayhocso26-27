@@ -537,6 +537,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   const [assignShuffleOptions, setAssignShuffleOptions] = useState<boolean>(true);
   const [assignTargetType, setAssignTargetType] = useState<'all' | 'specific'>('all');
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
+  const [assignRealtimeLeaderboard, setAssignRealtimeLeaderboard] = useState<boolean>(false);
 
   const getClassesForGrade = useCallback((gradeRaw?: string): string[] => {
     return fetchClassesForGrade(gradeRaw).map(c => c.name);
@@ -559,6 +560,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     setAssignShuffleOptions(true);
     setAssignTargetType('all');
     setSelectedStudentIds(CLASS_3A_STUDENTS.map(s => s.code));
+    setAssignRealtimeLeaderboard(as.enableRealtimeLeaderboard || false);
   };
 
   const handleConfirmAssignConfig = () => {
@@ -595,7 +597,8 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
         dueDate: assignDueDate || assigningConfigAssignment.dueDate,
         totalStudents: totalStudentsSum,
         completedCount: assigningConfigAssignment.completedCount || 0,
-        submissions: assigningConfigAssignment.submissions || []
+        submissions: assigningConfigAssignment.submissions || [],
+        enableRealtimeLeaderboard: assignRealtimeLeaderboard
       };
 
       onSaveAssignment(masterAssignment);
@@ -3759,6 +3762,19 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                       <div>
                         <span>Tráo đổi thứ tự phương án chọn</span>
                         <p className="text-[11px] text-slate-500 font-normal">Xáo trộn thứ tự các đáp án A, B, C, D ngẫu nhiên</p>
+                      </div>
+                    </label>
+
+                    <label className="flex items-start gap-2.5 cursor-pointer text-xs font-bold text-slate-800 select-none">
+                      <input
+                        type="checkbox"
+                        checked={assignRealtimeLeaderboard}
+                        onChange={(e) => setAssignRealtimeLeaderboard(e.target.checked)}
+                        className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 cursor-pointer mt-0.5"
+                      />
+                      <div>
+                        <span>Bật chế độ thi đấu trực tiếp (Real-time Leaderboard)</span>
+                        <p className="text-[11px] text-slate-500 font-normal">Hiển thị bảng xếp hạng trực tiếp cho học sinh (cần kết nối thời gian thực)</p>
                       </div>
                     </label>
                   </div>

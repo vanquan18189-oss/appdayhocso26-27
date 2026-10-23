@@ -24,6 +24,7 @@ import {
   MessageSquare
 } from 'lucide-react';
 import { Lesson5EPlan, QuestionItem } from '../../types';
+import { stableShuffle, getMatchingPairColor } from '../../utils/arrayUtils';
 import { getQuestionTypeLabel, getCorrectOrderingSequence } from '../../lib/constants';
 
 interface StudentElaborateViewProps {
@@ -124,6 +125,7 @@ export const StudentElaborateView: React.FC<StudentElaborateViewProps> = ({
 
   // Student Answers Store
   const [studentAnswers, setStudentAnswers] = useState<Record<string, any>>(savedData?.answers || {});
+  const [selectingLeftItem, setSelectingLeftItem] = useState<{ [qId: string]: number | null }>({});
   const [isSubmitted, setIsSubmitted] = useState<boolean>(Boolean(savedData?.isCompleted));
   const [score, setScore] = useState<number>(savedData?.score ?? 0);
   const [correctCount, setCorrectCount] = useState<number>(savedData?.correctCount ?? 0);
@@ -833,15 +835,15 @@ export const StudentElaborateView: React.FC<StudentElaborateViewProps> = ({
             {/* 3. True / False */}
             {currentQ.type === 'true_false' && currentQ.statements && (
               <div className="space-y-2.5 pt-2">
-                {currentQ.statements.map((stmt, sIdx) => {
-                  const currentVal = studentAnswers[currentQ.id]?.[sIdx];
+                {stableShuffle(currentQ.statements.map((stmt, origIdx) => ({stmt, origIdx})), currentQ.id).map(({stmt, origIdx}, sIdx) => {
+                  const currentVal = studentAnswers[currentQ.id]?.[origIdx];
                   return (
-                    <div key={sIdx} className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                    <div key={origIdx} className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                       <span className={`${getFontSizeClass()} text-slate-800 font-medium`}>{stmt.statement}</span>
                       <div className="flex items-center gap-2 shrink-0">
                         <button
                           type="button"
-                          onClick={() => handleTFSelect(currentQ.id, sIdx, true)}
+                          onClick={() => handleTFSelect(currentQ.id, origIdx, true)}
                           className={`px-4 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                             currentVal === true ? 'bg-emerald-600 text-white shadow-xs' : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
                           }`}
@@ -850,7 +852,7 @@ export const StudentElaborateView: React.FC<StudentElaborateViewProps> = ({
                         </button>
                         <button
                           type="button"
-                          onClick={() => handleTFSelect(currentQ.id, sIdx, false)}
+                          onClick={() => handleTFSelect(currentQ.id, origIdx, false)}
                           className={`px-4 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                             currentVal === false ? 'bg-rose-600 text-white shadow-xs' : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-100'
                           }`}
@@ -883,7 +885,7 @@ export const StudentElaborateView: React.FC<StudentElaborateViewProps> = ({
               <div className="space-y-2.5 pt-2">
                 <div className="text-xs text-indigo-800 font-bold">Sắp xếp các bước theo thứ tự đúng:</div>
                 {(() => {
-                  const currentItems: string[] = studentAnswers[currentQ.id] || currentQ.options || [];
+                  const currentItems: string[] = studentAnswers[currentQ.id] || stableShuffle(currentQ.options || [], currentQ.id);
                   return (
                     <div className="space-y-2">
                       {currentItems.map((item, idx) => (
@@ -920,30 +922,55 @@ export const StudentElaborateView: React.FC<StudentElaborateViewProps> = ({
               </div>
             )}
 
-            {/* 6. Matching */}
             {currentQ.type === 'matching' && currentQ.matchingPairs && (
-              <div className="space-y-2.5 pt-2">
-                <div className="text-xs text-indigo-800 font-bold">Nối các cặp tương ứng:</div>
-                <div className="space-y-2">
-                  {currentQ.matchingPairs.map((pair, pIdx) => {
-                    const userChoice = studentAnswers[currentQ.id]?.[pIdx] || '';
-                    return (
-                      <div key={pIdx} className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
-                        <span className="font-bold text-slate-800 flex-1">{pair.left}</span>
-                        <span className="text-slate-400 hidden sm:inline">↔</span>
-                        <select
-                          value={userChoice}
-                          onChange={(e) => handleMatchingChange(currentQ.id, pIdx, e.target.value)}
-                          className="flex-1 px-3 py-2 bg-white border border-slate-300 rounded-xl text-slate-800 text-xs focus:outline-none"
+              <div className="space-y-4 pt-2">
+                <div className="text-xs text-indigo-800 font-bold">Hãy chọn vế trái và nối với lựa chọn ở cột phải:</div>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    {currentQ.matchingPairs.map((pair, pIdx) => {
+                      const selectedRightVal = studentAnswers[currentQ.id]?.[pIdx] || '';
+                      const isSelectedLeft = selectingLeftItem[currentQ.id] === pIdx;
+                      return (
+                        <button
+                          type="button"
+                          key={pIdx}
+                          onClick={() => !isSubmitted && setSelectingLeftItem({ ...selectingLeftItem, [currentQ.id]: pIdx })}
+                          className={`w-full p-3.5 border-2 rounded-2xl text-xs sm:text-sm font-bold text-left transition-all ${
+                            isSelectedLeft 
+                              ? 'bg-indigo-100 border-indigo-500 text-indigo-900' 
+                              : selectedRightVal 
+                                ? `text-white ${getMatchingPairColor(pIdx)}`
+                                : 'bg-slate-50 border-slate-200 text-slate-700 hover:border-indigo-200'
+                          }`}
                         >
-                          <option value="">-- Chọn ghép nối --</option>
-                          {currentQ.matchingPairs?.map((p, optIdx) => (
-                            <option key={optIdx} value={p.right}>{p.right}</option>
-                          ))}
-                        </select>
-                      </div>
-                    );
-                  })}
+                          {pIdx + 1}. {selectedRightVal ? `${pair.left} ➔ ${selectedRightVal}` : pair.left}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="space-y-2">
+                    {stableShuffle(currentQ.matchingPairs || [], currentQ.id).map((pair, rIdx) => {
+                      const matchingPairIndex = currentQ.matchingPairs?.findIndex(p => p.right === pair.right);
+                      const isSelected = matchingPairIndex !== undefined && matchingPairIndex !== -1 && studentAnswers[currentQ.id]?.[matchingPairIndex] === pair.right;
+                      const colorClass = isSelected ? `text-white ${getMatchingPairColor(matchingPairIndex!)}` : 'bg-white border-slate-200 hover:border-emerald-500';
+                      
+                      return (
+                        <div
+                          key={rIdx}
+                          onClick={() => {
+                            if (!isSubmitted && selectingLeftItem[currentQ.id] !== undefined && selectingLeftItem[currentQ.id] !== null) {
+                              handleMatchingChange(currentQ.id, selectingLeftItem[currentQ.id]!, pair.right);
+                              setSelectingLeftItem({ ...selectingLeftItem, [currentQ.id]: null });
+                            }
+                          }}
+                          className={`p-3.5 border-2 rounded-2xl flex items-center gap-3 cursor-pointer transition-all ${colorClass}`}
+                        >
+                          <span className={`font-black text-xs ${isSelected ? 'text-white' : 'text-emerald-600'}`}>{String.fromCharCode(65 + rIdx)}.</span>
+                          <span className="text-xs font-medium">{pair.right}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             )}
