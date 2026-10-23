@@ -15,6 +15,7 @@ import {
   RotateCcw
 } from 'lucide-react';
 import { Lesson5EPlan, UserRole } from '../../types';
+import { saveLessonToFirestore } from '../../services/lessonStorageService';
 import { getSubjectColorStyles } from '../../utils/subjectColors';
 import { InteractiveVideoPlayer } from './InteractiveVideoPlayer';
 import { 
@@ -84,6 +85,24 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
   useEffect(() => {
     setIsRelearningExplore(false);
   }, [selectedLesson?.id]);
+
+  // Increment study views count when student opens lesson (once per session)
+  useEffect(() => {
+    if (selectedLesson?.id && currentUserId) {
+      const sessionKey = `elearn_viewed_${currentUserId}_${selectedLesson.id}`;
+      if (!sessionStorage.getItem(sessionKey)) {
+        sessionStorage.setItem(sessionKey, 'true');
+        const currentViews = (selectedLesson as any).viewsCount || 0;
+        const updatedLesson = {
+          ...selectedLesson,
+          viewsCount: currentViews + 1
+        };
+        saveLessonToFirestore(updatedLesson).catch(err => {
+          console.warn('Failed to increment viewsCount:', err);
+        });
+      }
+    }
+  }, [selectedLesson?.id, currentUserId]);
 
   useEffect(() => {
     if (selectedLesson && !isReviewMode) {

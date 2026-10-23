@@ -79,6 +79,7 @@ import {
   subscribeAssignedELearningLessons,
   AssignedELearningLesson
 } from '../../services/elearningAssignmentService';
+import { saveLessonToFirestore } from '../../services/lessonStorageService';
 
 interface StudentELearningProps {
   lessons: Lesson5EPlan[];
@@ -115,6 +116,24 @@ export const StudentELearning: React.FC<StudentELearningProps> = ({
   useEffect(() => {
     setIsRelearningExplore(false);
   }, [selectedLesson?.id]);
+
+  // Increment study views count when student opens lesson (once per session)
+  useEffect(() => {
+    if (selectedLesson?.id && effectiveUserId) {
+      const sessionKey = `elearn_viewed_${effectiveUserId}_${selectedLesson.id}`;
+      if (!sessionStorage.getItem(sessionKey)) {
+        sessionStorage.setItem(sessionKey, 'true');
+        const currentViews = (selectedLesson as any).viewsCount || 0;
+        const updatedLesson = {
+          ...selectedLesson,
+          viewsCount: currentViews + 1
+        };
+        saveLessonToFirestore(updatedLesson).catch(err => {
+          console.warn('Failed to increment viewsCount:', err);
+        });
+      }
+    }
+  }, [selectedLesson?.id, effectiveUserId]);
   
   // Realtime assigned lessons
   const [assignedLessonsList, setAssignedLessonsList] = useState<AssignedELearningLesson[]>([]);
