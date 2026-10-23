@@ -537,7 +537,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   const [assignShuffleOptions, setAssignShuffleOptions] = useState<boolean>(true);
   const [assignTargetType, setAssignTargetType] = useState<'all' | 'specific'>('all');
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
-  const [assignRealtimeLeaderboard, setAssignRealtimeLeaderboard] = useState<boolean>(false);
+  const [assignRealtimeLeaderboard, setAssignRealtimeLeaderboard] = useState<boolean>(true);
 
   const getClassesForGrade = useCallback((gradeRaw?: string): string[] => {
     return fetchClassesForGrade(gradeRaw).map(c => c.name);
@@ -560,7 +560,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     setAssignShuffleOptions(true);
     setAssignTargetType('all');
     setSelectedStudentIds(CLASS_3A_STUDENTS.map(s => s.code));
-    setAssignRealtimeLeaderboard(as.enableRealtimeLeaderboard || false);
+    setAssignRealtimeLeaderboard(as.enableRealtimeLeaderboard !== undefined ? as.enableRealtimeLeaderboard : true);
   };
 
   const handleConfirmAssignConfig = () => {
