@@ -224,11 +224,52 @@ export const getDefaultAnswerSchemaByType = (rawType?: string): {
   }
 };
 
-export const resetQuestionType = (rawTypeOrQuestion?: any, _q?: any) => {
-  const t = typeof rawTypeOrQuestion === 'object' && rawTypeOrQuestion !== null ? rawTypeOrQuestion.type : rawTypeOrQuestion;
-  return getDefaultAnswerSchemaByType(t);
+export const purgeStaleQuestionAnswerFields = (q: any, targetType?: string): any => {
+  if (!q || typeof q !== 'object') return q;
+  const normType = normalizeQuestionType(targetType || q.type);
+  const cleaned: any = { ...q, type: normType };
+
+  if (normType !== 'multiple_choice' && normType !== 'multiple_response' && normType !== 'ordering') {
+    delete cleaned.options;
+  }
+  if (normType !== 'multiple_choice' && normType !== 'multiple_response' && normType !== 'fill_blank' && normType !== 'essay') {
+    delete cleaned.correctAnswer;
+  }
+  if (normType !== 'true_false') {
+    delete cleaned.statements;
+  }
+  if (normType !== 'matching') {
+    delete cleaned.matchingPairs;
+    delete cleaned.pairs;
+  }
+  if (normType !== 'classification') {
+    delete cleaned.classificationGroups;
+    delete cleaned.classificationItems;
+  }
+  if (normType !== 'ordering') {
+    delete cleaned.order;
+    delete cleaned.indices;
+    delete cleaned.correctOrder;
+  }
+  return cleaned;
 };
-export const getDefaultAnswerDataForType = (rawTypeOrQuestion?: any, _q?: any) => {
+
+export const resetQuestionType = (targetTypeOrQuestion?: any, newType?: string): any => {
+  if (typeof targetTypeOrQuestion === 'object' && targetTypeOrQuestion !== null) {
+    const targetType = normalizeQuestionType(newType || targetTypeOrQuestion.type);
+    const cleaned = purgeStaleQuestionAnswerFields(targetTypeOrQuestion, targetType);
+    const defaults = getDefaultAnswerSchemaByType(targetType);
+    return {
+      ...cleaned,
+      ...defaults,
+      type: targetType
+    };
+  }
+  const normType = normalizeQuestionType(targetTypeOrQuestion || newType);
+  return getDefaultAnswerSchemaByType(normType);
+};
+
+export const getDefaultAnswerDataForType = (rawTypeOrQuestion?: any, _q?: any): any => {
   const t = typeof rawTypeOrQuestion === 'object' && rawTypeOrQuestion !== null ? rawTypeOrQuestion.type : rawTypeOrQuestion;
   return getDefaultAnswerSchemaByType(t);
 };

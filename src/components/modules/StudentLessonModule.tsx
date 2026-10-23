@@ -7,6 +7,7 @@ import {
   Clock, 
   ChevronRight, 
   ArrowLeft, 
+  ArrowRight,
   Bookmark, 
   Award,
   Layers,
@@ -272,20 +273,18 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
                 />
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
-                <div className="bg-slate-50 p-5 rounded-2xl border border-slate-100 space-y-2">
-                  <span className="text-xs font-extrabold text-purple-600 uppercase tracking-wider">🎯 Kiến thức cốt lõi</span>
-                  <p className="text-xs sm:text-sm text-slate-700 leading-relaxed font-medium">
-                    {selectedLesson.stepExplore?.objectives || 'Nắm vững lý thuyết trọng tâm và quy luật của chủ đề.'}
-                  </p>
-                </div>
-                <div className="bg-slate-50 p-5 rounded-2xl border border-slate-100 space-y-2">
-                  <span className="text-xs font-extrabold text-purple-600 uppercase tracking-wider">📚 Nhiệm vụ học tập</span>
-                  <p className="text-xs sm:text-sm text-slate-700 leading-relaxed font-medium">
-                    {selectedLesson.stepExplore?.studentActivities || 'Đọc tài liệu, quan sát video bài giảng và hoàn thành phiếu học tập.'}
-                  </p>
-                </div>
+              {/* Bottom Navigation Button */}
+              <div className="flex items-center justify-end pt-4 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setActiveStepTab(getNextStepInLessonFlow('explore', selectedLesson))}
+                  className="px-6 py-3 rounded-2xl bg-purple-600 hover:bg-purple-700 text-white font-extrabold text-xs sm:text-sm transition-all shadow-md flex items-center gap-2 cursor-pointer active:scale-98"
+                >
+                  <span>Tiếp tục sang {getNextStepLabel('explore', selectedLesson)}</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
               </div>
+
             </div>
           )}
 

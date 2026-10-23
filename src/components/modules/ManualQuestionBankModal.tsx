@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Plus, Save, PenTool, Clock } from 'lucide-react';
 import { QuestionItem, CognitiveLevel } from '../../types';
-import { GRADES, SUBJECTS, EXAM_TYPES } from '../../lib/constants';
+import { GRADES, SUBJECTS, EXAM_TYPES, purgeStaleQuestionAnswerFields, normalizeQuestionType } from '../../lib/constants';
 import { QuestionEditor } from '../shared/QuestionEditor';
 import { cleanQuestionMath } from '../../utils/mathFormatter';
 
@@ -105,7 +105,11 @@ export const ManualQuestionBankModal: React.FC<ManualQuestionBankModalProps> = (
 
   const handleUpdateQuestion = (index: number, updated: Partial<QuestionItem>) => {
     const newArr = [...questions];
-    newArr[index] = { ...newArr[index], ...updated };
+    const targetType = updated.type ? normalizeQuestionType(updated.type) : normalizeQuestionType(newArr[index].type);
+    const isTypeChanged = updated.type && normalizeQuestionType(updated.type) !== normalizeQuestionType(newArr[index].type);
+    const base = isTypeChanged ? purgeStaleQuestionAnswerFields(newArr[index], targetType) : newArr[index];
+    const merged = { ...base, ...updated, type: targetType };
+    newArr[index] = purgeStaleQuestionAnswerFields(merged, targetType);
     setQuestions(newArr);
   };
 

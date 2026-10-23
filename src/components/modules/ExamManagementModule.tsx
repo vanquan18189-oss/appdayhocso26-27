@@ -1,4 +1,4 @@
-import { SUBJECTS, GRADES, CLASSES_BY_GRADE, ALL_CLASSES, EXAM_TYPES, QUESTION_TYPES, getQuestionTypeLabel, isGradeMatching, extractGradeDigit } from '../../lib/constants';
+import { SUBJECTS, GRADES, CLASSES_BY_GRADE, ALL_CLASSES, EXAM_TYPES, QUESTION_TYPES, getQuestionTypeLabel, isGradeMatching, extractGradeDigit, purgeStaleQuestionAnswerFields } from '../../lib/constants';
 import { getSubjectColorStyles } from '../../utils/subjectColors';
 import { formatScore, formatTotalScore, roundTotalScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
 import { getTeachersFromLocalStorage, resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
@@ -1166,7 +1166,11 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const handleUpdateQuestion = (idx: number, updatedFields: Partial<QuestionItem>) => {
     setEditedQuestions(prev => {
       const next = [...prev];
-      next[idx] = { ...next[idx], ...updatedFields };
+      const targetType = updatedFields.type ? normalizeQuestionType(updatedFields.type) : normalizeQuestionType(next[idx].type);
+      const isTypeChanged = updatedFields.type && normalizeQuestionType(updatedFields.type) !== normalizeQuestionType(next[idx].type);
+      const base = isTypeChanged ? purgeStaleQuestionAnswerFields(next[idx], targetType) : next[idx];
+      const merged = { ...base, ...updatedFields, type: targetType };
+      next[idx] = purgeStaleQuestionAnswerFields(merged, targetType);
       return next;
     });
   };

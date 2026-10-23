@@ -447,7 +447,7 @@ export const StudentEngageView: React.FC<StudentEngageViewProps> = ({
                   className="px-4 py-2 rounded-xl text-xs font-extrabold bg-blue-600 hover:bg-blue-700 text-white transition-all shadow-xs flex items-center gap-1.5 cursor-pointer active:scale-98"
                 >
                   <span>
-                    {hasValidGame ? 'Tiếp tục sang Trò chơi' : `Bỏ qua & Sang ${nextStepLabel}`}
+                    {hasValidGame ? 'Tiếp tục sang Trò chơi' : `Tiếp tục sang ${nextStepLabel}`}
                   </span>
                   <ArrowRight className="w-3.5 h-3.5" />
                 </button>
@@ -569,15 +569,6 @@ export const StudentEngageView: React.FC<StudentEngageViewProps> = ({
         </div>
       )}
 
-      {/* Teacher Guidance Note */}
-      <div className="bg-amber-50/70 p-4 sm:p-5 rounded-2xl border border-amber-200/70 space-y-1.5">
-        <span className="text-xs font-extrabold text-amber-800 uppercase tracking-wider flex items-center gap-1.5">
-          💡 Hướng dẫn khởi động từ Thầy/Cô
-        </span>
-        <p className="text-xs sm:text-sm text-slate-700 leading-relaxed font-medium whitespace-pre-wrap">
-          {guidanceText}
-        </p>
-      </div>
     </div>
   );
 };

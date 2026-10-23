@@ -4,6 +4,7 @@ import { QuestionItem } from '../../types';
 import { QuestionEditor } from '../shared/QuestionEditor';
 import { getLocalCachedQuestions, QUESTIONS_CACHE_KEY, saveQuestionsBatchToFirestore } from '../../services/questionStorageService';
 import { UseQuestionBankModal } from './UseQuestionBankModal';
+import { purgeStaleQuestionAnswerFields, normalizeQuestionType } from '../../lib/constants';
 
 interface TeacherQuestionsListEditorProps {
   title: string;
@@ -77,7 +78,11 @@ export const TeacherQuestionsListEditor: React.FC<TeacherQuestionsListEditorProp
 
   const handleUpdateQuestion = (index: number, updatedFields: Partial<QuestionItem>) => {
     const updated = [...questions];
-    updated[index] = { ...updated[index], ...updatedFields };
+    const targetType = updatedFields.type ? normalizeQuestionType(updatedFields.type) : normalizeQuestionType(updated[index].type);
+    const isTypeChanged = updatedFields.type && normalizeQuestionType(updatedFields.type) !== normalizeQuestionType(updated[index].type);
+    const base = isTypeChanged ? purgeStaleQuestionAnswerFields(updated[index], targetType) : updated[index];
+    const merged = { ...base, ...updatedFields, type: targetType };
+    updated[index] = purgeStaleQuestionAnswerFields(merged, targetType);
     onQuestionsChange(updated);
   };
 

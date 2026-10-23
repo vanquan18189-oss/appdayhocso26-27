@@ -23,6 +23,7 @@ import { Lesson5EPlan, QuestionItem } from '../../types';
 import { getQuestionTypeLabel, getCorrectOrderingSequence } from '../../lib/constants';
 import { uploadToCloudinary } from '../../lib/cloudinary';
 import { stableShuffle, getMatchingPairColor } from '../../utils/arrayUtils';
+import { checkQuestionCorrectLocal } from './StudentExamModule';
 
 interface StudentApplyViewProps {
   lesson: Lesson5EPlan;
@@ -120,53 +121,10 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
     }
   };
 
-  // Question answer handlers for all 8 types
+  // Standardized Question answer grading for all 8 types using shared checkQuestionCorrectLocal
   const isQuestionCorrect = (q: QuestionItem) => {
     const userAns = questionAnswers[q.id];
-    if (userAns === undefined || userAns === null) return false;
-    const qType = q.type || 'multiple_choice';
-    if (qType === 'multiple_choice') {
-      return userAns === (q.correctAnswer || 'A');
-    }
-    if (qType === 'multiple_response') {
-      const correctIndices = (q.correctAnswer || 'A')
-        .split('')
-        .map(c => c.charCodeAt(0) - 65)
-        .sort();
-      const userIndices = Array.isArray(userAns) ? [...userAns].sort() : [];
-      return JSON.stringify(correctIndices) === JSON.stringify(userIndices);
-    }
-    if (qType === 'true_false') {
-      const stmts = q.statements || [];
-      return stmts.every((s, idx) => userAns[idx] === s.isCorrect);
-    }
-    if (qType === 'fill_blank') {
-      const targetAns = (q.correctAnswer || '').toLowerCase().trim();
-      return typeof userAns === 'string' && userAns.toLowerCase().trim() === targetAns;
-    }
-    if (qType === 'ordering') {
-      const correctSeq = getCorrectOrderingSequence(q);
-      const isMatch = Array.isArray(userAns) && userAns.length === correctSeq.length && userAns.every((item, i) => String(item).trim() === String(correctSeq[i]).trim());
-      console.log('[StudentApplyView - Chấm bài Sắp xếp thứ tự]', {
-        questionId: q.id,
-        correctSeq,
-        userAns,
-        isMatch
-      });
-      return isMatch;
-    }
-    if (qType === 'matching') {
-      const pairs = q.matchingPairs || [];
-      return pairs.every((p, idx) => userAns[idx] === p.right);
-    }
-    if (qType === 'classification') {
-      const items = q.classificationItems || [];
-      return items.every((item, idx) => userAns[idx] === item.group);
-    }
-    if (qType === 'essay') {
-      return typeof userAns === 'string' && userAns.trim().length > 0;
-    }
-    return false;
+    return checkQuestionCorrectLocal(q, userAns);
   };
 
   const handleOptionSelect = (qId: string, val: string) => {
@@ -568,52 +526,109 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
                   {/* 6. Matching */}
                   {qType === 'matching' && q.matchingPairs && (
                     <div className="space-y-4 pt-2">
-                      <div className="text-xs text-indigo-800 font-bold">Hãy chọn vế trái và nối với lựa chọn ở cột phải:</div>
+                      <div className="bg-indigo-50 border border-indigo-100 p-3.5 rounded-2xl text-indigo-950 text-xs sm:text-sm font-extrabold flex items-center gap-2">
+                        <span>🔗</span>
+                        <span>Hãy ghép nối các ý ở Cột 1 (bên trái) tương ứng với lựa chọn ở Cột 2 (bên phải):</span>
+                      </div>
+
                       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                          {q.matchingPairs.map((pair, pIdx) => {
-                            const selectedRightVal = questionAnswers[q.id]?.[pIdx] || '';
-                            const isSelectedLeft = selectingLeftItem[q.id] === pIdx;
-                            return (
-                              <button
-                                type="button"
-                                key={pIdx}
-                                onClick={() => !submittedQuestions && setSelectingLeftItem({ ...selectingLeftItem, [q.id]: pIdx })}
-                                className={`w-full p-3.5 border-2 rounded-2xl text-xs sm:text-sm font-bold text-left transition-all ${
-                                  isSelectedLeft 
-                                    ? 'bg-indigo-100 border-indigo-500 text-indigo-900' 
-                                    : selectedRightVal 
-                                      ? `text-white ${getMatchingPairColor(pIdx)}`
-                                      : 'bg-slate-50 border-slate-200 text-slate-700 hover:border-indigo-200'
-                                }`}
-                              >
-                                {pIdx + 1}. {selectedRightVal ? `${pair.left} ➔ ${selectedRightVal}` : pair.left}
-                              </button>
-                            );
-                          })}
+                        {/* Cột 1 (Bên trái): Đánh số thứ tự 1, 2, 3... */}
+                        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-3">
+                          <div className="text-xs font-black text-indigo-800 uppercase tracking-wider flex items-center justify-between pb-2 border-b border-slate-200">
+                            <span>📌 CỘT 1 (VẾ TRÁI)</span>
+                            <span className="text-[10px] bg-indigo-100 px-2.5 py-0.5 rounded-full text-indigo-800 font-extrabold">Đánh số thứ tự (1, 2, 3...)</span>
+                          </div>
+                          <div className="space-y-3">
+                            {q.matchingPairs.map((pair, pIdx) => {
+                              const currentAns = questionAnswers[q.id] || {};
+                              const selectedRightVal = currentAns[pIdx] || '';
+                              const isSelectedLeft = selectingLeftItem[q.id] === pIdx;
+
+                              return (
+                                <div key={pIdx} className="p-3.5 bg-white border-2 border-slate-200 hover:border-indigo-300 rounded-2xl space-y-2.5 transition-all shadow-2xs">
+                                  <div className="flex items-start gap-3">
+                                    <div className="w-7 h-7 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-black text-xs shrink-0 mt-0.5 shadow-2xs">
+                                      {pIdx + 1}
+                                    </div>
+                                    <span className="text-xs sm:text-sm font-bold text-slate-900 leading-relaxed flex-1">
+                                      {pair.left}
+                                    </span>
+                                  </div>
+
+                                  {/* Hiển thị ghép nối (Click để chọn hoặc hủy) */}
+                                  <div className="pt-1 flex items-center gap-2">
+                                    <button
+                                      type="button"
+                                      disabled={submittedQuestions}
+                                      onClick={() => {
+                                        if (submittedQuestions) return;
+                                        if (selectedRightVal) {
+                                          handleMatchingChange(q.id, pIdx, '');
+                                          setSelectingLeftItem({ ...selectingLeftItem, [q.id]: pIdx });
+                                        } else {
+                                          setSelectingLeftItem({ ...selectingLeftItem, [q.id]: pIdx });
+                                        }
+                                      }}
+                                      className={`flex-1 px-3 py-2 border-2 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+                                        isSelectedLeft 
+                                          ? 'bg-indigo-100 border-indigo-500 text-indigo-900' 
+                                          : selectedRightVal 
+                                            ? `text-white ${getMatchingPairColor(pIdx)}`
+                                            : 'bg-slate-50 border-slate-200 text-slate-500 hover:border-indigo-200'
+                                      }`}
+                                    >
+                                      {selectedRightVal ? `➔ ${selectedRightVal}` : 'Nhấn để chọn đáp án ở Cột 2...'}
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
-                        <div className="space-y-2">
-                          {stableShuffle(q.matchingPairs || [], q.id).map((pair, rIdx) => {
-                            const matchingPairIndex = q.matchingPairs?.findIndex(p => p.right === pair.right);
-                            const isSelected = matchingPairIndex !== undefined && matchingPairIndex !== -1 && questionAnswers[q.id]?.[matchingPairIndex] === pair.right;
-                            const colorClass = isSelected ? `text-white ${getMatchingPairColor(matchingPairIndex!)}` : 'bg-white border-slate-200 hover:border-emerald-500';
-                            
-                            return (
-                              <div
-                                key={rIdx}
-                                onClick={() => {
-                                  if (!submittedQuestions && selectingLeftItem[q.id] !== undefined && selectingLeftItem[q.id] !== null) {
-                                    handleMatchingChange(q.id, selectingLeftItem[q.id]!, pair.right);
-                                    setSelectingLeftItem({ ...selectingLeftItem, [q.id]: null });
-                                  }
-                                }}
-                                className={`p-3.5 border-2 rounded-2xl flex items-center gap-3 cursor-pointer transition-all ${colorClass}`}
-                              >
-                                <span className={`font-black text-xs ${isSelected ? 'text-white' : 'text-emerald-600'}`}>{String.fromCharCode(65 + rIdx)}.</span>
-                                <span className="text-xs font-medium">{pair.right}</span>
-                              </div>
-                            );
-                          })}
+
+                        {/* Cột 2 (Bên phải): Hiển thị ngẫu nhiên các lựa chọn gán nhãn A, B, C... */}
+                        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-3">
+                          <div className="text-xs font-black text-emerald-800 uppercase tracking-wider flex items-center justify-between pb-2 border-b border-slate-200">
+                            <span>🎯 CỘT 2 (LỰA CHỌN BÊN PHẢI)</span>
+                            <span className="text-[10px] bg-emerald-100 px-2.5 py-0.5 rounded-full text-emerald-800 font-extrabold">Nhãn chữ cái (A, B, C...)</span>
+                          </div>
+                          <div className="space-y-3">
+                            {stableShuffle(q.matchingPairs || [], q.id).map((pair, rIdx) => {
+                              const letterLabel = String.fromCharCode(65 + rIdx);
+                              const answersForThisQuestion = questionAnswers[q.id] || {};
+                              const leftIndexForKey = Object.keys(answersForThisQuestion).find(k => answersForThisQuestion[k] === pair.right);
+                              const isSelected = leftIndexForKey !== undefined && Boolean(answersForThisQuestion[leftIndexForKey]);
+                              const leftIdxNum = isSelected ? parseInt(leftIndexForKey!, 10) : -1;
+                              const colorClass = isSelected
+                                ? `text-white ${getMatchingPairColor(isNaN(leftIdxNum) ? 0 : leftIdxNum)}`
+                                : 'bg-white border-emerald-200 hover:border-emerald-500 text-slate-800';
+
+                              return (
+                                <div
+                                  key={rIdx}
+                                  onClick={() => {
+                                    if (submittedQuestions) return;
+                                    if (selectingLeftItem[q.id] !== undefined && selectingLeftItem[q.id] !== null) {
+                                      const pIdx = selectingLeftItem[q.id]!;
+                                      handleMatchingChange(q.id, pIdx, pair.right);
+                                      setSelectingLeftItem({ ...selectingLeftItem, [q.id]: null });
+                                    } else if (isSelected && leftIndexForKey !== undefined) {
+                                      // Click on matched right option to unbind
+                                      handleMatchingChange(q.id, parseInt(leftIndexForKey, 10), '');
+                                    }
+                                  }}
+                                  className={`p-3.5 border-2 rounded-2xl flex items-start gap-3 shadow-2xs cursor-pointer transition-all ${colorClass}`}
+                                >
+                                  <div className={`w-7 h-7 rounded-xl ${isSelected ? 'bg-white text-emerald-900' : 'bg-emerald-600 text-white'} flex items-center justify-center font-black text-xs shrink-0 mt-0.5 shadow-2xs`}>
+                                    {letterLabel}
+                                  </div>
+                                  <span className="text-xs sm:text-sm font-bold leading-relaxed flex-1">
+                                    {pair.right}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
                       </div>
                     </div>

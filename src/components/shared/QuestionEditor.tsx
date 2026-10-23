@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Plus, Trash2, ChevronDown, ImageIcon, Upload, X, ArrowRight, ArrowUp, ArrowDown, GripVertical } from 'lucide-react';
 import { QuestionItem, TrueFalseStatement } from '../../types';
-import { QUESTION_TYPES, normalizeQuestionType, resetQuestionType, getDefaultAnswerDataForType } from '../../lib/constants';
+import { QUESTION_TYPES, normalizeQuestionType, resetQuestionType, getDefaultAnswerDataForType, purgeStaleQuestionAnswerFields } from '../../lib/constants';
 import { uploadToCloudinary } from '../../lib/cloudinary';
 
 interface QuestionEditorProps {
@@ -70,7 +70,8 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
   };
 
   const handleUpdate = (newFields: Partial<QuestionItem>) => {
-    const updated = {
+    const activeType = newFields.type ? normalizeQuestionType(newFields.type) : normalizedType;
+    const updated: any = {
       ...question,
       content: newFields.content !== undefined ? newFields.content : content,
       options: newFields.options !== undefined ? newFields.options : options,
@@ -82,10 +83,11 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
       explanation: newFields.explanation !== undefined ? newFields.explanation : explanation,
       imageUrl: newFields.imageUrl !== undefined ? newFields.imageUrl : imageUrl,
       imagePrompt: newFields.imagePrompt !== undefined ? newFields.imagePrompt : imagePrompt,
-      type: normalizedType,
+      type: activeType,
       ...newFields
     };
-    onChange(updated);
+    const cleaned = purgeStaleQuestionAnswerFields(updated, activeType);
+    onChange(cleaned);
   };
 
   const handleTypeChange = (newType: string) => {
@@ -95,7 +97,7 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
       
       const defaultAnswerData = getDefaultAnswerDataForType(nextNorm);
       setOptions(defaultAnswerData.options || ['', '', '', '']);
-      setCorrectAnswer(defaultAnswerData.correctAnswer || '');
+      setCorrectAnswer(defaultAnswerData.correctAnswer || (nextNorm === 'multiple_choice' || nextNorm === 'multiple_response' ? 'A' : ''));
       setMatchingPairs(defaultAnswerData.matchingPairs || [{ left: '', right: '' }, { left: '', right: '' }]);
       setClassificationGroups(defaultAnswerData.classificationGroups || ['Nhóm 1', 'Nhóm 2']);
       setClassificationItems(defaultAnswerData.classificationItems || [{ name: '', group: 'Nhóm 1' }]);
@@ -637,8 +639,8 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
         {normalizedType === 'matching' && (
           <div className="space-y-3 pt-2">
             <div className="flex items-center justify-between">
-              <label className="block text-xs font-bold text-cyan-700">
-                Các cặp vế tương ứng cần nối <span className="text-rose-500">*</span>
+              <label className="block text-xs font-bold text-cyan-800">
+                Cấu hình các cặp ghép nối chuẩn (Cột 1 ⟷ Cột 2 tương ứng) <span className="text-rose-500">*</span>
               </label>
               <button
                 type="button"
@@ -652,50 +654,87 @@ export const QuestionEditor: React.FC<QuestionEditorProps> = ({
                 <Plus className="w-3.5 h-3.5" /> Thêm cặp nối
               </button>
             </div>
-            <div className="space-y-2">
-              {matchingPairs.map((pair, pIdx) => (
-                <div key={pIdx} className="flex items-center gap-2 bg-cyan-50/30 p-2.5 rounded-xl border border-cyan-100">
-                  <span className="w-14 font-bold text-cyan-800 text-xs shrink-0">Cặp {pIdx + 1}:</span>
-                  <input
-                    type="text"
-                    value={pair.left}
-                    onChange={(e) => {
-                      const newPairs = [...matchingPairs];
-                      newPairs[pIdx].left = e.target.value;
-                      setMatchingPairs(newPairs);
-                      handleUpdate({ matchingPairs: newPairs });
-                    }}
-                    placeholder="Vế trái..."
-                    className="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                  />
-                  <ArrowRight className="w-4 h-4 text-cyan-600 shrink-0" />
-                  <input
-                    type="text"
-                    value={pair.right}
-                    onChange={(e) => {
-                      const newPairs = [...matchingPairs];
-                      newPairs[pIdx].right = e.target.value;
-                      setMatchingPairs(newPairs);
-                      handleUpdate({ matchingPairs: newPairs });
-                    }}
-                    placeholder="Vế phải tương ứng..."
-                    className="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                  />
-                  {matchingPairs.length > 1 && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const newPairs = matchingPairs.filter((_, idx) => idx !== pIdx);
-                        setMatchingPairs(newPairs);
-                        handleUpdate({ matchingPairs: newPairs });
-                      }}
-                      className="p-1.5 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
-              ))}
+
+            <div className="bg-cyan-50/70 border border-cyan-200 rounded-xl p-3 text-xs text-cyan-900 flex items-center justify-between gap-2">
+              <span className="font-medium">
+                💡 <strong>Quy tắc ghép cặp:</strong> Vế trái và vế phải trên cùng một hàng là cặp đáp án chuẩn. Khi học sinh làm bài, hệ thống sẽ tự động xáo trộn ngẫu nhiên thứ tự Cột 2 và phân màu trực quan cho từng cặp.
+              </span>
+            </div>
+
+            {/* Column Headers */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 px-1 text-[11px] font-black uppercase tracking-wider text-slate-500">
+              <div className="flex items-center gap-1.5 text-indigo-700">
+                <span>📌 CỘT 1 (VẾ TRÁI: 1, 2, 3...)</span>
+              </div>
+              <div className="flex items-center gap-1.5 text-emerald-700">
+                <span>🎯 CỘT 2 (LỰA CHỌN BÊN PHẢI: A, B, C...)</span>
+              </div>
+            </div>
+
+            <div className="space-y-2.5">
+              {matchingPairs.map((pair, pIdx) => {
+                const rightLetter = String.fromCharCode(65 + pIdx);
+                return (
+                  <div key={pIdx} className="flex flex-col md:flex-row items-stretch md:items-center gap-2 bg-cyan-50/20 p-2.5 rounded-xl border border-cyan-100">
+                    {/* Cột 1 input with numeric badge */}
+                    <div className="flex-1 flex items-center gap-2">
+                      <span className="w-6 h-6 rounded-lg bg-indigo-600 text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-2xs">
+                        {pIdx + 1}
+                      </span>
+                      <input
+                        type="text"
+                        value={pair.left}
+                        onChange={(e) => {
+                          const newPairs = [...matchingPairs];
+                          newPairs[pIdx].left = e.target.value;
+                          setMatchingPairs(newPairs);
+                          handleUpdate({ matchingPairs: newPairs });
+                        }}
+                        placeholder={`Nội dung vế trái ${pIdx + 1}...`}
+                        className="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </div>
+
+                    <div className="hidden md:flex items-center justify-center text-cyan-600 px-1 shrink-0">
+                      <ArrowRight className="w-4 h-4" />
+                    </div>
+
+                    {/* Cột 2 input with letter badge */}
+                    <div className="flex-1 flex items-center gap-2">
+                      <span className="w-6 h-6 rounded-lg bg-emerald-600 text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-2xs">
+                        {rightLetter}
+                      </span>
+                      <input
+                        type="text"
+                        value={pair.right}
+                        onChange={(e) => {
+                          const newPairs = [...matchingPairs];
+                          newPairs[pIdx].right = e.target.value;
+                          setMatchingPairs(newPairs);
+                          handleUpdate({ matchingPairs: newPairs });
+                        }}
+                        placeholder={`Nội dung vế phải tương ứng ${rightLetter}...`}
+                        className="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                      />
+
+                      {matchingPairs.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const newPairs = matchingPairs.filter((_, idx) => idx !== pIdx);
+                            setMatchingPairs(newPairs);
+                            handleUpdate({ matchingPairs: newPairs });
+                          }}
+                          className="p-1.5 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer shrink-0"
+                          title="Xóa cặp này"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

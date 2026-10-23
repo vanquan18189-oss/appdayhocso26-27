@@ -21,7 +21,7 @@ interface CreateAiModalProps {
 }
 
 import { TECHNOLOGY_GRADE3_FINAL_EXAM_BLUEPRINT } from '../config/examBlueprints';
-import { useAcademicYear } from '../hooks/useAcademicYear';
+import { useAcademicYear } from '../contexts/AcademicYearContext';
 
 export const CreateAiModal: React.FC<CreateAiModalProps> = ({
   isOpen,
@@ -31,10 +31,13 @@ export const CreateAiModal: React.FC<CreateAiModalProps> = ({
   const [subject, setSubject] = useState<Subject>('Công nghệ');
   const [grade, setGrade] = useState<Grade>('Khối 3');
   const [topic, setTopic] = useState('An toàn khi sử dụng các thiết bị điện trong gia đình');
+  const [level, setLevel] = useState<CognitiveLevel>('nhan_biet');
+  const [type, setType] = useState<QuestionType>('multiple_choice');
+  const [count, setCount] = useState<number>(3);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generatedQuestions, setGeneratedQuestions] = useState<Question[]>([]);
   const [isStandardStructure, setIsStandardStructure] = useState(true);
-  const { academicYear } = useAcademicYear();
-
-  // ... (rest of the component)
+  const { selectedAcademicYear: academicYear } = useAcademicYear();
 
   if (!isOpen) return null;
 

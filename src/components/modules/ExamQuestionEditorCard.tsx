@@ -653,9 +653,19 @@ export const ExamQuestionEditorCard: React.FC<ExamQuestionEditorCardProps> = ({
               </button>
             </div>
 
-            <div className="bg-cyan-50/60 border border-cyan-100 rounded-xl p-3 text-xs text-cyan-900 flex items-center gap-2">
+            <div className="bg-cyan-50/70 border border-cyan-200 rounded-xl p-3 text-xs text-cyan-900 flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-cyan-600 shrink-0" />
-              <span>Vế trái và vế phải trên cùng một hàng là một cặp ghép đúng chuẩn. Học sinh sẽ nối vế trái với vế phải tương ứng.</span>
+              <span>Vế trái và vế phải trên cùng một hàng là cặp ghép đúng chuẩn. Khi học sinh làm bài thi, Cột 2 sẽ được hệ thống xáo trộn ngẫu nhiên (shuffle) và phân màu trực quan cho từng cặp.</span>
+            </div>
+
+            {/* Column Headers */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 px-1 text-[11px] font-black uppercase tracking-wider text-slate-500">
+              <div className="flex items-center gap-1.5 text-indigo-700">
+                <span>📌 CỘT 1 (VẾ TRÁI: 1, 2, 3...)</span>
+              </div>
+              <div className="flex items-center gap-1.5 text-emerald-700">
+                <span>🎯 CỘT 2 (LỰA CHỌN BÊN PHẢI: A, B, C...)</span>
+              </div>
             </div>
 
             <div className="space-y-2.5">
@@ -666,16 +676,13 @@ export const ExamQuestionEditorCard: React.FC<ExamQuestionEditorCardProps> = ({
                     { left: 'Vế trái 2...', right: 'Vế phải tương ứng 2...' }
                   ]
               ).map((pair, pIdx) => {
+                const rightLetter = String.fromCharCode(65 + pIdx);
                 return (
-                  <div key={pIdx} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 bg-cyan-50/20 p-3 rounded-xl border border-cyan-100">
-                    <span className="w-16 font-bold text-cyan-900 text-xs shrink-0 flex items-center gap-1">
-                      <span className="w-5 h-5 rounded-md bg-cyan-600 text-white flex items-center justify-center font-bold text-[10px]">
+                  <div key={pIdx} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 bg-cyan-50/20 p-2.5 rounded-xl border border-cyan-100">
+                    <div className="flex-1 flex items-center gap-2">
+                      <span className="w-6 h-6 rounded-lg bg-indigo-600 text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-2xs">
                         {pIdx + 1}
                       </span>
-                      Cặp {pIdx + 1}:
-                    </span>
-
-                    <div className="flex-1 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                       <input 
                         type="text" 
                         value={pair.left}
@@ -684,14 +691,19 @@ export const ExamQuestionEditorCard: React.FC<ExamQuestionEditorCardProps> = ({
                           currentPairs[pIdx] = { ...currentPairs[pIdx], left: e.target.value };
                           onUpdate({ matchingPairs: currentPairs });
                         }}
-                        placeholder="Vế trái (Cột A)..."
-                        className="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                        placeholder={`Vế trái ${pIdx + 1}...`}
+                        className="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                       />
+                    </div>
 
-                      <div className="hidden sm:flex items-center justify-center text-cyan-500 shrink-0">
-                        <ArrowRight className="w-4 h-4" />
-                      </div>
+                    <div className="hidden sm:flex items-center justify-center text-cyan-600 px-1 shrink-0">
+                      <ArrowRight className="w-4 h-4" />
+                    </div>
 
+                    <div className="flex-1 flex items-center gap-2">
+                      <span className="w-6 h-6 rounded-lg bg-emerald-600 text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-2xs">
+                        {rightLetter}
+                      </span>
                       <input 
                         type="text" 
                         value={pair.right}
@@ -700,24 +712,24 @@ export const ExamQuestionEditorCard: React.FC<ExamQuestionEditorCardProps> = ({
                           currentPairs[pIdx] = { ...currentPairs[pIdx], right: e.target.value };
                           onUpdate({ matchingPairs: currentPairs });
                         }}
-                        placeholder="Vế phải tương ứng (Cột B)..."
-                        className="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                        placeholder={`Vế phải tương ứng ${rightLetter}...`}
+                        className="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-medium text-slate-800 focus:outline-none focus:ring-1 focus:ring-emerald-500"
                       />
-                    </div>
 
-                    {(question.matchingPairs || []).length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const currentPairs = (question.matchingPairs || []).filter((_, idx) => idx !== pIdx);
-                          onUpdate({ matchingPairs: currentPairs });
-                        }}
-                        title="Xóa cặp này"
-                        className="p-1.5 text-slate-400 hover:text-rose-600 transition-colors self-end sm:self-auto cursor-pointer"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    )}
+                      {(question.matchingPairs || []).length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const currentPairs = (question.matchingPairs || []).filter((_, idx) => idx !== pIdx);
+                            onUpdate({ matchingPairs: currentPairs });
+                          }}
+                          title="Xóa cặp này"
+                          className="p-1.5 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer shrink-0"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })}
