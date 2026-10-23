@@ -186,6 +186,23 @@ export const TeacherVideoExploreEditor: React.FC<TeacherVideoExploreEditorProps>
     }
   };
 
+  const handleUpdateCheckpointExplanation = (cpId: string, newExplanation: string) => {
+    const updated = checkpoints.map(cp => {
+      if (cp.id === cpId) {
+        return {
+          ...cp,
+          explanation: newExplanation,
+          question: cp.question ? { ...cp.question, explanation: newExplanation } : undefined
+        };
+      }
+      return cp;
+    });
+    setCheckpoints(updated);
+    if (onSave) {
+      onSave(videoUrl, updated, coreSummary, summaryImages);
+    }
+  };
+
   const handleVideoUrlChange = (newUrl: string) => {
     setVideoUrl(newUrl);
     if (onSave) {
@@ -468,9 +485,18 @@ export const TeacherVideoExploreEditor: React.FC<TeacherVideoExploreEditorProps>
                             </div>
                           )}
 
-                          <p className="text-[11px] text-slate-400 pl-2 italic">
-                            💡 Giải thích: {cp.explanation}
-                          </p>
+                          <div className="pt-2 pl-2 space-y-1.5">
+                            <label className="block text-[11px] font-extrabold text-purple-300 uppercase tracking-wider flex items-center gap-1.5">
+                              <span>💡 Giải thích chi tiết đáp án:</span>
+                            </label>
+                            <textarea
+                              rows={2}
+                              value={cp.explanation || ''}
+                              onChange={(e) => handleUpdateCheckpointExplanation(cp.id, e.target.value)}
+                              placeholder="Nhập lời giải thích chi tiết cho đáp án..."
+                              className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-purple-500 font-sans leading-relaxed"
+                            />
+                          </div>
                         </div>
 
                         <div className="flex items-center gap-2">

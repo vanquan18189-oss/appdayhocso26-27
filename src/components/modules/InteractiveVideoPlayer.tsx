@@ -536,24 +536,6 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
             </div>
 
             <div className="flex items-center gap-3">
-              {(isAlreadyCompleted || Object.keys(answeredCheckpoints).length >= totalQuestions) && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPlayerState('showing-summary');
-                    setIsPlaying(false);
-                  }}
-                  className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-black transition-all shadow-md flex items-center gap-1.5 cursor-pointer animate-in fade-in"
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>🎯 Xem tổng kết & Ghi nhớ</span>
-                </button>
-              )}
-
-              <span className="text-[11px] font-semibold bg-purple-500/30 border border-purple-400/40 px-3 py-1 rounded-full text-purple-200">
-                🎯 {Object.keys(answeredCheckpoints).length}/{totalQuestions} câu hỏi hoàn thành
-              </span>
-
               <button
                 onClick={() => {
                   if (videoRef.current) {
@@ -568,6 +550,43 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
             </div>
           </div>
         </div>
+
+      {/* THANH TIẾN ĐỘ & NÚT XEM TỔNG KẾT & GHI NHỚ TÁCH BIỆT BÊN DƯỚI KHUNG VIDEO (TỐI ƯU TIỂU HỌC) */}
+      <div className="bg-gradient-to-r from-purple-50 via-indigo-50 to-slate-50 rounded-3xl p-5 sm:p-6 border-2 border-purple-200/80 shadow-md flex flex-col sm:flex-row items-center justify-between gap-4 animate-in fade-in">
+        {/* Progress status */}
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 rounded-2xl bg-purple-600 text-white flex items-center justify-center font-bold text-xl shadow-md shrink-0">
+            ⭐
+          </div>
+          <div>
+            <div className="text-xs sm:text-sm font-extrabold text-purple-900">
+              Tiến độ câu hỏi mốc Khám phá
+            </div>
+            <div className="text-sm sm:text-base font-black text-slate-900 mt-0.5">
+              Đã hoàn thành <span className="text-purple-700">{Object.keys(answeredCheckpoints).length}</span> / {totalQuestions} câu hỏi
+            </div>
+          </div>
+        </div>
+
+        {/* Action Button: Xem tổng kết & Ghi nhớ */}
+        {(isAlreadyCompleted || Object.keys(answeredCheckpoints).length >= totalQuestions) ? (
+          <button
+            type="button"
+            onClick={() => {
+              setPlayerState('showing-summary');
+              setIsPlaying(false);
+            }}
+            className="w-full sm:w-auto px-7 py-4 rounded-2xl bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-700 hover:to-indigo-800 text-white text-sm sm:text-base font-black transition-all shadow-xl shadow-purple-600/30 flex items-center justify-center gap-3 cursor-pointer active:scale-98 transform hover:scale-102"
+          >
+            <Sparkles className="w-5 h-5 text-amber-300 animate-spin" />
+            <span>🎯 XEM TỔNG KẾT & GHI NHỚ NGAY</span>
+          </button>
+        ) : (
+          <div className="px-5 py-3 rounded-2xl bg-slate-200/80 border border-slate-300 text-slate-600 text-xs sm:text-sm font-extrabold flex items-center gap-2 text-center">
+            <span>🔒 Hoàn thành các câu hỏi mốc trong video để mở khóa Tổng kết</span>
+          </div>
+        )}
+      </div>
 
         {/* OVERLAY 1: PAUSED FOR QUESTION (SUPPORTING ALL 8 QUESTION TYPES) */}
         {playerState === 'paused-for-question' && activeCheckpoint && (
