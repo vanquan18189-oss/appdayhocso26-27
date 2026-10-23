@@ -327,9 +327,8 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
     setEssayText('');
     setIsAnswerCorrect(null);
 
-    // Only show summary modal if BOTH resumeTime >= duration AND all checkpoints are answered.
-    // If questions are answered early (resumeTime < duration), video continues playing normally!
-    if (resumeTime >= duration && allAnswered) {
+    // Show summary modal immediately when all checkpoints are answered or video reaches duration
+    if (allAnswered || resumeTime >= duration) {
       setPlayerState('showing-summary');
       setIsPlaying(false);
       setCurrentTime(duration);
@@ -546,6 +545,18 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
             </div>
 
             <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setPlayerState('showing-summary');
+                  setIsPlaying(false);
+                }}
+                className="px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-black transition-all shadow-md flex items-center gap-1.5 cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>🎯 Xem tổng kết & Ghi nhớ</span>
+              </button>
+
               <span className="text-[11px] font-semibold bg-purple-500/30 border border-purple-400/40 px-3 py-1 rounded-full text-purple-200">
                 🎯 {Object.keys(answeredCheckpoints).length}/{totalQuestions} câu hỏi hoàn thành
               </span>
