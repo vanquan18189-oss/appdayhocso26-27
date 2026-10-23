@@ -412,7 +412,7 @@ export const StudentElaborateView: React.FC<StudentElaborateViewProps> = ({
   if (phase === 'intro') {
     return (
       <div className="bg-gradient-to-br from-amber-500/10 via-orange-500/5 to-teal-500/10 rounded-3xl p-6 sm:p-10 border border-amber-500/20 text-center space-y-6 max-w-2xl mx-auto my-6 shadow-sm relative transition-all duration-300">
-        {/* Nút bỏ qua ở góc trên */}
+        {/* Nút tiếp tục ở góc trên */}
         <button
           onClick={() => {
             setIsAutoTransitioning(false);
@@ -420,7 +420,7 @@ export const StudentElaborateView: React.FC<StudentElaborateViewProps> = ({
           }}
           className="absolute top-4 right-4 px-3.5 py-1.5 rounded-full bg-white/80 hover:bg-white text-slate-600 hover:text-amber-700 text-xs font-bold transition-all border border-amber-200 shadow-xs flex items-center gap-1 cursor-pointer"
         >
-          <span>Bỏ qua</span>
+          <span>Tiếp tục</span>
           <FastForward className="w-3.5 h-3.5" />
         </button>
 

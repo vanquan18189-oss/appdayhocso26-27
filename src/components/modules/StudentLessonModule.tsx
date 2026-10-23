@@ -219,7 +219,10 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
           {activeStepTab === 'engage' && (
             <StudentEngageView
               lesson={selectedLesson}
-              onNavigateToNext={() => setActiveStepTab(getNextStepInLessonFlow('engage', selectedLesson))}
+              onNavigateToNext={() => {
+                saveStudentLessonProgress(currentUserId, selectedLesson.id, { engageViewed: true });
+                setActiveStepTab(getNextStepInLessonFlow('engage', selectedLesson));
+              }}
               nextStepLabel={getNextStepLabel('engage', selectedLesson)}
             />
           )}
@@ -227,7 +230,10 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
           {activeStepTab === 'intro' && (
             <StudentIntroView
               lesson={selectedLesson}
-              onNavigateToNext={() => setActiveStepTab(getNextStepInLessonFlow('intro', selectedLesson))}
+              onNavigateToNext={() => {
+                saveStudentLessonProgress(currentUserId, selectedLesson.id, { engageViewed: true });
+                setActiveStepTab(getNextStepInLessonFlow('intro', selectedLesson));
+              }}
               nextStepLabel={getNextStepLabel('intro', selectedLesson)}
             />
           )}
@@ -235,7 +241,10 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
           {activeStepTab === 'objectives' && (
             <StudentObjectivesView
               lesson={selectedLesson}
-              onNavigateToNext={() => setActiveStepTab(getNextStepInLessonFlow('objectives', selectedLesson))}
+              onNavigateToNext={() => {
+                saveStudentLessonProgress(currentUserId, selectedLesson.id, { engageViewed: true });
+                setActiveStepTab(getNextStepInLessonFlow('objectives', selectedLesson));
+              }}
             />
           )}
 
@@ -266,7 +275,8 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
                     const accuracy = typeof summaryData?.accuracy === 'number' ? summaryData.accuracy : 100;
                     saveStudentLessonProgress(currentUserId, selectedLesson.id, { 
                       exploreCompleted: true,
-                      exploreAccuracy: accuracy
+                      exploreAccuracy: accuracy,
+                      engageViewed: true
                     });
                     setActiveStepTab(getNextStepInLessonFlow('explore', selectedLesson));
                   }}
@@ -277,7 +287,14 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
               <div className="flex items-center justify-end pt-4 border-t border-slate-100">
                 <button
                   type="button"
-                  onClick={() => setActiveStepTab(getNextStepInLessonFlow('explore', selectedLesson))}
+                  onClick={() => {
+                    saveStudentLessonProgress(currentUserId, selectedLesson.id, { 
+                      exploreCompleted: true,
+                      exploreAccuracy: savedProgress?.exploreAccuracy ?? 100,
+                      engageViewed: true
+                    });
+                    setActiveStepTab(getNextStepInLessonFlow('explore', selectedLesson));
+                  }}
                   className="px-6 py-3 rounded-2xl bg-purple-600 hover:bg-purple-700 text-white font-extrabold text-xs sm:text-sm transition-all shadow-md flex items-center gap-2 cursor-pointer active:scale-98"
                 >
                   <span>Tiếp tục sang {getNextStepLabel('explore', selectedLesson)}</span>
@@ -292,12 +309,16 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
             <StudentElaborateView
               lesson={selectedLesson}
               onNavigateToNext={() => {
+                const existing = savedProgress?.elaborate || {};
+                saveStudentLessonProgress(currentUserId, selectedLesson.id, { 
+                  elaborate: { ...existing, isCompleted: true, score: existing.score ?? 10 } 
+                });
                 setActiveStepTab(getNextStepInLessonFlow('elaborate', selectedLesson));
               }}
               nextStepLabel={getNextStepLabel('elaborate', selectedLesson)}
               savedData={savedProgress.elaborate}
               onSaveProgress={(data) => {
-                saveStudentLessonProgress(currentUserId, selectedLesson.id, { elaborate: data });
+                saveStudentLessonProgress(currentUserId, selectedLesson.id, { elaborate: { ...data, isCompleted: true } });
               }}
             />
           )}
@@ -308,12 +329,16 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
               currentUserName={currentUserName}
               currentClass={currentClass}
               onNavigateToNext={() => {
+                const existing = savedProgress?.apply || {};
+                saveStudentLessonProgress(currentUserId, selectedLesson.id, { 
+                  apply: { ...existing, isCompleted: true, isSubmitted: true } 
+                });
                 setActiveStepTab(getNextStepInLessonFlow('apply', selectedLesson));
               }}
               nextStepLabel={getNextStepLabel('apply', selectedLesson)}
               savedData={savedProgress.apply}
               onSaveProgress={(data) => {
-                saveStudentLessonProgress(currentUserId, selectedLesson.id, { apply: data });
+                saveStudentLessonProgress(currentUserId, selectedLesson.id, { apply: { ...data, isCompleted: true, isSubmitted: true } });
               }}
             />
           )}
@@ -322,12 +347,16 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
             <StudentAssessmentView
               lesson={selectedLesson}
               onNavigateToNext={() => {
+                const existing = savedProgress?.assessment || {};
+                saveStudentLessonProgress(currentUserId, selectedLesson.id, { 
+                  assessment: { ...existing, isCompleted: true, testScore: existing.testScore ?? 10 } 
+                });
                 setActiveStepTab(getNextStepInLessonFlow('assessment', selectedLesson));
               }}
               nextStepLabel={getNextStepLabel('assessment', selectedLesson)}
               savedData={savedProgress.assessment}
               onSaveProgress={(data) => {
-                saveStudentLessonProgress(currentUserId, selectedLesson.id, { assessment: data });
+                saveStudentLessonProgress(currentUserId, selectedLesson.id, { assessment: { ...data, isCompleted: true } });
               }}
             />
           )}

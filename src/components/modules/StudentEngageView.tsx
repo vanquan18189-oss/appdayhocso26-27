@@ -300,22 +300,13 @@ export const StudentEngageView: React.FC<StudentEngageViewProps> = ({
             <Sparkles className="w-7 h-7" />
           </div>
 
-          <div className="space-y-2">
-            <h4 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">
-              Chào mừng em đến với bài học hôm nay!
-            </h4>
-            <p className="text-xs sm:text-sm text-slate-700 leading-relaxed max-w-lg mx-auto italic bg-white/90 p-4 rounded-2xl border border-amber-200/70 shadow-xs">
-              "{guidanceText}"
-            </p>
-          </div>
-
           <div className="pt-2 flex flex-col sm:flex-row items-center justify-center gap-3">
             <button
               type="button"
               onClick={handleAdvance}
               className="w-full sm:w-auto px-8 py-3 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white rounded-xl font-extrabold text-xs sm:text-sm transition-all shadow-md shadow-amber-500/25 flex items-center justify-center gap-2 cursor-pointer active:scale-98"
             >
-              <span>Em đã sẵn sàng! Vào {nextStepLabel}</span>
+              <span>Tiếp tục sang {nextStepLabel}</span>
               <ArrowRight className="w-4 h-4" />
             </button>
           </div>
