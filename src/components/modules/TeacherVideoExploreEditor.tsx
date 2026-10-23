@@ -111,7 +111,7 @@ export const TeacherVideoExploreEditor: React.FC<TeacherVideoExploreEditorProps>
       options: draftQuestion.options || ['', '', '', ''],
       correctIndex: correctIdx,
       correctAnswer: draftQuestion.correctAnswer || 'A',
-      explanation: draftQuestion.explanation?.trim() || 'Giải thích chi tiết cho đáp án đúng.',
+      explanation: draftQuestion.explanation?.trim() || '',
       matchingPairs: draftQuestion.matchingPairs,
       classificationGroups: draftQuestion.classificationGroups,
       classificationItems: draftQuestion.classificationItems,
@@ -130,7 +130,7 @@ export const TeacherVideoExploreEditor: React.FC<TeacherVideoExploreEditorProps>
         classificationGroups: draftQuestion.classificationGroups,
         classificationItems: draftQuestion.classificationItems,
         statements: draftQuestion.statements,
-        explanation: draftQuestion.explanation
+        explanation: draftQuestion.explanation?.trim() || ''
       }
     };
 
@@ -550,6 +550,23 @@ export const TeacherVideoExploreEditor: React.FC<TeacherVideoExploreEditorProps>
                     onDelete={resetDraft}
                     hideImageSection={true}
                   />
+                </div>
+
+                {/* Ô NHẬP GIẢI THÍCH CHI TIẾT ĐÁP ÁN */}
+                <div className="space-y-2 pt-3 border-t border-slate-800">
+                  <label className="block text-xs font-extrabold text-purple-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <span>💡 Giải thích chi tiết đáp án:</span>
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={draftQuestion.explanation || ''}
+                    onChange={(e) => setDraftQuestion({ ...draftQuestion, explanation: e.target.value })}
+                    placeholder="Nhập nội dung giải thích chi tiết cho đáp án đúng của câu hỏi mốc này..."
+                    className="w-full px-4 py-3 bg-slate-800 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500 font-sans leading-relaxed"
+                  />
+                  <p className="text-[11px] text-slate-400 italic">
+                    Nội dung này sẽ hiển thị trực tiếp cho học sinh tại khung kết quả (Chính xác / Chưa chính xác) sau khi trả lời câu hỏi mốc.
+                  </p>
                 </div>
 
                 {/* ACTION BUTTONS */}

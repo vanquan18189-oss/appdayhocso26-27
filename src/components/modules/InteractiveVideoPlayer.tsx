@@ -67,6 +67,7 @@ interface InteractiveVideoPlayerProps {
   title?: string;
   coreSummary?: string;
   checkpoints?: VideoCheckpoint[];
+  isAlreadyCompleted?: boolean;
   onComplete?: (summaryData?: ExploreSummaryData) => void;
   onRestart?: () => void;
 }
@@ -76,6 +77,7 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
   title = 'Video Khám Phá Kiến Thức Tương Tác',
   coreSummary = 'Học sinh nắm vững các khái niệm trọng tâm, quan sát thí nghiệm mô phỏng và liên hệ thực tế.',
   checkpoints = [],
+  isAlreadyCompleted = false,
   onComplete,
   onRestart
 }) => {
@@ -114,14 +116,8 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
         setCurrentTime(prev => {
           const nextTime = prev + 0.5;
           if (nextTime >= duration) {
-            const allAnswered = checkpoints.length === 0 || Object.keys(answeredCheckpoints).length >= checkpoints.length;
-            if (allAnswered) {
-              setPlayerState('showing-summary');
-              setIsPlaying(false);
-            } else {
-              setPlayerState('paused-for-question');
-              setIsPlaying(false);
-            }
+            setPlayerState('showing-summary');
+            setIsPlaying(false);
             return duration;
           }
 
@@ -327,8 +323,8 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
     setEssayText('');
     setIsAnswerCorrect(null);
 
-    // Show summary modal immediately when all checkpoints are answered or video reaches duration
-    if (allAnswered || resumeTime >= duration) {
+    // Only show summary modal when video reaches duration (end of video)
+    if (resumeTime >= duration) {
       setPlayerState('showing-summary');
       setIsPlaying(false);
       setCurrentTime(duration);
@@ -354,13 +350,8 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
 
   // Handle video end
   const handleVideoEnded = () => {
-    const allAnswered = checkpoints.length === 0 || Object.keys(answeredCheckpoints).length >= checkpoints.length;
-    if (allAnswered) {
-      setPlayerState('showing-summary');
-      setIsPlaying(false);
-    } else {
-      setIsPlaying(false);
-    }
+    setPlayerState('showing-summary');
+    setIsPlaying(false);
   };
 
   // Restart learning
@@ -545,17 +536,19 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
             </div>
 
             <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  setPlayerState('showing-summary');
-                  setIsPlaying(false);
-                }}
-                className="px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-black transition-all shadow-md flex items-center gap-1.5 cursor-pointer"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>🎯 Xem tổng kết & Ghi nhớ</span>
-              </button>
+              {(isAlreadyCompleted || Object.keys(answeredCheckpoints).length >= totalQuestions) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPlayerState('showing-summary');
+                    setIsPlaying(false);
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-black transition-all shadow-md flex items-center gap-1.5 cursor-pointer animate-in fade-in"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>🎯 Xem tổng kết & Ghi nhớ</span>
+                </button>
+              )}
 
               <span className="text-[11px] font-semibold bg-purple-500/30 border border-purple-400/40 px-3 py-1 rounded-full text-purple-200">
                 🎯 {Object.keys(answeredCheckpoints).length}/{totalQuestions} câu hỏi hoàn thành
@@ -876,7 +869,7 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
               <div className="bg-slate-800/80 border border-slate-700/80 p-4 rounded-2xl space-y-1">
                 <span className="text-[10px] font-extrabold text-indigo-400 uppercase tracking-wider">💡 Giải thích chi tiết</span>
                 <p className="text-xs sm:text-sm text-slate-200 leading-relaxed font-medium">
-                  {activeCheckpoint.explanation}
+                  {activeCheckpoint.explanation || activeCheckpoint.question?.explanation || 'Không có giải thích chi tiết cho câu hỏi này.'}
                 </p>
               </div>
 

@@ -17,7 +17,8 @@ import {
   Timer,
   CheckCircle,
   AlertCircle,
-  Eye
+  Eye,
+  RotateCcw
 } from 'lucide-react';
 import { StatsSummaryRow } from '../common/StatsSummaryRow';
 import { Lesson5EPlan, Lesson5EStep } from '../../types';
@@ -109,6 +110,11 @@ export const StudentELearning: React.FC<StudentELearningProps> = ({
   const [selectedLesson, setSelectedLesson] = useState<Lesson5EPlan | null>(null);
   const [activeStepTab, setActiveStepTab] = useState<LessonStepKey>('engage');
   const [isReviewMode, setIsReviewMode] = useState<boolean>(false);
+  const [isRelearningExplore, setIsRelearningExplore] = useState<boolean>(false);
+
+  useEffect(() => {
+    setIsRelearningExplore(false);
+  }, [selectedLesson?.id]);
   
   // Realtime assigned lessons
   const [assignedLessonsList, setAssignedLessonsList] = useState<AssignedELearningLesson[]>([]);
@@ -430,50 +436,90 @@ export const StudentELearning: React.FC<StudentELearningProps> = ({
                       </div>
                     </div>
 
-                    {/* Interactive Video Player */}
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-extrabold text-purple-700 uppercase tracking-wider flex items-center gap-1.5">
-                          <Sparkles className="w-4 h-4 text-purple-600" /> Video Bài Giảng Tương Tác & Trả Lời Câu Hỏi Mốc
-                        </span>
-                        <span className="text-xs text-slate-500 font-medium">Xem kỹ video và trả lời câu hỏi dừng hình để mở khóa hoàn thành</span>
+                    {savedProgress?.exploreCompleted && !isRelearningExplore ? (
+                      <div className="bg-gradient-to-br from-purple-50 via-indigo-50 to-white rounded-3xl p-6 sm:p-8 border border-purple-200 shadow-sm space-y-6 animate-in fade-in">
+                        <div className="flex items-center justify-between border-b border-purple-100 pb-4">
+                          <div className="flex items-center gap-3">
+                            <div className="w-12 h-12 rounded-2xl bg-purple-600 text-white flex items-center justify-center font-bold text-xl shadow-md">
+                              🏆
+                            </div>
+                            <div>
+                              <h3 className="text-base sm:text-lg font-black text-slate-900 font-heading">
+                                Đã hoàn thành phần Khám phá!
+                              </h3>
+                              <p className="text-xs text-purple-700 font-medium">
+                                Tỷ lệ chính xác: <strong className="font-extrabold">{savedProgress?.exploreAccuracy ?? 100}%</strong> • Đã lưu kết quả lần học gần nhất
+                              </p>
+                            </div>
+                          </div>
+                          <span className="px-3.5 py-1 rounded-full bg-emerald-100 text-emerald-800 text-xs font-black border border-emerald-300">
+                            ✓ Đã hoàn thành
+                          </span>
+                        </div>
+
+                        {/* Ghi nhớ nội dung khám phá */}
+                        <div className="bg-indigo-950 text-white p-5 sm:p-6 rounded-2xl border border-indigo-500/30 space-y-2.5 shadow-inner">
+                          <div className="flex items-center gap-2 text-xs font-extrabold text-indigo-300 uppercase tracking-wider">
+                            <Sparkles className="w-4 h-4 text-amber-300" /> 📌 Ghi nhớ nội dung Khám phá
+                          </div>
+                          <p className="text-xs sm:text-sm text-slate-200 leading-relaxed font-medium">
+                            {selectedLesson.stepExplore?.objectives || 'Học sinh nắm vững các khái niệm trọng tâm, quan sát thí nghiệm mô phỏng và liên hệ thực tế.'}
+                          </p>
+                        </div>
+
+                        {/* Actions */}
+                        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-purple-100">
+                          <button
+                            type="button"
+                            onClick={() => setIsRelearningExplore(true)}
+                            className="w-full sm:w-auto px-5 py-3 rounded-2xl border border-purple-200 bg-white hover:bg-purple-50 text-purple-700 text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer shadow-2xs"
+                          >
+                            <RotateCcw className="w-4 h-4 text-purple-600" />
+                            <span>🔄 Học lại phần Khám phá (Xem lại video)</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setActiveStepTab(getNextStepInLessonFlow('explore', selectedLesson))}
+                            className="w-full sm:w-auto px-8 py-3.5 rounded-2xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white text-xs sm:text-sm font-black transition-all shadow-lg shadow-purple-600/30 flex items-center justify-center gap-2 cursor-pointer active:scale-98"
+                          >
+                            <span>Tiếp tục sang {getNextStepLabel('explore', selectedLesson)}</span>
+                            <ArrowRight className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
-                      <InteractiveVideoPlayer 
-                        videoUrl={(selectedLesson.stepExplore as any)?.videoUrl || 'https://www.youtube.com/watch?v=UF8o89k1g8g'}
-                        checkpoints={(selectedLesson.stepExplore as any)?.checkpoints || []}
-                        title={selectedLesson.title}
-                        coreSummary={selectedLesson.stepExplore?.objectives || 'Học sinh nắm vững các khái niệm trọng tâm, quan sát thí nghiệm mô phỏng và liên hệ thực tế.'}
-                        onComplete={(summaryData) => {
-                          const accuracy = typeof summaryData?.accuracy === 'number' ? summaryData.accuracy : 100;
-                          saveStudentLessonProgress(effectiveUserId, selectedLesson.id, { 
-                            exploreCompleted: true,
-                            exploreAccuracy: accuracy,
-                            engageViewed: true
-                          });
-                          setActiveStepTab(getNextStepInLessonFlow('explore', selectedLesson));
-                        }}
-                      />
-                    </div>
+                    ) : (
+                      <>
+                        {/* Interactive Video Player */}
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-extrabold text-purple-700 uppercase tracking-wider flex items-center gap-1.5">
+                              <Sparkles className="w-4 h-4 text-purple-600" /> Video Bài Giảng Tương Tác & Trả Lời Câu Hỏi Mốc
+                            </span>
+                            <span className="text-xs text-slate-500 font-medium">Xem kỹ video và trả lời câu hỏi dừng hình để mở khóa hoàn thành</span>
+                          </div>
+                          <InteractiveVideoPlayer 
+                            videoUrl={(selectedLesson.stepExplore as any)?.videoUrl || 'https://www.youtube.com/watch?v=UF8o89k1g8g'}
+                            checkpoints={(selectedLesson.stepExplore as any)?.checkpoints || []}
+                            title={selectedLesson.title}
+                            coreSummary={selectedLesson.stepExplore?.objectives || 'Học sinh nắm vững các khái niệm trọng tâm, quan sát thí nghiệm mô phỏng và liên hệ thực tế.'}
+                            isAlreadyCompleted={Boolean(savedProgress?.exploreCompleted)}
+                            onComplete={(summaryData) => {
+                              const accuracy = typeof summaryData?.accuracy === 'number' ? summaryData.accuracy : 100;
+                              saveStudentLessonProgress(effectiveUserId, selectedLesson.id, { 
+                                exploreCompleted: true,
+                                exploreAccuracy: accuracy,
+                                exploreSummaryData: summaryData,
+                                engageViewed: true
+                              });
+                              setIsRelearningExplore(false);
+                              setActiveStepTab(getNextStepInLessonFlow('explore', selectedLesson));
+                            }}
+                          />
+                        </div>
 
-                    {/* Bottom Navigation Button */}
-                    <div className="flex items-center justify-end pt-4 border-t border-slate-100">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          saveStudentLessonProgress(effectiveUserId, selectedLesson.id, { 
-                            exploreCompleted: true,
-                            exploreAccuracy: savedProgress?.exploreAccuracy ?? 100,
-                            engageViewed: true
-                          });
-                          setActiveStepTab(getNextStepInLessonFlow('explore', selectedLesson));
-                        }}
-                        className="px-6 py-3 rounded-2xl bg-purple-600 hover:bg-purple-700 text-white font-extrabold text-xs sm:text-sm transition-all shadow-md flex items-center gap-2 cursor-pointer active:scale-98"
-                      >
-                        <span>Tiếp tục sang {getNextStepLabel('explore', selectedLesson)}</span>
-                        <ArrowRight className="w-4 h-4" />
-                      </button>
-                    </div>
-
+                      </>
+                    )}
                   </div>
                 )}
 
