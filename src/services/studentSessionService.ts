@@ -47,6 +47,13 @@ export function normalizeClassKey(cls?: string): string {
  * Ưu tiên:
  * 1. session lưu trữ của học sinh đang đăng nhập (`eduplay_student_session`)
  * 2. props truyền vào nếu hợp lệ
+import { getStudentsFromLocalStorage } from './studentStorageService';
+
+/**
+ * Lấy Lớp học và Khối học chính xác của học sinh hiện tại.
+ * Ưu tiên:
+ * 1. session lưu trữ của học sinh đang đăng nhập (`eduplay_student_session`)
+ * 2. props truyền vào nếu hợp lệ
  * 3. `eduplay_current_class` / `eduplay_active_class`
  * 4. Fallback an toàn: 'Lớp 3D' (Khối 3)
  */
@@ -68,7 +75,10 @@ export function getEffectiveStudentClassAndGrade(propClass?: string): {
     if (!cls && session?.classId) cls = String(session.classId).trim();
     if (!cls && session?.lop) cls = String(session.lop).trim();
     if (session?.name || session?.fullName) name = String(session.name || session.fullName).trim();
-    if (session?.id || session?.code) id = String(session.id || session.code).trim();
+    if (session?.code || session?.studentCode || session?.maHs) {
+      id = String(session.code || session.studentCode || session.maHs).trim();
+    }
+    if (!id && session?.id) id = String(session.id).trim();
   }
 
   if (!cls && propClass && propClass.trim() !== '') {
@@ -90,6 +100,22 @@ export function getEffectiveStudentClassAndGrade(propClass?: string): {
     cls = `Lớp ${cls}`;
   }
 
+  // Nếu id trống hoặc là ID mặc định 'u-4' hoặc Auth UID (dài > 15 kí tự), tự động tra cứu MÃ HS chuẩn từ roster của lớp
+  if ((!id || id === 'u-4' || id === 'hs-temp' || id.length > 15) && cls && name && typeof window !== 'undefined') {
+    try {
+      const roster = getStudentsFromLocalStorage(cls);
+      if (roster && roster.length > 0) {
+        const match = roster.find((s) => {
+          const sName = (s.fullName || s.name || '').trim().toLowerCase();
+          return sName && sName === name.toLowerCase();
+        });
+        if (match && (match.code || match.id)) {
+          id = (match.code || match.id).trim();
+        }
+      }
+    } catch {}
+  }
+
   // Trích xuất số khối từ lớp (vd: "Lớp 3D" -> "3", "Khối 3" -> "3")
   const gradeMatch = cls.match(/\b([1-5])\b|lớp\s*([1-5])|khối\s*([1-5])/i);
   const grNum = gradeMatch ? (gradeMatch[1] || gradeMatch[2] || gradeMatch[3]) : '';
@@ -99,7 +125,7 @@ export function getEffectiveStudentClassAndGrade(propClass?: string): {
     studentClass: cls,
     studentGrade,
     studentName: name || 'Học sinh',
-    studentId: id || 'u-4'
+    studentId: id || 'HS001'
   };
 }
 

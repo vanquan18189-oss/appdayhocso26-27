@@ -161,7 +161,9 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
     };
   }, []);
 
-  const effectiveUserId = currentUserId || studentId || 'u-4';
+  const effectiveUserId = (currentUserId && currentUserId !== 'u-4' && currentUserId !== 'hs-temp' && currentUserId.length <= 15) 
+    ? currentUserId 
+    : (studentId && studentId !== 'u-4' ? studentId : 'HS001');
   const effectiveUserName = currentUserName || studentName || 'Học sinh';
 
   const [activeTab, setActiveTab] = useState<'todo' | 'history'>('todo');
@@ -203,19 +205,21 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
     return [];
   });
 
-  // Re-sync assignment history when student user changes & auto-clean any legacy polluted exam records
+  // Re-sync assignment history from both LocalStorage AND Firestore liveAssignments (Single Source of Truth)
   useEffect(() => {
     try {
       const saved = localStorage.getItem(`eduplay_student_submissions_${effectiveUserId}`);
+      let localItems: AssignmentSubmissionItem[] = [];
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          const onlyAssignments: AssignmentSubmissionItem[] = parsed
+          localItems = parsed
             .filter(isAssignmentSubmission)
             .map((s: any) => ({
               ...s,
               type: 'assignment' as const,
               submissionType: 'assignment' as const,
+              studentId: effectiveUserId,
               assignment: s.assignment || {
                 id: s.id || 'as-legacy',
                 title: s.title || 'Bài tập tự luyện',
@@ -223,16 +227,81 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
                 questions: s.exam?.questions || []
               }
             }));
-          setAssignmentHistory(onlyAssignments);
-          if (onlyAssignments.length !== parsed.length) {
-            localStorage.setItem(`eduplay_student_submissions_${effectiveUserId}`, JSON.stringify(onlyAssignments));
-          }
-          return;
         }
       }
-      setAssignmentHistory([]);
-    } catch {}
-  }, [effectiveUserId]);
+
+      // Query & Sync from Firestore live assignments documents
+      const firestoreItems: AssignmentSubmissionItem[] = [];
+      (liveAssignments || []).forEach((as) => {
+        if (!as || !Array.isArray(as.submissions)) return;
+        const matchedSub = as.submissions.find((s: any) => {
+          if (!s) return false;
+          const candidates = [
+            s.studentId,
+            s.studentCode,
+            s.maHs,
+            s.code,
+            s.userId,
+            s.studentName,
+            s.name
+          ].filter(Boolean).map(c => String(c).trim().toLowerCase());
+
+          const targetKeys = [
+            effectiveUserId.toLowerCase().trim(),
+            (studentId || '').toLowerCase().trim(),
+            (effectiveUserName || '').toLowerCase().trim()
+          ].filter(Boolean);
+
+          return candidates.some(c => targetKeys.includes(c));
+        });
+
+        if (matchedSub) {
+          const numScore = matchedSub.score !== undefined ? matchedSub.score : '-';
+          const rankTier = matchedSub.rank || (typeof numScore === 'number' ? (numScore >= 8 ? 'Xuất sắc' : numScore >= 5 ? 'Đạt' : 'Cần cố gắng') : 'Hoàn thành');
+          firestoreItems.push({
+            id: matchedSub.id || `sub-${as.id}-${effectiveUserId}`,
+            type: 'assignment' as const,
+            submissionType: 'assignment' as const,
+            studentId: effectiveUserId,
+            title: as.title,
+            subject: as.subject || 'Môn học',
+            rank: rankTier,
+            score: String(numScore),
+            submittedTime: formatSubmissionDateTime(matchedSub.submittedAt || matchedSub.submittedTime || getCurrentSubmissionTimestamp()),
+            assignment: as,
+            answers: matchedSub.answers || {}
+          });
+        }
+      });
+
+      // Merge LocalStorage items and Firestore items (deduplicating by assignment ID or submission ID)
+      const mergedMap = new Map<string, AssignmentSubmissionItem>();
+      localItems.forEach(item => {
+        const key = item.assignment?.id || item.id;
+        if (key) mergedMap.set(key, item);
+      });
+      firestoreItems.forEach(item => {
+        const key = item.assignment?.id || item.id;
+        // Prefer Firestore item or merge missing fields
+        const existing = mergedMap.get(key);
+        if (!existing) {
+          mergedMap.set(key, item);
+        } else {
+          mergedMap.set(key, {
+            ...existing,
+            ...item,
+            answers: (item.answers && Object.keys(item.answers).length > 0) ? item.answers : existing.answers
+          });
+        }
+      });
+
+      const mergedList = Array.from(mergedMap.values());
+      setAssignmentHistory(mergedList);
+      localStorage.setItem(`eduplay_student_submissions_${effectiveUserId}`, JSON.stringify(mergedList));
+    } catch (err) {
+      console.warn('Lỗi đồng bộ lịch sử bài tập học sinh:', err);
+    }
+  }, [effectiveUserId, effectiveUserName, studentId, liveAssignments]);
 
   // Diagnostic Audit Log for storage & real-time assignments
   useEffect(() => {
@@ -280,10 +349,13 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
     const submissionRecord = {
       id: newSub.id || `sub-${Date.now()}`,
       studentId: effectiveUserId,
+      studentCode: effectiveUserId,
       maHs: effectiveUserId,
+      code: effectiveUserId,
       studentName: effectiveUserName || 'Học sinh',
       score: numScore,
       submittedAt: formatSubmissionDateTime(newSub.submittedTime || getCurrentSubmissionTimestamp()),
+      submittedTime: formatSubmissionDateTime(newSub.submittedTime || getCurrentSubmissionTimestamp()),
       answers: newSub.answers,
       status: 'submitted' as const
     };
@@ -293,6 +365,8 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       const existingSubs = Array.isArray(newSub.assignment.submissions) ? [...newSub.assignment.submissions] : [];
       const filtered = existingSubs.filter((s: any) => 
         (s.studentId || '').toLowerCase() !== effectiveUserId.toLowerCase() &&
+        (s.studentCode || '').toLowerCase() !== effectiveUserId.toLowerCase() &&
+        (s.maHs || '').toLowerCase() !== effectiveUserId.toLowerCase() &&
         (s.studentName || '').toLowerCase() !== (effectiveUserName || '').toLowerCase()
       );
       filtered.push(submissionRecord as any);
@@ -321,6 +395,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
         // Filter out previous submission by same student to ensure deduplication
         const filtered = existingSubs.filter((s: any) => 
           (s.studentId || '').toLowerCase() !== effectiveUserId.toLowerCase() &&
+          (s.studentCode || '').toLowerCase() !== effectiveUserId.toLowerCase() &&
           (s.maHs || '').toLowerCase() !== effectiveUserId.toLowerCase() &&
           (s.studentName || '').toLowerCase() !== (effectiveUserName || '').toLowerCase()
         );
@@ -329,7 +404,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
 
         // Calculate unique submitted student IDs and unique count
         const uniqueStudentKeys = new Set(
-          filtered.map((s: any) => (s.studentId || s.maHs || s.studentName || '').trim().toLowerCase()).filter(Boolean)
+          filtered.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.studentName || '').trim().toLowerCase()).filter(Boolean)
         );
         const count = uniqueStudentKeys.size;
         const submittedIdsList = Array.from(uniqueStudentKeys);
@@ -350,7 +425,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
           updatedAt: new Date().toISOString()
         }, { merge: true });
       }).then(() => {
-        console.log(`✅ [Transaction Nộp Bài] Bài tập ${assignmentId} đã được lưu nguyên khối (Subcollection & Master Doc) cho HS ${effectiveUserName}`);
+        console.log(`✅ [Transaction Nộp Bài] Bài tập ${assignmentId} đã được lưu nguyên khối (Subcollection & Master Doc) cho HS ${effectiveUserName} (${effectiveUserId})`);
       }).catch(e => {
         console.warn('❌ [Transaction Nộp Bài Error]:', e);
       });

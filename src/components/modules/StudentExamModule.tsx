@@ -961,8 +961,8 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         awardExamReward(currentUserId, exam.id || 'ex-auto', exam.title, scoreNumber);
       }
 
-      // Sync completion to live quiz sessions (Chỉ áp dụng cho Bài tập / mode === 'assignment')
-      if (mode === 'assignment') {
+      // Sync completion to live quiz sessions (Chỉ áp dụng cho Bài tập / mode === 'assignment' khi bật Real-time)
+      if (mode === 'assignment' && activeExamSession?.exam?.enableRealtimeLeaderboard) {
         try {
           const effectiveInfo = getEffectiveStudentClassAndGrade();
           const gameProfile = getStudentGameProfile(currentUserId, currentUserName);
@@ -1665,8 +1665,8 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           }
         }
         
-        // Complete live quiz session in Firestore & localStorage (Chỉ áp dụng cho Bài tập / mode === 'assignment')
-        if (mode === 'assignment') {
+        // Complete live quiz session in Firestore & localStorage (Chỉ áp dụng cho Bài tập / mode === 'assignment' khi bật Real-time)
+        if (mode === 'assignment' && activeExamSession?.exam?.enableRealtimeLeaderboard) {
           try {
             const effectiveInfo = getEffectiveStudentClassAndGrade();
             const gameProfile = getStudentGameProfile(currentUserId, currentUserName);

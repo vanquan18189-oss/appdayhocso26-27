@@ -215,7 +215,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   // Real-time synchronization for detailAssignment from Firestore (Chỉ lắng nghe khi bật chế độ Real-time Leaderboard để tiết kiệm quota)
   useEffect(() => {
     if (!detailAssignment?.id || !db) return;
-    if (detailAssignment.enableRealtimeLeaderboard === false) return; // Tắt khi luyện tập bình thường để tiết kiệm lượt đọc/ghi
+    if (!detailAssignment.enableRealtimeLeaderboard) return; // Tắt khi luyện tập bình thường để tiết kiệm lượt đọc/ghi
 
     const assignDocRef = doc(db, 'assignments', detailAssignment.id);
     const unsub = onSnapshot(
@@ -537,7 +537,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   const [assignShuffleOptions, setAssignShuffleOptions] = useState<boolean>(true);
   const [assignTargetType, setAssignTargetType] = useState<'all' | 'specific'>('all');
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
-  const [assignRealtimeLeaderboard, setAssignRealtimeLeaderboard] = useState<boolean>(true);
+  const [assignRealtimeLeaderboard, setAssignRealtimeLeaderboard] = useState<boolean>(false);
 
   const getClassesForGrade = useCallback((gradeRaw?: string): string[] => {
     return fetchClassesForGrade(gradeRaw).map(c => c.name);
@@ -560,7 +560,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     setAssignShuffleOptions(true);
     setAssignTargetType('all');
     setSelectedStudentIds(CLASS_3A_STUDENTS.map(s => s.code));
-    setAssignRealtimeLeaderboard(as.enableRealtimeLeaderboard !== undefined ? as.enableRealtimeLeaderboard : true);
+    setAssignRealtimeLeaderboard(as.enableRealtimeLeaderboard === true);
   };
 
   const handleConfirmAssignConfig = () => {

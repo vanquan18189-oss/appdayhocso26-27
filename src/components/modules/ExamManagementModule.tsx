@@ -406,7 +406,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const [assignmentRetryLimit, setAssignmentRetryLimit] = useState(0);
   const [assignmentShuffleQuestions, setAssignmentShuffleQuestions] = useState(false);
   const [assignmentShuffleAnswers, setAssignmentShuffleAnswers] = useState(false);
-  const [assignmentEnableRealtimeLeaderboard, setAssignmentEnableRealtimeLeaderboard] = useState(true);
+  const [assignmentEnableRealtimeLeaderboard, setAssignmentEnableRealtimeLeaderboard] = useState(false);
   const [assignmentTarget, setAssignmentTarget] = useState('Cả lớp');
 
   // Filter available classes strictly by exam grade (e.g. "Khối 5" -> "Lớp 5C", "Lớp 5D")
@@ -472,6 +472,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       : [];
 
     setAssignmentClasses(existingClasses);
+    setAssignmentEnableRealtimeLeaderboard(exam.enableRealtimeLeaderboard === true);
     setIsAssignmentModalOpen(true);
     setOpenActionMenuId(null);
   };
