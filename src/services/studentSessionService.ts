@@ -1,10 +1,95 @@
 import { getSubjectsForClassOrGrade, SchoolClassItem } from './classStorageService';
+import { formatStandardStudentCode } from './studentCode';
 
 export interface ActiveStudentInfo {
   studentId: string;
   studentName: string;
   studentClass: string;
   studentGrade: string;
+}
+
+/**
+ * Lấy Mã học sinh chuẩn hóa tuyệt đối theo định dạng chuẩn lớp học (ví dụ: 3C26-27-1)
+ * Tuyệt đối không trả về Auth UID ngẫu nhiên hay ID generic.
+ */
+export function getAuthenticStudentCode(
+  session?: any,
+  currentUserId?: string,
+  targetClass?: string,
+  studentName?: string
+): string {
+  const sess = session || getCurrentStudentSession();
+  const rawClass = sess?.className || sess?.class || targetClass || 'Lớp 3C';
+  const cleanClass = rawClass.replace(/^Lớp\s*/i, '').trim().toUpperCase();
+
+  if (typeof window !== 'undefined') {
+    try {
+      const normKey = normalizeClassKey(rawClass);
+      const directData = localStorage.getItem(`eduplay_students_${normKey}`) || localStorage.getItem(`eduplay_students_${normKey.toLowerCase()}`);
+      let roster: any[] = [];
+      if (directData) {
+        roster = JSON.parse(directData);
+      } else {
+        const fullDbData = localStorage.getItem('eduplay_students_database');
+        if (fullDbData) {
+          const parsedDb = JSON.parse(fullDbData);
+          roster = parsedDb[rawClass] || parsedDb[normKey] || parsedDb[normKey.toLowerCase()] || [];
+        }
+      }
+
+      if (Array.isArray(roster) && roster.length > 0) {
+        // 1.1 Match by code
+        const rawSessCode = sess?.code || sess?.studentCode || sess?.maHs;
+        if (rawSessCode && rawSessCode !== 'u-4' && rawSessCode !== 'hs-temp' && rawSessCode.length <= 25) {
+          const matchByCode = roster.find(st => {
+            const cands = [st.code, st.studentCode, st.maHs, st.id].filter(Boolean).map(c => String(c).trim().toLowerCase());
+            return cands.includes(String(rawSessCode).trim().toLowerCase());
+          });
+          if (matchByCode) {
+            return formatStandardStudentCode(matchByCode.code, cleanClass, matchByCode.stt);
+          }
+          return formatStandardStudentCode(rawSessCode, cleanClass);
+        }
+
+        // 1.2 Match by name
+        const targetName = (sess?.name || sess?.fullName || studentName || '').trim().toLowerCase();
+        if (targetName && targetName !== 'học sinh' && targetName !== 'student') {
+          const matchByName = roster.find(st => {
+            const sName = (st.fullName || st.name || '').trim().toLowerCase();
+            return sName && (sName === targetName || sName.includes(targetName) || targetName.includes(sName));
+          });
+          if (matchByName) {
+            return formatStandardStudentCode(matchByName.code, cleanClass, matchByName.stt);
+          }
+        }
+
+        // 1.3 Match by stt
+        if (sess?.stt && typeof sess.stt === 'number') {
+          const matchByStt = roster.find(st => st.stt === sess.stt);
+          if (matchByStt) {
+            return formatStandardStudentCode(matchByStt.code, cleanClass, matchByStt.stt);
+          }
+        }
+
+        // 1.4 Match by sddcn
+        if (sess?.sddcn) {
+          const matchBySddcn = roster.find(st => st.sddcn === sess.sddcn);
+          if (matchBySddcn) {
+            return formatStandardStudentCode(matchBySddcn.code, cleanClass, matchBySddcn.stt);
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // 2. Nếu session có code hợp lệ
+  const candCode = sess?.code || sess?.studentCode || sess?.maHs;
+  if (candCode && candCode !== 'u-4' && candCode !== 'hs-temp' && candCode.length <= 25) {
+    return formatStandardStudentCode(candCode, cleanClass);
+  }
+
+  // 3. Fallback an toàn theo đúng chuẩn Lớp-NămHọc-STT
+  return `${cleanClass}26-27-1`;
 }
 
 /**
@@ -125,11 +210,13 @@ export function getEffectiveStudentClassAndGrade(propClass?: string): {
   const grNum = gradeMatch ? (gradeMatch[1] || gradeMatch[2] || gradeMatch[3]) : '';
   const studentGrade = grNum ? `Khối ${grNum}` : 'Khối 3';
 
+  const effectiveStudentCode = getAuthenticStudentCode(session, id, cls, name);
+
   return {
     studentClass: cls,
     studentGrade,
     studentName: name || 'Học sinh',
-    studentId: id || 'HS001'
+    studentId: effectiveStudentCode
   };
 }
 

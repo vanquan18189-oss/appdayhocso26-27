@@ -25,8 +25,11 @@ import {
 import { awardAssignmentReward } from '../../config/rewardConfig';
 import {
   getEffectiveStudentClassAndGrade,
-  isTargetingStudent
+  isTargetingStudent,
+  getAuthenticStudentCode,
+  getCurrentStudentSession
 } from '../../services/studentSessionService';
+import { studentResultService } from '../../services/studentResultService';
 import {
   subscribeToAssignmentsFromFirestore,
   getAssignmentsFromFirestore,
@@ -161,10 +164,15 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
     };
   }, []);
 
-  const effectiveUserId = (currentUserId && currentUserId !== 'u-4' && currentUserId !== 'hs-temp' && currentUserId.length <= 15) 
-    ? currentUserId 
-    : (studentId && studentId !== 'u-4' ? studentId : 'HS001');
-  const effectiveUserName = currentUserName || studentName || 'Học sinh';
+  const studentSession = getCurrentStudentSession();
+  const effectiveInfo = getEffectiveStudentClassAndGrade();
+  const effectiveUserId = getAuthenticStudentCode(
+    studentSession, 
+    currentUserId || studentId, 
+    effectiveInfo.studentClass, 
+    currentUserName || studentName || effectiveInfo.studentName
+  );
+  const effectiveUserName = studentSession?.name || studentSession?.fullName || currentUserName || studentName || effectiveInfo.studentName || 'Học sinh';
 
   const [activeTab, setActiveTab] = useState<'todo' | 'history'>('todo');
   const [solvingAssignment, setSolvingAssignment] = useState<HomeworkAssignment | null>(null);
@@ -429,6 +437,17 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       }).catch(e => {
         console.warn('❌ [Transaction Nộp Bài Error]:', e);
       });
+
+      try {
+        studentResultService.saveAssignmentResult(effectiveUserId, {
+          assignmentId,
+          score: numScore,
+          maxScore: 10,
+          submittedAt: formatSubmissionDateTime(newSub.submittedTime || getCurrentSubmissionTimestamp()),
+          answers: newSub.answers,
+          keepAttempts: 'last'
+        });
+      } catch {}
     }
 
     // Calculate correct answers

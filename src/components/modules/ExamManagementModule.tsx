@@ -3,6 +3,7 @@ import { getSubjectColorStyles } from '../../utils/subjectColors';
 import { formatScore, formatTotalScore, roundTotalScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
 import { getTeachersFromLocalStorage, resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
 import { getStudentsFromLocalStorage, getDefault5BRoster, getDefault3CRoster, getClassStudentCount, deleteStudentFromClass } from '../../services/studentStorageService';
+import { formatStandardStudentCode } from '../../services/studentCode';
 import { seedInitialExamsManually, deleteAllExamsFromFirestore } from '../../services/examStorageService';
 import { auth } from '../../services/firebase';
 import { collection, onSnapshot, doc, getDocFromServer } from 'firebase/firestore';
@@ -589,77 +590,59 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     if (!trackingExam) return [];
 
     const targetClassName = trackingExam.targetClass || 'Lớp 3C';
-    const classStudentsRoster = getStudentsFromLocalStorage(targetClassName) || (targetClassName.includes('3C') ? getDefault3CRoster() : getDefault5BRoster());
+    const cleanClass = targetClassName.replace(/^Lớp\s*/i, '').trim().toUpperCase();
+    const rawRoster = getStudentsFromLocalStorage(targetClassName) || (targetClassName.includes('3C') ? getDefault3CRoster() : getDefault5BRoster());
+    const classStudentsRoster = (rawRoster && rawRoster.length > 0 ? rawRoster : (targetClassName.includes('3C') ? getDefault3CRoster() : getDefault5BRoster())).map((st, idx) => ({
+      ...st,
+      stt: st.stt || (idx + 1),
+      code: formatStandardStudentCode(st.code, cleanClass, st.stt || (idx + 1)),
+      name: st.name || st.fullName || `Học sinh ${idx + 1}`,
+      fullName: st.fullName || st.name || `Học sinh ${idx + 1}`
+    }));
     
-    const subList: any[] = Array.isArray(trackingExam.submissions) ? [...trackingExam.submissions] : [];
-    const subMap = new Map<string, any>();
+    // Gather all potential submissions for this exam
+    const candidateSubmissions: any[] = [];
+    const targetExamId = String(trackingExam.id || '').trim().toLowerCase();
+    const targetOriginalId = String(trackingExam.originalExamId || '').trim().toLowerCase();
 
-    const indexSubmission = (sub: any) => {
-      if (!sub) return;
-      const candidates = [
-        sub.sddcn,
-        sub.studentPersistentId,
-        sub.idCard,
-        sub.studentId,
-        sub.maHs,
-        sub.studentCode,
-        sub.code,
-        sub.username,
-        sub.userId,
-        sub.id,
-        sub.studentName,
-        sub.name,
-        sub.fullName
-      ];
-
-      candidates.forEach(cand => {
-        if (cand && typeof cand === 'string') {
-          const raw = cand.trim().toLowerCase();
-          if (raw) {
-            subMap.set(raw, sub);
-            const clean = raw.replace(/^(st|hs)[\-_]?/i, '').replace(/[\s\-_]/g, '');
-            if (clean) subMap.set(clean, sub);
-          }
-        }
-      });
+    const isExamMatch = (subExamId: string) => {
+      const cleanSub = String(subExamId || '').trim().toLowerCase();
+      return Boolean(cleanSub && (cleanSub === targetExamId || (targetOriginalId && cleanSub === targetOriginalId)));
     };
 
-    subList.forEach(sub => indexSubmission(sub));
+    if (Array.isArray(trackingExam.submissions)) {
+      trackingExam.submissions.forEach(sub => {
+        if (sub) candidateSubmissions.push(sub);
+      });
+    }
 
-    // Also check all localStorage exam collections & individual student keys
     if (typeof window !== 'undefined') {
-      // 1. Check global exam submissions collection
       try {
         const allSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
         if (allSubsRaw) {
           const allSubs = JSON.parse(allSubsRaw);
           if (Array.isArray(allSubs)) {
             allSubs.forEach((item: any) => {
-              if (!item) return;
-              const targetExamId = String(trackingExam.id || '').trim().toLowerCase();
-              const targetOriginalId = String(trackingExam.originalExamId || '').trim().toLowerCase();
-              const subExamId = String(item.examId || item.id || item.exam?.id || '').trim().toLowerCase();
-              const isMatch = Boolean(subExamId && (subExamId === targetExamId || (targetOriginalId && subExamId === targetOriginalId)));
-              if (isMatch) {
-                indexSubmission(item);
+              if (item && isExamMatch(item.examId || item.id || item.exam?.id)) {
+                candidateSubmissions.push(item);
               }
             });
           }
         }
       } catch {}
 
-      // 2. Check exam-specific storage key
       try {
         const examSubsRaw = localStorage.getItem(`eduplay_exam_subs_${trackingExam.id}`);
         if (examSubsRaw) {
           const examSubs = JSON.parse(examSubsRaw);
           if (Array.isArray(examSubs)) {
-            examSubs.forEach((item: any) => indexSubmission(item));
+            examSubs.forEach((item: any) => {
+              if (item) candidateSubmissions.push(item);
+            });
           }
         }
       } catch {}
 
-      // 3. Scan all individual student exam storage keys
       try {
         for (let i = 0; i < localStorage.length; i++) {
           const key = localStorage.key(i);
@@ -669,18 +652,11 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
               const parsed = JSON.parse(raw);
               if (Array.isArray(parsed)) {
                 parsed.forEach((item: any) => {
-                  if (!item) return;
-                  const targetExamId = String(trackingExam.id || '').trim().toLowerCase();
-                  const targetOriginalId = String(trackingExam.originalExamId || '').trim().toLowerCase();
-                  const subExamId = String(item.examId || item.id || item.exam?.id || '').trim().toLowerCase();
-                  const isMatch = Boolean(subExamId && (subExamId === targetExamId || (targetOriginalId && subExamId === targetOriginalId)));
-                  if (isMatch) {
+                  if (item && isExamMatch(item.examId || item.id || item.exam?.id)) {
                     const fallbackCode = key.replace('eduplay_student_exam_subs_', '').replace('eduplay_student_exam_submissions_', '');
-                    indexSubmission({
+                    candidateSubmissions.push({
                       ...item,
-                      studentId: item.studentId || fallbackCode,
-                      maHs: item.maHs || item.studentCode || fallbackCode,
-                      studentName: item.studentName || item.name
+                      fallbackCode
                     });
                   }
                 });
@@ -691,31 +667,71 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       } catch {}
     }
 
+    // Match candidate submissions uniquely to each student in roster and auto-heal
+    const studentSubMap = new Map<string, any>();
+    const usedSubIndices = new Set<number>();
+
+    classStudentsRoster.forEach(st => {
+      const stdCode = st.code.toUpperCase();
+      const stName = st.fullName.trim().toLowerCase();
+
+      // Pass 1: exact studentCode / maHs / studentId match
+      let matchIdx = candidateSubmissions.findIndex((sub, idx) => {
+        if (usedSubIndices.has(idx) || !sub) return false;
+        const cands = [sub.studentCode, sub.maHs, sub.studentId, sub.code, sub.fallbackCode].filter(Boolean).map(c => String(c).trim().toUpperCase());
+        return cands.some(c => c === stdCode || formatStandardStudentCode(c, cleanClass) === stdCode);
+      });
+
+      // Pass 2: full name match
+      if (matchIdx === -1) {
+        matchIdx = candidateSubmissions.findIndex((sub, idx) => {
+          if (usedSubIndices.has(idx) || !sub) return false;
+          const subName = String(sub.studentName || sub.name || sub.fullName || '').trim().toLowerCase();
+          return subName && subName.length > 2 && (subName === stName || subName.includes(stName) || stName.includes(subName));
+        });
+      }
+
+      // Pass 3: SĐDCN match
+      if (matchIdx === -1 && st.sddcn) {
+        matchIdx = candidateSubmissions.findIndex((sub, idx) => {
+          if (usedSubIndices.has(idx) || !sub) return false;
+          return sub.sddcn && String(sub.sddcn).trim() === String(st.sddcn).trim();
+        });
+      }
+
+      // Pass 4: STT match if present
+      if (matchIdx === -1 && typeof st.stt === 'number') {
+        matchIdx = candidateSubmissions.findIndex((sub, idx) => {
+          if (usedSubIndices.has(idx) || !sub) return false;
+          return sub.stt === st.stt;
+        });
+      }
+
+      if (matchIdx !== -1) {
+        usedSubIndices.add(matchIdx);
+        const sub = candidateSubmissions[matchIdx];
+        studentSubMap.set(stdCode, sub);
+
+        // Auto-heal legacy submission in localStorage to standard format
+        if (typeof window !== 'undefined' && (sub.studentId !== stdCode || sub.studentCode !== stdCode || sub.maHs !== stdCode)) {
+          try {
+            const healed = {
+              ...sub,
+              studentId: stdCode,
+              studentCode: stdCode,
+              maHs: stdCode,
+              studentName: st.fullName
+            };
+            localStorage.setItem(`eduplay_student_exam_subs_${stdCode}`, JSON.stringify([healed]));
+          } catch {}
+        }
+      }
+    });
+
     const questionCount = trackingExam.questions?.length || 5;
 
     const mapped = classStudentsRoster.map((st, idx) => {
-      const lookupKeys = [
-        st.sddcn,
-        st.studentPersistentId,
-        st.code,
-        st.id,
-        st.username,
-        st.sddcn?.trim().toLowerCase(),
-        st.code?.toLowerCase(),
-        st.id?.toLowerCase(),
-        st.id?.replace(/^(st|hs)[\-_]?/i, '').replace(/[\s\-_]/g, ''),
-        st.code?.toLowerCase().replace(/[\s\-_]/g, ''),
-        st.fullName?.trim().toLowerCase(),
-        st.name?.trim().toLowerCase(),
-      ].filter(Boolean) as string[];
-
-      let submission: any = null;
-      for (const k of lookupKeys) {
-        if (subMap.has(k)) {
-          submission = subMap.get(k);
-          break;
-        }
-      }
+      const submission = studentSubMap.get(st.code.toUpperCase());
 
       if (submission) {
         const rawScore = submission.score !== undefined ? submission.score : (submission.totalScore !== undefined ? submission.totalScore : null);
@@ -828,7 +844,15 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     if (!statsExam) return null;
 
     const targetClassName = statsExam.targetClass || 'Lớp 3C';
-    const classStudentsRoster = getStudentsFromLocalStorage(targetClassName) || (targetClassName.includes('3C') ? getDefault3CRoster() : getDefault5BRoster());
+    const cleanClass = targetClassName.replace(/^Lớp\s*/i, '').trim().toUpperCase();
+    const rawRoster = getStudentsFromLocalStorage(targetClassName) || (targetClassName.includes('3C') ? getDefault3CRoster() : getDefault5BRoster());
+    const classStudentsRoster = (rawRoster && rawRoster.length > 0 ? rawRoster : (targetClassName.includes('3C') ? getDefault3CRoster() : getDefault5BRoster())).map((st, idx) => ({
+      ...st,
+      stt: st.stt || (idx + 1),
+      code: formatStandardStudentCode(st.code, cleanClass, st.stt || (idx + 1)),
+      name: st.name || st.fullName || `Học sinh ${idx + 1}`,
+      fullName: st.fullName || st.name || `Học sinh ${idx + 1}`
+    }));
     const classTotalStudents = Math.max(classStudentsRoster.length, getClassStudentCount(targetClassName, 38), 1);
 
     // 1. Gather all submissions matching this exam
@@ -865,8 +889,8 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
 
       // Find if student is in roster to get standardized name & code
       const matchedRoster = classStudentsRoster.find(st => 
-        (st.code && String(st.code).toLowerCase() === String(studentId).toLowerCase()) ||
-        (st.id && String(st.id).toLowerCase() === String(studentId).toLowerCase()) ||
+        (st.code && String(st.code).toUpperCase() === String(studentId).toUpperCase()) ||
+        formatStandardStudentCode(studentId, cleanClass) === st.code ||
         (st.name && st.name.trim().toLowerCase() === studentName.trim().toLowerCase()) ||
         (st.fullName && st.fullName.trim().toLowerCase() === studentName.trim().toLowerCase())
       );
@@ -1572,8 +1596,16 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const getExamSubmissionCount = useCallback((exam: ExamPaper): number => {
     const targetExamId = String(exam.id || '').trim().toLowerCase();
     const targetOriginalId = String(exam.originalExamId || '').trim().toLowerCase();
-    const targetClass = exam.targetClass || '';
-    const classRoster = getStudentsFromLocalStorage(targetClass) || [];
+    const targetClass = exam.targetClass || 'Lớp 3C';
+    const cleanClass = targetClass.replace(/^Lớp\s*/i, '').trim().toUpperCase();
+    const rawRoster = getStudentsFromLocalStorage(targetClass) || (targetClass.includes('3C') ? getDefault3CRoster() : getDefault5BRoster());
+    const classRoster = (rawRoster && rawRoster.length > 0 ? rawRoster : (targetClass.includes('3C') ? getDefault3CRoster() : getDefault5BRoster())).map((st, idx) => ({
+      ...st,
+      stt: st.stt || (idx + 1),
+      code: formatStandardStudentCode(st.code, cleanClass, st.stt || (idx + 1)),
+      name: st.name || st.fullName || `Học sinh ${idx + 1}`,
+      fullName: st.fullName || st.name || `Học sinh ${idx + 1}`
+    }));
 
     const matchedSubmissions: any[] = [];
 
@@ -1641,36 +1673,45 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       } catch {}
     }
 
-    const submittedStudentIdentifiers = new Set<string>();
-    matchedSubmissions.forEach(sub => {
-      const sId = String(sub.studentId || sub.maHs || sub.studentCode || sub.sddcn || sub.studentName || sub.name || '').trim().toLowerCase();
-      if (sId) {
-        submittedStudentIdentifiers.add(sId);
+    let rosterMatchedCount = 0;
+    const usedSubIndices = new Set<number>();
+
+    classRoster.forEach(student => {
+      const stdCode = student.code.toUpperCase();
+      const stName = student.fullName.trim().toLowerCase();
+
+      // Pass 1: exact studentCode / maHs / studentId match
+      let matchIdx = matchedSubmissions.findIndex((sub, idx) => {
+        if (usedSubIndices.has(idx) || !sub) return false;
+        const cands = [sub.studentCode, sub.maHs, sub.studentId, sub.code].filter(Boolean).map(c => String(c).trim().toUpperCase());
+        return cands.some(c => c === stdCode || formatStandardStudentCode(c, cleanClass) === stdCode);
+      });
+
+      // Pass 2: full name match
+      if (matchIdx === -1) {
+        matchIdx = matchedSubmissions.findIndex((sub, idx) => {
+          if (usedSubIndices.has(idx) || !sub) return false;
+          const subName = String(sub.studentName || sub.name || sub.fullName || '').trim().toLowerCase();
+          return subName && subName.length > 2 && (subName === stName || subName.includes(stName) || stName.includes(subName));
+        });
+      }
+
+      // Pass 3: SĐDCN match
+      if (matchIdx === -1 && student.sddcn) {
+        matchIdx = matchedSubmissions.findIndex((sub, idx) => {
+          if (usedSubIndices.has(idx) || !sub) return false;
+          return sub.sddcn && String(sub.sddcn).trim() === String(student.sddcn).trim();
+        });
+      }
+
+      if (matchIdx !== -1) {
+        usedSubIndices.add(matchIdx);
+        rosterMatchedCount++;
       }
     });
 
-    if (classRoster.length > 0) {
-      let rosterMatchedCount = 0;
-      classRoster.forEach(student => {
-        const studentKeys = [
-          student.code,
-          (student as any).studentCode,
-          (student as any).maHs,
-          student.id,
-          student.name,
-          student.fullName,
-          (student as any).sddcn
-        ].filter(Boolean).map(k => String(k).trim().toLowerCase());
-
-        const hasSubmitted = studentKeys.some(k => submittedStudentIdentifiers.has(k) || Array.from(submittedStudentIdentifiers).some(subKey => subKey.includes(k) || k.includes(subKey)));
-        if (hasSubmitted) {
-          rosterMatchedCount++;
-        }
-      });
-      return Math.max(rosterMatchedCount, submittedStudentIdentifiers.size);
-    }
-
-    return submittedStudentIdentifiers.size;
+    const fallbackTotal = Array.isArray(exam.submissions) ? exam.submissions.length : (exam.submissionsCount || 0);
+    return Math.max(rosterMatchedCount, fallbackTotal);
   }, []);
 
   const allExamsCount = normalizedExams.length;

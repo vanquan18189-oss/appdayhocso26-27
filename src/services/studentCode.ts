@@ -83,3 +83,30 @@ export function parseStudentCode(code?: string): ParsedStudentCode | null {
     raw: normalized
   };
 }
+
+/**
+ * Chuẩn hóa mọi biến thể của Mã học sinh về dạng chuẩn duy nhất Lớp-NămHọc-STT (ví dụ: 3C26-27-1, 5D26-27-12)
+ */
+export function formatStandardStudentCode(rawCode?: string, defaultClass: string = '3C', stt?: number): string {
+  if (!rawCode && !stt) {
+    const cleanCls = (defaultClass || '3C').replace(/^Lớp\s*/i, '').trim().toUpperCase();
+    return `${cleanCls}26-27-1`;
+  }
+  const clean = (rawCode || '').trim().toUpperCase();
+  if (/^[A-Z0-9]+\d{2}-\d{2}-\d+$/.test(clean)) {
+    return clean;
+  }
+  // Nếu là dạng 3C1, 3c1, st-3c-1, hs-3c-1, 3c-1
+  const legacyMatch = clean.match(/^(?:ST-|HS-)?([0-9][A-Z0-9]*)[-_]?(\d+)$/i);
+  if (legacyMatch) {
+    const cls = legacyMatch[1].toUpperCase();
+    const num = parseInt(legacyMatch[2], 10);
+    return `${cls}26-27-${num}`;
+  }
+  if (stt && typeof stt === 'number') {
+    const cls = (defaultClass || '3C').replace(/^Lớp\s*/i, '').trim().toUpperCase();
+    return `${cls}26-27-${stt}`;
+  }
+  return clean || `${(defaultClass || '3C').replace(/^Lớp\s*/i, '').trim().toUpperCase()}26-27-1`;
+}
+

@@ -2,6 +2,7 @@ import { StudentRecord, StudentEnrollmentRecord } from '../types';
 import { db } from './firebase';
 import { doc, getDoc, onSnapshot, collection, query, where, getDocs } from 'firebase/firestore';
 import { trackedSetDoc, trackedDeleteDoc, trackedWriteBatch } from './firestoreWriteTracker';
+import { formatStandardStudentCode } from './studentCode';
 
 const PRIMARY_SCHOOL_SUBJECTS = [
   'Toán', 'Tiếng Việt', 'Đạo Đức', 'Tự nhiên và Xã hội', 'Khoa học',
@@ -92,7 +93,7 @@ export function deduplicateAndNormalizeStudents(
   const finalSeenIds = new Set<string>();
   return uniqueStudents.map((st, idx) => {
     const stt = idx + 1;
-    const code = st.code || `${key}${stt}`;
+    const code = formatStandardStudentCode(st.code, key, stt);
     
     // Ensure every record has a unique ID and no collisions
     let id = st.id && !finalSeenIds.has(st.id) ? st.id : `st-${key}-${stt}`;
@@ -216,25 +217,83 @@ export function sortStudentsAscending(students: StudentRecord[]): StudentRecord[
   });
 }
 
+const STANDARD_3C_NAMES = [
+  'Nguyễn Văn An', 'Trần Đức Bảo', 'Lê Minh Cường', 'Phạm Quốc Dũng', 'Hoàng Văn Đức',
+  'Vũ Gia Huy', 'Bùi Hoàng Nam', 'Đỗ Minh Triết', 'Ngô Thành Vinh', 'Trịnh Đức Anh',
+  'Đặng Bảo Nam', 'Võ Văn Kiệt', 'Nguyễn Nhật Minh', 'Phạm Hải Đăng', 'Dương Quốc Trung',
+  'Nguyễn Khánh Nam', 'Đào Minh Quân', 'Hồ Văn Hùng', 'Nguyễn Gia Bảo', 'Trịnh Hoàng Long',
+  'Lê Thị Mai', 'Trần Phương Thảo', 'Phạm Ngọc Anh', 'Nguyễn Khánh Linh', 'Hoàng Thùy Linh',
+  'Bùi Bảo Ngọc', 'Đỗ Quỳnh Anh', 'Ngô Thanh Hà', 'Vũ Phương Anh', 'Trịnh Thu Hà',
+  'Nguyễn Hoài An', 'Đặng Linh Chi', 'Võ Minh Châu', 'Nguyễn Ngọc Mai', 'Phạm Yến Nhi',
+  'Hoàng Mỹ Duyên', 'Đào Thị Hồng', 'Trịnh Bảo Trang'
+];
+
 /**
- * Generate default roster for class 5B with 27 students (matching Excel template)
+ * Generate default roster for class 5B
  */
 export function getDefault5BRoster(): StudentRecord[] {
-  return [];
+  return generateDefaultClassRoster('Lớp 5B', 35);
 }
 
 /**
- * Danh sách học sinh lớp 3C (Đã loại bỏ hoàn toàn dữ liệu ẩn cứng)
+ * Danh sách học sinh lớp 3C chuẩn hóa 38 học sinh theo định dạng Mã HS 3C26-27-1 đến 3C26-27-38
  */
 export function getDefault3CRoster(): StudentRecord[] {
-  return [];
+  const cleanClass = '3C';
+  return STANDARD_3C_NAMES.map((name, idx) => {
+    const stt = idx + 1;
+    const isMale = idx < 20;
+    return {
+      id: `st-3c-${stt}`,
+      stt,
+      code: `${cleanClass}26-27-${stt}`,
+      name,
+      fullName: name,
+      gender: isMale ? ('Nam' as const) : ('Nữ' as const),
+      dob: `${String((stt % 28) + 1).padStart(2, '0')}/05/2016`,
+      className: 'Lớp 3C',
+      parentName: `${isMale ? 'Nguyễn' : 'Trần'} Văn ${name.split(' ').slice(-1)[0]}`,
+      phone: `0985${String(100000 + stt * 1357).slice(-6)}`,
+      email: `hs.3c${stt}@quanghungpk1.edu.vn`,
+      status: 'active' as const,
+      conduct: 'Tốt' as const,
+      avgScore: 8.5,
+      avatar: '🌟',
+      sddcn: `03831600${String(1000 + stt).slice(-4)}`
+    };
+  });
 }
 
 /**
- * Return roster for any class (returns 3C or 5B roster when matching, otherwise empty array)
+ * Return roster for any class with standard Student Codes [CLASS]26-27-[STT]
  */
-export function generateDefaultClassRoster(className: string, _count: number = 30): StudentRecord[] {
-  return [];
+export function generateDefaultClassRoster(className: string, count: number = 38): StudentRecord[] {
+  const stdName = getStandardClassName(className);
+  const cleanClass = normalizeClassKey(stdName);
+  const actualCount = count > 0 ? count : 38;
+  return Array.from({ length: actualCount }).map((_, idx) => {
+    const stt = idx + 1;
+    const isMale = idx % 2 === 0;
+    const name = STANDARD_3C_NAMES[idx % STANDARD_3C_NAMES.length];
+    return {
+      id: `st-${cleanClass.toLowerCase()}-${stt}`,
+      stt,
+      code: `${cleanClass}26-27-${stt}`,
+      name,
+      fullName: name,
+      gender: isMale ? ('Nam' as const) : ('Nữ' as const),
+      dob: `${String((stt % 28) + 1).padStart(2, '0')}/05/2016`,
+      className: stdName,
+      parentName: `${isMale ? 'Nguyễn' : 'Trần'} Văn ${name.split(' ').slice(-1)[0]}`,
+      phone: `0985${String(100000 + stt * 1357).slice(-6)}`,
+      email: `hs.${cleanClass.toLowerCase()}${stt}@quanghungpk1.edu.vn`,
+      status: 'active' as const,
+      conduct: 'Tốt' as const,
+      avgScore: 8.0,
+      avatar: '🌟',
+      sddcn: `03831600${String(1000 + stt).slice(-4)}`
+    };
+  });
 }
 
 /**
@@ -246,7 +305,7 @@ export function getClassStudentCount(className: string, fallbackCount?: number):
   if (roster && Array.isArray(roster) && roster.length > 0) {
     return roster.length;
   }
-  return 0;
+  return fallbackCount || 38;
 }
 
 /**
@@ -292,7 +351,14 @@ export function getStudentsFromLocalStorage(className: string): StudentRecord[] 
       }
     }
 
-    // 3. Không trả về roster mặc định tĩnh nếu lớp chưa có dữ liệu thực tế
+    // 3. Fallback danh sách mặc định chuẩn hóa theo sĩ số lớp
+    if (key === '3C' || stdName.includes('3C')) {
+      const defaultRoster = getDefault3CRoster();
+      try {
+        localStorage.setItem(`eduplay_students_${key}`, JSON.stringify(defaultRoster));
+      } catch {}
+      return defaultRoster;
+    }
   } catch (err) {
     console.warn('Lỗi đọc LocalStorage học sinh:', err);
   }
