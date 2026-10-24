@@ -40,7 +40,8 @@ import {
   ExternalLink
 } from 'lucide-react';
 import { GameItem, GameType, UserRole, QuizziGameItem } from '../../types';
-import { getStudentGameProfile } from '../../services/studentGameStoreService';
+import { getStudentGameProfile, resolveAuthenticStudentId } from '../../services/studentGameStoreService';
+import { studentResultService } from '../../services/studentResultService';
 import { ShareContentModal } from './ShareContentModal';
 import { StudentGameStoreTab } from './StudentGameStoreTab';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
@@ -345,7 +346,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
       return isTargetingStudent(q.classInfo, q.grade, studentClass, studentGrade);
     });
 
-    const profile = getStudentGameProfile(currentUserId, currentUserName || studentName);
+    const profile = getStudentGameProfile(resolveAuthenticStudentId(currentUserId), currentUserName || studentName);
     const userExp = profile.currentExp || 0;
     const level = profile.level || (Math.floor(userExp / 100) + 1);
 
@@ -501,11 +502,25 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
 
     setAchievedRank(rank);
 
-    const isClaimedAlready = hasClaimedReward(currentUserId, 'arena', activeGame.id);
+    const effectiveStudentCode = resolveAuthenticStudentId(currentUserId);
+    const isClaimedAlready = hasClaimedReward(effectiveStudentCode, 'arena', activeGame.id);
     setIsRewardAlreadyClaimed(isClaimedAlready);
 
     if (!isClaimedAlready) {
-      awardArenaReward(currentUserId, activeGame.id, activeGame.title || 'Đấu Trường', rank);
+      awardArenaReward(effectiveStudentCode, activeGame.id, activeGame.title || 'Đấu Trường', rank);
+    }
+
+    try {
+      studentResultService.saveGameResult(effectiveStudentCode, activeGame.id, {
+        score: finalScore,
+        maxScore: totalPossible,
+        rank,
+        submittedAt: new Date().toISOString()
+      }).catch(err => {
+        console.warn('Lỗi lưu kết quả game vào student_results:', err);
+      });
+    } catch (err) {
+      console.warn('Lỗi gọi studentResultService.saveGameResult:', err);
     }
   };
 
@@ -964,7 +979,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
           return true;
         });
 
-        const profile = getStudentGameProfile(currentUserId, currentUserName || studentName);
+        const profile = getStudentGameProfile(resolveAuthenticStudentId(currentUserId), currentUserName || studentName);
         const leaderboardStudents = [
           { rank: 1, name: currentUserName || studentName || 'Học sinh', score: profile.coins > 0 ? profile.coins : 0, avatar: profile.avatar || '🌟', isMe: true }
         ];

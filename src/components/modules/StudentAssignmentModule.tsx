@@ -257,7 +257,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
 
         if (matchedSub) {
           const numScore = matchedSub.score !== undefined ? matchedSub.score : '-';
-          const rankTier = matchedSub.rank || (typeof numScore === 'number' ? (numScore >= 8 ? 'Xuất sắc' : numScore >= 5 ? 'Đạt' : 'Cần cố gắng') : 'Hoàn thành');
+          const rankTier = (matchedSub as any).rank || (typeof numScore === 'number' ? (numScore >= 8 ? 'Xuất sắc' : numScore >= 5 ? 'Đạt' : 'Cần cố gắng') : 'Hoàn thành');
           firestoreItems.push({
             id: matchedSub.id || `sub-${as.id}-${effectiveUserId}`,
             type: 'assignment' as const,

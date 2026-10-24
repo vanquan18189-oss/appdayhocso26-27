@@ -204,6 +204,26 @@ export const INITIAL_BADGES: BadgeItem[] = [
   }
 ];
 
+import { getCurrentStudentSession, getEffectiveStudentClassAndGrade } from './studentSessionService';
+
+export const resolveAuthenticStudentId = (studentId?: string): string => {
+  if (typeof window === 'undefined') return studentId || 'HS001';
+  try {
+    const session = getCurrentStudentSession();
+    if (session?.code || session?.studentCode || session?.maHs) {
+      return String(session.code || session.studentCode || session.maHs).trim();
+    }
+    const effectiveInfo = getEffectiveStudentClassAndGrade();
+    if (effectiveInfo?.studentId && effectiveInfo.studentId !== 'u-4') {
+      return effectiveInfo.studentId;
+    }
+  } catch {}
+  if (studentId && studentId !== 'u-4' && !studentId.startsWith('u-') && studentId.length <= 15) {
+    return studentId;
+  }
+  return 'HS001';
+};
+
 const GAME_PROFILE_STORAGE_KEY = 'eduplay_student_game_profile';
 
 export const getStudentGameProfile = (studentId?: string, studentName?: string): StudentGameProfile => {
@@ -212,27 +232,49 @@ export const getStudentGameProfile = (studentId?: string, studentName?: string):
   }
 
   try {
+    const effectiveId = resolveAuthenticStudentId(studentId);
+    const session = getCurrentStudentSession();
+    const effectiveName = session?.name || session?.fullName || studentName || 'Học sinh';
+
+    const perKey = `eduplay_student_game_profile_${effectiveId}`;
+    const rawPerKey = localStorage.getItem(perKey);
+    if (rawPerKey) {
+      const parsed = JSON.parse(rawPerKey);
+      return {
+        ...createDefaultProfile(effectiveId, effectiveName),
+        ...parsed,
+        studentId: effectiveId,
+        studentName: effectiveName
+      };
+    }
+
     const raw = localStorage.getItem(GAME_PROFILE_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      return {
-        ...createDefaultProfile(studentId, studentName),
+      const profile = {
+        ...createDefaultProfile(effectiveId, effectiveName),
         ...parsed,
-        studentName: studentName || parsed.studentName || 'Học sinh'
+        studentId: effectiveId,
+        studentName: effectiveName
       };
+      localStorage.setItem(perKey, JSON.stringify(profile));
+      return profile;
     }
+
+    const defaultProfile = createDefaultProfile(effectiveId, effectiveName);
+    localStorage.setItem(perKey, JSON.stringify(defaultProfile));
+    return defaultProfile;
   } catch (e) {
     console.error('Error reading student game profile:', e);
   }
 
-  const defaultProfile = createDefaultProfile(studentId, studentName);
-  saveStudentGameProfile(defaultProfile);
-  return defaultProfile;
+  return createDefaultProfile(studentId, studentName);
 };
 
 const createDefaultProfile = (studentId?: string, studentName?: string): StudentGameProfile => {
+  const effectiveId = resolveAuthenticStudentId(studentId);
   return {
-    studentId: studentId || 'st-01',
+    studentId: effectiveId,
     studentName: studentName || 'Học sinh',
     avatar: '🐰',
     equippedAvatar: '🐰',
@@ -254,8 +296,17 @@ const createDefaultProfile = (studentId?: string, studentName?: string): Student
 export const saveStudentGameProfile = (profile: StudentGameProfile): void => {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(GAME_PROFILE_STORAGE_KEY, JSON.stringify(profile));
-    window.dispatchEvent(new CustomEvent('eduplay_game_profile_updated', { detail: profile }));
+    const effectiveId = resolveAuthenticStudentId(profile.studentId);
+    const updatedProfile = { ...profile, studentId: effectiveId };
+    
+    localStorage.setItem(GAME_PROFILE_STORAGE_KEY, JSON.stringify(updatedProfile));
+    localStorage.setItem(`eduplay_student_game_profile_${effectiveId}`, JSON.stringify(updatedProfile));
+
+    window.dispatchEvent(
+      new CustomEvent('eduplay_game_profile_updated', {
+        detail: { profile: updatedProfile }
+      })
+    );
   } catch (e) {
     console.error('Error saving student game profile:', e);
   }

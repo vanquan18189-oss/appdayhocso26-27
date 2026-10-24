@@ -47,13 +47,6 @@ export function normalizeClassKey(cls?: string): string {
  * Ưu tiên:
  * 1. session lưu trữ của học sinh đang đăng nhập (`eduplay_student_session`)
  * 2. props truyền vào nếu hợp lệ
-import { getStudentsFromLocalStorage } from './studentStorageService';
-
-/**
- * Lấy Lớp học và Khối học chính xác của học sinh hiện tại.
- * Ưu tiên:
- * 1. session lưu trữ của học sinh đang đăng nhập (`eduplay_student_session`)
- * 2. props truyền vào nếu hợp lệ
  * 3. `eduplay_current_class` / `eduplay_active_class`
  * 4. Fallback an toàn: 'Lớp 3D' (Khối 3)
  */
@@ -103,8 +96,19 @@ export function getEffectiveStudentClassAndGrade(propClass?: string): {
   // Nếu id trống hoặc là ID mặc định 'u-4' hoặc Auth UID (dài > 15 kí tự), tự động tra cứu MÃ HS chuẩn từ roster của lớp
   if ((!id || id === 'u-4' || id === 'hs-temp' || id.length > 15) && cls && name && typeof window !== 'undefined') {
     try {
-      const roster = getStudentsFromLocalStorage(cls);
-      if (roster && roster.length > 0) {
+      const normKey = normalizeClassKey(cls);
+      const directData = localStorage.getItem(`eduplay_students_${normKey}`) || localStorage.getItem(`eduplay_students_${normKey.toLowerCase()}`);
+      let roster: any[] = [];
+      if (directData) {
+        roster = JSON.parse(directData);
+      } else {
+        const fullDbData = localStorage.getItem('eduplay_students_database');
+        if (fullDbData) {
+          const parsedDb = JSON.parse(fullDbData);
+          roster = parsedDb[cls] || parsedDb[normKey] || parsedDb[normKey.toLowerCase()] || [];
+        }
+      }
+      if (Array.isArray(roster) && roster.length > 0) {
         const match = roster.find((s) => {
           const sName = (s.fullName || s.name || '').trim().toLowerCase();
           return sName && sName === name.toLowerCase();

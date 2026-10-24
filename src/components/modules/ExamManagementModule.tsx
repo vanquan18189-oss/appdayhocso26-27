@@ -1555,13 +1555,27 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     const timer = setInterval(() => {
       setTick(t => t + 1);
     }, 2000);
-    return () => clearInterval(timer);
+    const handleUpdate = () => setTick(t => t + 1);
+    window.addEventListener('eduplay_student_submissions_updated', handleUpdate);
+    window.addEventListener('eduplay_exam_submissions_updated', handleUpdate);
+    window.addEventListener('eduplay_student_results_updated', handleUpdate);
+    window.addEventListener('storage', handleUpdate);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('eduplay_student_submissions_updated', handleUpdate);
+      window.removeEventListener('eduplay_exam_submissions_updated', handleUpdate);
+      window.removeEventListener('eduplay_student_results_updated', handleUpdate);
+      window.removeEventListener('storage', handleUpdate);
+    };
   }, []);
 
   const getExamSubmissionCount = useCallback((exam: ExamPaper): number => {
-    const subMap = new Map<string, boolean>();
     const targetExamId = String(exam.id || '').trim().toLowerCase();
     const targetOriginalId = String(exam.originalExamId || '').trim().toLowerCase();
+    const targetClass = exam.targetClass || '';
+    const classRoster = getStudentsFromLocalStorage(targetClass) || [];
+
+    const matchedSubmissions: any[] = [];
 
     const processSub = (item: any) => {
       if (!item) return;
@@ -1577,18 +1591,11 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
         numScore = matchNum ? parseFloat(matchNum[1]) : (isNaN(Number(rawScore)) ? null : Number(rawScore));
       }
       if (numScore === null && item.answers === undefined && item.status !== 'submitted') return;
-
-      const studentId = item.studentId || item.maHs || item.studentCode || item.studentName || item.name || 'unknown';
-      subMap.set(String(studentId).toLowerCase(), true);
+      matchedSubmissions.push(item);
     };
 
     if (Array.isArray(exam.submissions)) {
-      exam.submissions.forEach(sub => {
-        const subExamId = String(sub.examId || sub.id || sub.exam?.id || '').trim().toLowerCase();
-        if (!subExamId || subExamId === targetExamId || (targetOriginalId && subExamId === targetOriginalId)) {
-          processSub({ ...sub, examId: exam.id });
-        }
-      });
+      exam.submissions.forEach(sub => processSub({ ...sub, examId: exam.id }));
     }
 
     if (typeof window !== 'undefined') {
@@ -1615,12 +1622,18 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       try {
         for (let i = 0; i < localStorage.length; i++) {
           const key = localStorage.key(i);
-          if (key && (key.startsWith('eduplay_student_exam_subs_') || key.startsWith('eduplay_student_exam_submissions_'))) {
+          if (key && (key.startsWith('eduplay_student_exam_subs_') || key.startsWith('eduplay_student_submissions_') || key.startsWith('eduplay_student_results') || key.startsWith('eduplay_all_exam_submissions'))) {
             const raw = localStorage.getItem(key);
             if (raw) {
               const parsed = JSON.parse(raw);
               if (Array.isArray(parsed)) {
                 parsed.forEach(sub => processSub(sub));
+              } else if (parsed && typeof parsed === 'object') {
+                if (parsed.exams && typeof parsed.exams === 'object') {
+                  Object.entries(parsed.exams).forEach(([exId, exData]: [string, any]) => {
+                    processSub({ ...exData, examId: exId, studentId: parsed.studentCode || parsed.studentId });
+                  });
+                }
               }
             }
           }
@@ -1628,7 +1641,36 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       } catch {}
     }
 
-    return subMap.size;
+    const submittedStudentIdentifiers = new Set<string>();
+    matchedSubmissions.forEach(sub => {
+      const sId = String(sub.studentId || sub.maHs || sub.studentCode || sub.sddcn || sub.studentName || sub.name || '').trim().toLowerCase();
+      if (sId) {
+        submittedStudentIdentifiers.add(sId);
+      }
+    });
+
+    if (classRoster.length > 0) {
+      let rosterMatchedCount = 0;
+      classRoster.forEach(student => {
+        const studentKeys = [
+          student.code,
+          (student as any).studentCode,
+          (student as any).maHs,
+          student.id,
+          student.name,
+          student.fullName,
+          (student as any).sddcn
+        ].filter(Boolean).map(k => String(k).trim().toLowerCase());
+
+        const hasSubmitted = studentKeys.some(k => submittedStudentIdentifiers.has(k) || Array.from(submittedStudentIdentifiers).some(subKey => subKey.includes(k) || k.includes(subKey)));
+        if (hasSubmitted) {
+          rosterMatchedCount++;
+        }
+      });
+      return Math.max(rosterMatchedCount, submittedStudentIdentifiers.size);
+    }
+
+    return submittedStudentIdentifiers.size;
   }, []);
 
   const allExamsCount = normalizedExams.length;

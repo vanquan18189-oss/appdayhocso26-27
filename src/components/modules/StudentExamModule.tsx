@@ -604,28 +604,53 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
   const [liveTotalInProgress, setLiveTotalInProgress] = useState<number>(0);
 
   // Exam history / submissions for student - Tách riêng biệt độc lập cho Đề kiểm tra (type === 'exam')
+  const studentInfoSession = getEffectiveStudentClassAndGrade();
+  const session = getCurrentStudentSession();
+  const effectiveStudentCode = session?.code || session?.studentCode || session?.maHs || studentInfoSession.studentId || (currentUserId && currentUserId !== 'u-4' ? currentUserId : 'HS001');
+  const effectiveStudentName = session?.name || session?.fullName || currentUserName || studentInfoSession.studentName || 'Học sinh';
+
   const [examHistory, setExamHistory] = useState<Array<ExamSubmissionItem>>(() => {
     try {
-      const saved = localStorage.getItem(`eduplay_student_exam_subs_${currentUserId}`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          const onlyExams: ExamSubmissionItem[] = parsed
-            .filter(isExamSubmission)
-            .map((s: any) => ({
-              ...s,
-              type: 'exam' as const,
-              submissionType: 'exam' as const,
-              examId: s.examId || s.id || 'ex-legacy',
-              exam: s.exam || {
-                id: s.examId || s.id || 'ex-legacy',
-                title: s.title || 'Đề kiểm tra',
-                subject: s.subject || 'Môn học',
-                questions: s.questions || []
-              }
-            }));
-          return onlyExams;
+      const keys = [effectiveStudentCode, currentUserId, session?.sddcn].filter(Boolean) as string[];
+      let foundItems: any[] = [];
+      for (const k of keys) {
+        const saved = localStorage.getItem(`eduplay_student_exam_subs_${k}`);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            foundItems = parsed;
+            break;
+          }
         }
+      }
+      if (foundItems.length === 0) {
+        const allSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
+        if (allSubsRaw) {
+          const parsedAll = JSON.parse(allSubsRaw);
+          if (Array.isArray(parsedAll)) {
+            foundItems = parsedAll.filter((s: any) => {
+              const cands = [s.studentId, s.studentCode, s.maHs, s.code, s.sddcn].filter(Boolean).map(c => String(c).trim().toLowerCase());
+              return cands.includes(effectiveStudentCode.toLowerCase()) || (currentUserId && cands.includes(currentUserId.toLowerCase()));
+            });
+          }
+        }
+      }
+
+      if (foundItems.length > 0) {
+        return foundItems
+          .filter(isExamSubmission)
+          .map((s: any) => ({
+            ...s,
+            type: 'exam' as const,
+            submissionType: 'exam' as const,
+            examId: s.examId || s.id || s.exam?.id || 'ex-legacy',
+            exam: s.exam || {
+              id: s.examId || s.id || s.exam?.id || 'ex-legacy',
+              title: s.title || 'Đề kiểm tra',
+              subject: s.subject || 'Môn học',
+              questions: s.questions || []
+            }
+          }));
       }
     } catch {}
     return [];
@@ -705,37 +730,100 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     });
   }, [activeExamSession?.answers, activeExamSession?.currentQuestionIndex, mode]);
 
-  // Re-sync submissions when student user switches & sanitize any polluted records
+  // Re-sync submissions when student user switches or liveExams update
   useEffect(() => {
     try {
-      const saved = localStorage.getItem(`eduplay_student_exam_subs_${currentUserId}`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          const onlyExams: ExamSubmissionItem[] = parsed
-            .filter(isExamSubmission)
-            .map((s: any) => ({
-              ...s,
-              type: 'exam' as const,
-              submissionType: 'exam' as const,
-              examId: s.examId || s.id || 'ex-legacy',
-              exam: s.exam || {
-                id: s.examId || s.id || 'ex-legacy',
-                title: s.title || 'Đề kiểm tra',
-                subject: s.subject || 'Môn học',
-                questions: s.questions || []
-              }
-            }));
-          setExamHistory(onlyExams);
-          if (onlyExams.length !== parsed.length) {
-            localStorage.setItem(`eduplay_student_exam_subs_${currentUserId}`, JSON.stringify(onlyExams));
+      const keys = [effectiveStudentCode, currentUserId, session?.sddcn].filter(Boolean) as string[];
+      let localItems: any[] = [];
+      for (const k of keys) {
+        const saved = localStorage.getItem(`eduplay_student_exam_subs_${k}`);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            localItems = parsed;
+            break;
           }
-          return;
         }
       }
-      setExamHistory([]);
-    } catch {}
-  }, [currentUserId]);
+
+      // Also scan liveExams submissions
+      const firestoreItems: ExamSubmissionItem[] = [];
+      (liveExams || []).forEach((ex) => {
+        if (!ex || !Array.isArray(ex.submissions)) return;
+        const matchedSub = ex.submissions.find((s: any) => {
+          if (!s) return false;
+          const candidates = [
+            s.studentId,
+            s.studentCode,
+            s.maHs,
+            s.code,
+            s.userId,
+            s.studentName,
+            s.name,
+            s.sddcn
+          ].filter(Boolean).map(c => String(c).trim().toLowerCase());
+
+          const targetKeys = [
+            effectiveStudentCode.toLowerCase().trim(),
+            (currentUserId || '').toLowerCase().trim(),
+            (effectiveStudentName || '').toLowerCase().trim()
+          ].filter(Boolean);
+
+          return candidates.some(c => targetKeys.includes(c));
+        });
+
+        if (matchedSub) {
+          const numScore = matchedSub.totalScore !== undefined ? matchedSub.totalScore : (matchedSub.score !== undefined ? matchedSub.score : '-');
+          const rankTier = matchedSub.rank || (typeof numScore === 'number' ? (numScore >= 8 ? 'Xuất sắc' : numScore >= 5 ? 'Đạt' : 'Cần cố gắng') : 'Hoàn thành');
+          firestoreItems.push({
+            id: matchedSub.id || `sub-${ex.id}-${effectiveStudentCode}`,
+            type: 'exam' as const,
+            submissionType: 'exam' as const,
+            examId: ex.id,
+            studentId: effectiveStudentCode,
+            title: ex.title,
+            subject: ex.subject || 'Môn học',
+            rank: rankTier,
+            score: String(numScore),
+            submittedTime: formatSubmissionDateTime(matchedSub.submittedAt || matchedSub.submittedTime || getCurrentSubmissionTimestamp()),
+            exam: ex,
+            answers: matchedSub.answers || {}
+          });
+        }
+      });
+
+      // Merge LocalStorage and Firestore items
+      const mergedMap = new Map<string, ExamSubmissionItem>();
+      localItems.forEach((item: any) => {
+        const key = item.examId || item.exam?.id || item.id;
+        if (key) mergedMap.set(key, {
+          ...item,
+          type: 'exam' as const,
+          submissionType: 'exam' as const,
+          examId: item.examId || item.exam?.id || item.id
+        });
+      });
+      firestoreItems.forEach(item => {
+        const key = item.examId || item.exam?.id || item.id;
+        const existing = mergedMap.get(key);
+        if (!existing) {
+          mergedMap.set(key, item);
+        } else {
+          mergedMap.set(key, {
+            ...existing,
+            ...item,
+            answers: (item.answers && Object.keys(item.answers).length > 0) ? item.answers : existing.answers
+          });
+        }
+      });
+
+      const mergedList = Array.from(mergedMap.values()).filter(isExamSubmission);
+      setExamHistory(mergedList);
+      localStorage.setItem(`eduplay_student_exam_subs_${effectiveStudentCode}`, JSON.stringify(mergedList));
+    } catch (err) {
+      console.warn('Lỗi đồng bộ lịch sử đề kiểm tra:', err);
+    }
+  }, [effectiveStudentCode, currentUserId, effectiveStudentName, liveExams]);
 
   // Auto start exam/assignment when initialActiveExam is passed (only once per initial exam ID)
   useEffect(() => {

@@ -1,4 +1,4 @@
-import { addGameReward } from '../services/studentGameStoreService';
+import { addGameReward, resolveAuthenticStudentId } from '../services/studentGameStoreService';
 
 /**
  * CẤU HÌNH HỆ THỐNG PHẦN THƯỞNG XU & EXP TẬP TRUNG CHO TOÀN BỘ ỨNG DỤNG
@@ -47,7 +47,8 @@ export const REWARD_CONFIG = {
 export const getClaimedRewardsMap = (studentId: string = 'default'): Record<string, boolean> => {
   if (typeof window === 'undefined') return {};
   try {
-    const raw = localStorage.getItem(`eduplay_claimed_rewards_${studentId}`);
+    const authId = resolveAuthenticStudentId(studentId);
+    const raw = localStorage.getItem(`eduplay_claimed_rewards_${authId}`) || localStorage.getItem(`eduplay_claimed_rewards_${studentId}`);
     return raw ? JSON.parse(raw) : {};
   } catch {
     return {};
@@ -60,7 +61,8 @@ export const hasClaimedReward = (
   itemId: string
 ): boolean => {
   if (!itemId) return false;
-  const map = getClaimedRewardsMap(studentId);
+  const authId = resolveAuthenticStudentId(studentId);
+  const map = getClaimedRewardsMap(authId);
   return Boolean(map[`${category}:${itemId}`]);
 };
 
@@ -71,9 +73,10 @@ export const markRewardClaimed = (
 ): void => {
   if (typeof window === 'undefined' || !itemId) return;
   try {
-    const map = getClaimedRewardsMap(studentId);
+    const authId = resolveAuthenticStudentId(studentId);
+    const map = getClaimedRewardsMap(authId);
     map[`${category}:${itemId}`] = true;
-    localStorage.setItem(`eduplay_claimed_rewards_${studentId}`, JSON.stringify(map));
+    localStorage.setItem(`eduplay_claimed_rewards_${authId}`, JSON.stringify(map));
   } catch {}
 };
 

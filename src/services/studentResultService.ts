@@ -115,5 +115,36 @@ export const studentResultService = {
       console.error('Lỗi khi lưu kết quả kiểm tra:', error);
       throw error;
     }
+  },
+
+  /**
+   * Lưu kết quả trò chơi / đấu trường (Games)
+   */
+  async saveGameResult(
+    rawStudentCode: string,
+    gameId: string,
+    resultData: { score: number; maxScore: number; rank: number | 'unranked'; submittedAt: string }
+  ): Promise<boolean> {
+    try {
+      const studentCode = normalizeStudentCode(rawStudentCode);
+      if (!studentCode) throw new Error('Mã học sinh không hợp lệ');
+
+      const docRef = doc(db, STUDENT_RESULTS_COLLECTION, studentCode);
+
+      const updatePayload = {
+        studentCode,
+        [`games.${gameId}`]: {
+          ...resultData,
+          updatedAt: new Date().toISOString(),
+        },
+        updatedAt: new Date().toISOString(),
+      };
+
+      await setDoc(docRef, updatePayload, { merge: true });
+      return true;
+    } catch (error) {
+      console.error('Lỗi khi lưu kết quả trò chơi:', error);
+      throw error;
+    }
   }
 };
