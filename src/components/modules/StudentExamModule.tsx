@@ -958,6 +958,32 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           answers
         };
         try {
+          const savedHw = localStorage.getItem(`eduplay_student_submissions_${currentUserId}`);
+          const parsedHw = savedHw ? JSON.parse(savedHw) : [];
+          const examBaseId = (exam.id || '').replace(/-class-.*$/, '').replace(/^as-/, '').toLowerCase();
+          const examTitleNorm = (exam.title || '').trim().toLowerCase()
+            .replace(/^bài tập tự luyện:\s*/i, '')
+            .replace(/^bài tập:\s*/i, '')
+            .replace(/^luyện tập:\s*/i, '')
+            .replace(/^rèn luyện:\s*/i, '')
+            .replace(/\s+/g, ' ');
+
+          const remainingHw = Array.isArray(parsedHw) ? parsedHw.filter((s: any) => {
+            if (s.id === hwSub.id) return false;
+            const sRawId = (s.assignment?.id || s.id || '').replace(/-class-.*$/, '').replace(/^as-/, '').toLowerCase();
+            if (examBaseId && sRawId && examBaseId === sRawId) return false;
+            const sTitle = (s.assignment?.title || s.title || '').trim().toLowerCase()
+              .replace(/^bài tập tự luyện:\s*/i, '')
+              .replace(/^bài tập:\s*/i, '')
+              .replace(/^luyện tập:\s*/i, '')
+              .replace(/^rèn luyện:\s*/i, '')
+              .replace(/\s+/g, ' ');
+            if (examTitleNorm && sTitle && examTitleNorm === sTitle) return false;
+            return true;
+          }) : [];
+          const updatedHw = [hwSub, ...remainingHw];
+          localStorage.setItem(`eduplay_student_submissions_${currentUserId}`, JSON.stringify(updatedHw));
+
           // Lưu bài tập trực tiếp vào Firestore
           await studentResultService.saveFullAssignmentSubmission(currentUserId, exam.id || 'as-timeout', hwSub);
           window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
@@ -1636,10 +1662,29 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           try {
             const savedHw = localStorage.getItem(`eduplay_student_submissions_${currentUserId}`);
             const parsedHw = savedHw ? JSON.parse(savedHw) : [];
-            const updatedHw = [
-              hwSub, 
-              ...(Array.isArray(parsedHw) ? parsedHw.filter((s: any) => s.id !== hwSub.id && s.assignment?.id !== exam.id) : [])
-            ];
+            const examBaseId = (exam.id || '').replace(/-class-.*$/, '').replace(/^as-/, '').toLowerCase();
+            const examTitleNorm = (exam.title || '').trim().toLowerCase()
+              .replace(/^bài tập tự luyện:\s*/i, '')
+              .replace(/^bài tập:\s*/i, '')
+              .replace(/^luyện tập:\s*/i, '')
+              .replace(/^rèn luyện:\s*/i, '')
+              .replace(/\s+/g, ' ');
+
+            const remainingHw = Array.isArray(parsedHw) ? parsedHw.filter((s: any) => {
+              if (s.id === hwSub.id) return false;
+              const sRawId = (s.assignment?.id || s.id || '').replace(/-class-.*$/, '').replace(/^as-/, '').toLowerCase();
+              if (examBaseId && sRawId && examBaseId === sRawId) return false;
+              const sTitle = (s.assignment?.title || s.title || '').trim().toLowerCase()
+                .replace(/^bài tập tự luyện:\s*/i, '')
+                .replace(/^bài tập:\s*/i, '')
+                .replace(/^luyện tập:\s*/i, '')
+                .replace(/^rèn luyện:\s*/i, '')
+                .replace(/\s+/g, ' ');
+              if (examTitleNorm && sTitle && examTitleNorm === sTitle) return false;
+              return true;
+            }) : [];
+
+            const updatedHw = [hwSub, ...remainingHw];
             localStorage.setItem(`eduplay_student_submissions_${currentUserId}`, JSON.stringify(updatedHw));
             window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
           } catch (err) {

@@ -187,18 +187,20 @@ export async function saveAssignmentToFirestore(assignment: HomeworkAssignment):
       return;
     }
 
-    const assignRef = doc(db, 'assignments', assignment.id);
-    const cleanedPayload = removeUndefined({
-      ...assignment,
-      grade: normalizedGrade,
-      updatedAt: new Date().toISOString()
-    });
-
     // Enforce ID structure: as-[ID]-class-lp[classKey]
     if (!assignment.id.startsWith('as-') || !assignment.id.includes('-class-lp')) {
       const classKey = normalizeClassKey(assignment.targetClass || assignment.grade || '5A');
-      assignment.id = `as-${assignment.id.replace(/^as-/, '')}-class-lp${classKey.toLowerCase()}`;
+      const baseId = assignment.id.replace(/^as-/, '').replace(/-class-.*$/, '');
+      assignment.id = `as-${baseId}-class-lp${classKey.toLowerCase()}`;
     }
+
+    const assignRef = doc(db, 'assignments', assignment.id);
+    const cleanedPayload = removeUndefined({
+      ...assignment,
+      id: assignment.id,
+      grade: normalizedGrade,
+      updatedAt: new Date().toISOString()
+    });
 
     console.log(`[DEBUG] Saving Assignment to Firestore:`, {
       docId: assignment.id,

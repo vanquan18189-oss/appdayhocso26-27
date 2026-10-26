@@ -86,6 +86,58 @@ const isAssignmentSubmission = (sub: any): boolean => {
   return true;
 };
 
+export const getCanonicalAssignmentKey = (item: any): string => {
+  if (!item) return '';
+  const as = item.assignment || item;
+  const rawId = String(as.id || item.id || as.assignmentId || item.assignmentId || '').trim();
+  const rootId = (as.originalAssignmentId || rawId).replace(/-class-.*$/i, '').replace(/^as-/i, '').trim().toLowerCase();
+  
+  const rawTitle = String(as.title || item.title || '').trim().toLowerCase()
+    .replace(/^bài tập tự luyện:\s*/i, '')
+    .replace(/^bài tập:\s*/i, '')
+    .replace(/^luyện tập:\s*/i, '')
+    .replace(/^rèn luyện:\s*/i, '')
+    .replace(/\s+/g, ' ');
+  const subject = String(as.subject || item.subject || '').trim().toLowerCase();
+
+  // If rootId is meaningful (not legacy or generic submission ID starting with sub-)
+  if (rootId && rootId !== 'legacy' && !rootId.startsWith('sub-')) {
+    return `as_${rootId}`;
+  }
+  if (rawTitle) {
+    return `title_${rawTitle}__sub_${subject}`;
+  }
+  return rawId || 'unknown';
+};
+
+export const deduplicateAssignmentSubmissions = (subs: AssignmentSubmissionItem[]): AssignmentSubmissionItem[] => {
+  if (!Array.isArray(subs)) return [];
+  const map = new Map<string, AssignmentSubmissionItem>();
+  subs.forEach((sub) => {
+    if (!sub) return;
+    const key = getCanonicalAssignmentKey(sub);
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(key, sub);
+    } else {
+      // Keep preferred submission (latest or valid score)
+      const existingTime = new Date(existing.submittedTime || 0).getTime();
+      const subTime = new Date(sub.submittedTime || 0).getTime();
+      const preferred = (!isNaN(subTime) && !isNaN(existingTime) && subTime >= existingTime && sub.score !== '-') 
+        ? sub 
+        : (existing.score !== '-' ? existing : sub);
+
+      map.set(key, {
+        ...preferred,
+        id: preferred.id || existing.id,
+        assignment: (sub.assignment?.questions && sub.assignment.questions.length > 0) ? sub.assignment : existing.assignment,
+        answers: (sub.answers && Object.keys(sub.answers).length > 0) ? sub.answers : existing.answers
+      });
+    }
+  });
+  return Array.from(map.values());
+};
+
 export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = ({
   assignments = [],
   onSaveAssignment,
@@ -204,7 +256,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
                 questions: s.exam?.questions || []
               }
             }));
-          return onlyAssignments;
+          return deduplicateAssignmentSubmissions(onlyAssignments);
         }
       }
     } catch (e) {
@@ -282,14 +334,15 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
         }
       });
 
-      // Merge LocalStorage items and Firestore items (deduplicating by assignment ID or submission ID)
+      // Merge LocalStorage items and Firestore items (deduplicating by canonical assignment key)
       const mergedMap = new Map<string, AssignmentSubmissionItem>();
       localItems.forEach(item => {
-        const key = item.assignment?.id || item.id;
+        const key = getCanonicalAssignmentKey(item);
         if (key) mergedMap.set(key, item);
       });
       firestoreItems.forEach(item => {
-        const key = item.assignment?.id || item.id;
+        const key = getCanonicalAssignmentKey(item);
+        if (!key) return;
         // Prefer Firestore item or merge missing fields
         const existing = mergedMap.get(key);
         if (!existing) {
@@ -298,12 +351,14 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
           mergedMap.set(key, {
             ...existing,
             ...item,
+            id: item.id || existing.id,
+            assignment: item.assignment || existing.assignment,
             answers: (item.answers && Object.keys(item.answers).length > 0) ? item.answers : existing.answers
           });
         }
       });
 
-      const mergedList = Array.from(mergedMap.values());
+      const mergedList = deduplicateAssignmentSubmissions(Array.from(mergedMap.values()));
       setAssignmentHistory(mergedList);
       localStorage.setItem(`eduplay_student_submissions_${effectiveUserId}`, JSON.stringify(mergedList));
     } catch (err) {
@@ -341,10 +396,9 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       submissionType: 'assignment',
       studentId: effectiveUserId 
     };
-    const updatedList = [
-      subWithStudent, 
-      ...assignmentHistory.filter(s => (s.assignment?.id && s.assignment.id !== newSub.assignment?.id) || (s.id && s.id !== newSub.id))
-    ];
+    const newKey = getCanonicalAssignmentKey(subWithStudent);
+    const remaining = assignmentHistory.filter(s => getCanonicalAssignmentKey(s) !== newKey);
+    const updatedList = deduplicateAssignmentSubmissions([subWithStudent, ...remaining]);
     setAssignmentHistory(updatedList);
     try {
       localStorage.setItem(`eduplay_student_submissions_${effectiveUserId}`, JSON.stringify(updatedList));
@@ -516,7 +570,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
   }, [liveAssignments, studentClass, studentGrade, isPreviewMode]);
 
   const historySubmissions = useMemo(() => {
-    return (assignmentHistory || []).filter((sub) => {
+    const list = (assignmentHistory || []).filter((sub) => {
       if (sub.type !== 'assignment') return false;
       const as = sub.assignment;
       if (!as) return true;
@@ -526,14 +580,16 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       }
       return true;
     });
+    return deduplicateAssignmentSubmissions(list);
   }, [assignmentHistory]);
 
   // Thống kê 4 ô cho Phân hệ Nhiệm vụ học tập
   const assignmentStats = useMemo(() => {
     const totalCount = todoAssignments.length;
     const completedCount = historySubmissions.length;
+    const completedKeys = new Set(historySubmissions.map(s => getCanonicalAssignmentKey(s)));
     const pendingCount = todoAssignments.filter(
-      as => !historySubmissions.some(sub => (sub.assignment?.id && sub.assignment.id === as.id) || (sub.id && sub.id === as.id))
+      as => !completedKeys.has(getCanonicalAssignmentKey(as)) && !historySubmissions.some(sub => (sub.assignment?.id && sub.assignment.id === as.id) || (sub.id && sub.id === as.id))
     ).length;
 
     let avgScoreStr = '0 / 10';
@@ -783,8 +839,9 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               {todoAssignments.map((as) => {
                 const subjColor = getSubjectColorStyles(as.subject);
+                const asKey = getCanonicalAssignmentKey(as);
                 const existingSub = historySubmissions.find(
-                  sub => (sub.assignment?.id && sub.assignment.id === as.id) || (sub.id && sub.id === as.id)
+                  sub => getCanonicalAssignmentKey(sub) === asKey || (sub.assignment?.id && sub.assignment.id === as.id) || (sub.id && sub.id === as.id)
                 );
                 const isDone = Boolean(existingSub);
                 const isExpired = (() => {
