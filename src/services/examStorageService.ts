@@ -134,8 +134,9 @@ export async function saveExamToFirestore(exam: ExamPaper): Promise<void> {
     }
 
     const examRef = doc(db, 'exams', exam.id);
+    const { submissionsCount, completedCount, ...examPayloadToSave } = exam as any;
     const cleanedPayload = removeUndefined({
-      ...exam,
+      ...examPayloadToSave,
       grade: normalizedGrade,
       updatedAt: new Date().toISOString()
     });

@@ -392,15 +392,43 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
       }
 
       if (submission) {
-        const rawScore = submission.score !== undefined 
-          ? submission.score 
-          : (submission.totalScore !== undefined ? submission.totalScore : '-');
-        const numScore = typeof rawScore === 'number' 
-          ? rawScore 
-          : (rawScore !== '-' && !isNaN(Number(rawScore)) ? Number(rawScore) : null);
-        const isPassed = numScore !== null ? numScore >= 5 : false;
-
         const rawAnswers = submission.answers || submission.studentAnswers;
+        const questionCount = questions.length > 0 ? questions.length : 5;
+        const evaluatedAnswers: ('pass' | 'fail' | 'none')[] = Array.from({ length: questionCount }).map((_, qi) => {
+          const q = questions[qi];
+          let rawChoice: any = undefined;
+          if (Array.isArray(rawAnswers)) {
+            rawChoice = rawAnswers[qi];
+          } else if (rawAnswers && typeof rawAnswers === 'object') {
+            rawChoice = rawAnswers[qi] !== undefined ? rawAnswers[qi] : rawAnswers[String(qi)];
+          }
+          if (rawChoice === 'pass' || rawChoice === true || rawChoice === 'correct') return 'pass';
+          if (rawChoice === 'fail' || rawChoice === false || rawChoice === 'incorrect') return 'fail';
+          if (q && rawChoice !== undefined && rawChoice !== null && rawChoice !== '') {
+            try {
+              return checkQuestionCorrectLocal(q, rawChoice) ? 'pass' : 'fail';
+            } catch {}
+          }
+          return 'fail';
+        });
+
+        const correctCount = evaluatedAnswers.filter(a => a === 'pass').length;
+        const computedScore = questionCount > 0 ? Math.round((correctCount / questionCount) * 10) : 0;
+
+        const rawScore = submission.score !== undefined ? submission.score : (submission.totalScore !== undefined ? submission.totalScore : '-');
+        let finalScore: number | string = computedScore;
+        if (rawScore !== undefined && rawScore !== null && rawScore !== '-' && rawScore !== '0' && rawScore !== 0) {
+          const num = typeof rawScore === 'number' ? rawScore : parseFloat(String(rawScore));
+          if (!isNaN(num) && num > 0) finalScore = num;
+          else if (correctCount > 0) finalScore = computedScore;
+        } else if (correctCount > 0) {
+          finalScore = computedScore;
+        } else {
+          finalScore = rawScore;
+        }
+
+        const numericScoreVal = typeof finalScore === 'number' ? finalScore : (finalScore !== '-' ? parseFloat(String(finalScore)) : 0);
+        const isPassed = !isNaN(numericScoreVal) ? numericScoreVal >= 5 : false;
 
         const answers: ('pass' | 'fail' | 'none')[] = Array.from({ length: questionCount }).map((_, qi) => {
           const q = questions[qi];
@@ -435,14 +463,6 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
             }
           }
 
-          // 4. Score-based fallback if rawChoice is undefined or not evaluatable
-          if (numScore !== null) {
-            if (numScore >= 10) return 'pass';
-            if (numScore <= 0) return 'fail';
-            const threshold = Math.round((numScore / 10) * questionCount);
-            return qi < threshold ? 'pass' : 'fail';
-          }
-
           return 'fail';
         });
 
@@ -450,7 +470,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
           code: st.code || `st-${idx + 1}`,
           name: st.name || st.fullName || `Học sinh ${idx + 1}`,
           answers,
-          totalScore: rawScore,
+          totalScore: finalScore,
           aiStatus: isPassed ? ('pass' as const) : ('fail' as const),
           submittedTime: formatSubmissionDateTime(submission.submittedAt || submission.submittedTime || getCurrentSubmissionTimestamp()),
           status: 'submitted' as const

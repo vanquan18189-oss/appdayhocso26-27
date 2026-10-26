@@ -5,6 +5,7 @@ import { getTeachersFromLocalStorage, resolveCurrentTeacherProfile } from '../..
 import { getStudentsFromLocalStorage, getDefault5BRoster, getDefault3CRoster, getClassStudentCount, deleteStudentFromClass } from '../../services/studentStorageService';
 import { formatStandardStudentCode } from '../../services/studentCode';
 import { seedInitialExamsManually, deleteAllExamsFromFirestore } from '../../services/examStorageService';
+import { getExamCompletion } from '../../services/examCompletionService';
 import { auth } from '../../services/firebase';
 import { collection, onSnapshot, doc, getDocFromServer } from 'firebase/firestore';
 import { db } from '../../firebaseConfig';
@@ -734,34 +735,6 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       const submission = studentSubMap.get(st.code.toUpperCase());
 
       if (submission) {
-        const rawScore = submission.score !== undefined ? submission.score : (submission.totalScore !== undefined ? submission.totalScore : null);
-        let numScore: number | null = null;
-        if (typeof rawScore === 'number') {
-          numScore = rawScore;
-        } else if (typeof rawScore === 'string') {
-          const matchNum = rawScore.match(/([\d\.]+)/);
-          numScore = matchNum ? parseFloat(matchNum[1]) : (isNaN(Number(rawScore)) ? null : Number(rawScore));
-        }
-
-        // If answers exist, compute exact rounded total score (e.g. 2/3 * 10 = 6.6667 -> 7)
-        if (submission.answers && questionCount > 0) {
-          let correctCount = 0;
-          for (let qi = 0; qi < questionCount; qi++) {
-            const qItem = trackingExam.questions && trackingExam.questions[qi];
-            const rawChoice = submission.answers[qi];
-            if (rawChoice !== undefined && rawChoice !== null && qItem) {
-              if (checkQuestionCorrectLocal(qItem, rawChoice)) {
-                correctCount++;
-              }
-            }
-          }
-          if (correctCount > 0 || Object.keys(submission.answers).length > 0) {
-            numScore = Math.round((correctCount / questionCount) * 10);
-          }
-        }
-
-        const roundedTotal = numScore !== null ? Math.round(numScore) : 10;
-
         // Precise question-by-question scoring
         const answers = Array.from({ length: questionCount }).map((_, qi) => {
           const qItem = trackingExam.questions && trackingExam.questions[qi];
@@ -777,13 +750,26 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
             return isCorrect ? ('pass' as const) : ('fail' as const);
           }
 
-          if (numScore !== null) {
-            const threshold = Math.round((numScore / 10) * questionCount);
-            return qi < threshold ? ('pass' as const) : ('fail' as const);
-          }
-
-          return 'pass' as const;
+          return 'fail' as const;
         });
+
+        const correctCount = answers.filter(a => a === 'pass').length;
+        const computedScore = questionCount > 0 ? Math.round((correctCount / questionCount) * 10) : 0;
+
+        const rawScore = submission.score !== undefined ? submission.score : (submission.totalScore !== undefined ? submission.totalScore : null);
+        let numScore = computedScore;
+        if (rawScore !== undefined && rawScore !== null && rawScore !== '-' && rawScore !== '0' && rawScore !== 0) {
+          const num = typeof rawScore === 'number' ? rawScore : parseFloat(String(rawScore));
+          if (!isNaN(num) && num > 0) {
+            numScore = num;
+          } else if (correctCount > 0) {
+            numScore = computedScore;
+          }
+        } else if (correctCount > 0) {
+          numScore = computedScore;
+        }
+
+        const roundedTotal = Math.round(numScore);
 
         return {
           id: st.code || `st-${idx + 1}`,
@@ -1594,124 +1580,8 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   }, []);
 
   const getExamSubmissionCount = useCallback((exam: ExamPaper): number => {
-    const targetExamId = String(exam.id || '').trim().toLowerCase();
-    const targetOriginalId = String(exam.originalExamId || '').trim().toLowerCase();
-    const targetClass = exam.targetClass || 'Lớp 3C';
-    const cleanClass = targetClass.replace(/^Lớp\s*/i, '').trim().toUpperCase();
-    const rawRoster = getStudentsFromLocalStorage(targetClass) || (targetClass.includes('3C') ? getDefault3CRoster() : getDefault5BRoster());
-    const classRoster = (rawRoster && rawRoster.length > 0 ? rawRoster : (targetClass.includes('3C') ? getDefault3CRoster() : getDefault5BRoster())).map((st, idx) => ({
-      ...st,
-      stt: st.stt || (idx + 1),
-      code: formatStandardStudentCode(st.code, cleanClass, st.stt || (idx + 1)),
-      name: st.name || st.fullName || `Học sinh ${idx + 1}`,
-      fullName: st.fullName || st.name || `Học sinh ${idx + 1}`
-    }));
-
-    const matchedSubmissions: any[] = [];
-
-    const processSub = (item: any) => {
-      if (!item) return;
-      const subExamId = String(item.examId || item.id || item.exam?.id || '').trim().toLowerCase();
-      const isMatch = Boolean(subExamId && (subExamId === targetExamId || (targetOriginalId && subExamId === targetOriginalId)));
-      if (!isMatch) return;
-      const rawScore = item.score !== undefined ? item.score : (item.totalScore !== undefined ? item.totalScore : null);
-      let numScore: number | null = null;
-      if (typeof rawScore === 'number') {
-        numScore = rawScore;
-      } else if (typeof rawScore === 'string') {
-        const matchNum = rawScore.match(/([\d\.]+)/);
-        numScore = matchNum ? parseFloat(matchNum[1]) : (isNaN(Number(rawScore)) ? null : Number(rawScore));
-      }
-      if (numScore === null && item.answers === undefined && item.status !== 'submitted') return;
-      matchedSubmissions.push(item);
-    };
-
-    if (Array.isArray(exam.submissions)) {
-      exam.submissions.forEach(sub => processSub({ ...sub, examId: exam.id }));
-    }
-
-    if (typeof window !== 'undefined') {
-      try {
-        const examSubsRaw = localStorage.getItem(`eduplay_exam_subs_${exam.id}`);
-        if (examSubsRaw) {
-          const examSubs = JSON.parse(examSubsRaw);
-          if (Array.isArray(examSubs)) {
-            examSubs.forEach(sub => processSub({ ...sub, examId: exam.id }));
-          }
-        }
-      } catch {}
-
-      try {
-        const allSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
-        if (allSubsRaw) {
-          const allSubs = JSON.parse(allSubsRaw);
-          if (Array.isArray(allSubs)) {
-            allSubs.forEach(sub => processSub(sub));
-          }
-        }
-      } catch {}
-
-      try {
-        for (let i = 0; i < localStorage.length; i++) {
-          const key = localStorage.key(i);
-          if (key && (key.startsWith('eduplay_student_exam_subs_') || key.startsWith('eduplay_student_submissions_') || key.startsWith('eduplay_student_results') || key.startsWith('eduplay_all_exam_submissions'))) {
-            const raw = localStorage.getItem(key);
-            if (raw) {
-              const parsed = JSON.parse(raw);
-              if (Array.isArray(parsed)) {
-                parsed.forEach(sub => processSub(sub));
-              } else if (parsed && typeof parsed === 'object') {
-                if (parsed.exams && typeof parsed.exams === 'object') {
-                  Object.entries(parsed.exams).forEach(([exId, exData]: [string, any]) => {
-                    processSub({ ...exData, examId: exId, studentId: parsed.studentCode || parsed.studentId });
-                  });
-                }
-              }
-            }
-          }
-        }
-      } catch {}
-    }
-
-    let rosterMatchedCount = 0;
-    const usedSubIndices = new Set<number>();
-
-    classRoster.forEach(student => {
-      const stdCode = student.code.toUpperCase();
-      const stName = student.fullName.trim().toLowerCase();
-
-      // Pass 1: exact studentCode / maHs / studentId match
-      let matchIdx = matchedSubmissions.findIndex((sub, idx) => {
-        if (usedSubIndices.has(idx) || !sub) return false;
-        const cands = [sub.studentCode, sub.maHs, sub.studentId, sub.code].filter(Boolean).map(c => String(c).trim().toUpperCase());
-        return cands.some(c => c === stdCode || formatStandardStudentCode(c, cleanClass) === stdCode);
-      });
-
-      // Pass 2: full name match
-      if (matchIdx === -1) {
-        matchIdx = matchedSubmissions.findIndex((sub, idx) => {
-          if (usedSubIndices.has(idx) || !sub) return false;
-          const subName = String(sub.studentName || sub.name || sub.fullName || '').trim().toLowerCase();
-          return subName && subName.length > 2 && (subName === stName || subName.includes(stName) || stName.includes(subName));
-        });
-      }
-
-      // Pass 3: SĐDCN match
-      if (matchIdx === -1 && student.sddcn) {
-        matchIdx = matchedSubmissions.findIndex((sub, idx) => {
-          if (usedSubIndices.has(idx) || !sub) return false;
-          return sub.sddcn && String(sub.sddcn).trim() === String(student.sddcn).trim();
-        });
-      }
-
-      if (matchIdx !== -1) {
-        usedSubIndices.add(matchIdx);
-        rosterMatchedCount++;
-      }
-    });
-
-    const fallbackTotal = Array.isArray(exam.submissions) ? exam.submissions.length : (exam.submissionsCount || 0);
-    return Math.max(rosterMatchedCount, fallbackTotal);
+    const stats = getExamCompletion(exam.id, exam.targetClass || 'Lớp 3C', exam.submissions);
+    return stats.validCount;
   }, []);
 
   const allExamsCount = normalizedExams.length;
