@@ -146,5 +146,55 @@ export const studentResultService = {
       console.error('Lỗi khi lưu kết quả trò chơi:', error);
       throw error;
     }
+  },
+
+  /**
+   * Lưu toàn bộ kết quả bài kiểm tra (Exams) lên Firestore
+   */
+  async saveFullExamSubmission(
+    rawStudentCode: string,
+    examId: string,
+    submissionData: any
+  ): Promise<boolean> {
+    try {
+      const studentCode = normalizeStudentCode(rawStudentCode);
+      if (!studentCode) throw new Error('Mã học sinh không hợp lệ');
+
+      // Save to: student_results/{studentCode}/exams/{examId}
+      const docRef = doc(db, STUDENT_RESULTS_COLLECTION, studentCode, 'exams', examId);
+      await setDoc(docRef, {
+        ...submissionData,
+        updatedAt: new Date().toISOString(),
+      }, { merge: true });
+      return true;
+    } catch (error) {
+      console.error('Lỗi khi lưu bài kiểm tra vào Firestore:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Lưu toàn bộ kết quả bài tập (Assignments) lên Firestore
+   */
+  async saveFullAssignmentSubmission(
+    rawStudentCode: string,
+    assignmentId: string,
+    submissionData: any
+  ): Promise<boolean> {
+    try {
+      const studentCode = normalizeStudentCode(rawStudentCode);
+      if (!studentCode) throw new Error('Mã học sinh không hợp lệ');
+
+      // Save to: student_results/{studentCode}/assignments/{assignmentId}
+      const docRef = doc(db, STUDENT_RESULTS_COLLECTION, studentCode, 'assignments', assignmentId);
+      await setDoc(docRef, {
+        ...submissionData,
+        updatedAt: new Date().toISOString(),
+      }, { merge: true });
+      return true;
+    } catch (error) {
+      console.error('Lỗi khi lưu bài tập vào Firestore:', error);
+      throw error;
+    }
   }
 };

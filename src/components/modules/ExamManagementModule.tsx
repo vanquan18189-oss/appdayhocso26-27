@@ -3,7 +3,7 @@ import { getSubjectColorStyles } from '../../utils/subjectColors';
 import { formatScore, formatTotalScore, roundTotalScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
 import { getTeachersFromLocalStorage, resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
 import { getStudentsFromLocalStorage, getDefault5BRoster, getDefault3CRoster, getClassStudentCount, deleteStudentFromClass } from '../../services/studentStorageService';
-import { formatStandardStudentCode } from '../../services/studentCode';
+import { formatStandardStudentCode, normalizeStudentCode } from '../../services/studentCode';
 import { seedInitialExamsManually, deleteAllExamsFromFirestore } from '../../services/examStorageService';
 import { getExamCompletion } from '../../services/examCompletionService';
 import { auth } from '../../services/firebase';
@@ -338,6 +338,16 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     grade: string;
   }
   const [realClasses, setRealClasses] = useState<SchoolClassItem[]>([]);
+
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('debug') === '1') {
+      import('../../services/debugSubmissionFixer').then(module => {
+        (window as any).fixSubmissions = module.scanAndFixSubmissions;
+        console.log("Debug mode enabled. `window.fixSubmissions(dryRun)` is available.");
+      });
+    }
+  }, []);
 
   useEffect(() => {
     let unsubscribe = () => {};
@@ -679,7 +689,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       // Pass 1: exact studentCode / maHs / studentId match
       let matchIdx = candidateSubmissions.findIndex((sub, idx) => {
         if (usedSubIndices.has(idx) || !sub) return false;
-        const cands = [sub.studentCode, sub.maHs, sub.studentId, sub.code, sub.fallbackCode].filter(Boolean).map(c => String(c).trim().toUpperCase());
+        const cands = [sub.studentCode, sub.maHs, sub.studentId, sub.code, sub.fallbackCode].filter(Boolean).map(c => normalizeStudentCode(String(c)));
         return cands.some(c => c === stdCode || formatStandardStudentCode(c, cleanClass) === stdCode);
       });
 

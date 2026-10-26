@@ -61,6 +61,7 @@ import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { getLocalCachedQuestions, QUESTIONS_CACHE_KEY, saveQuestionsBatchToFirestore } from '../../services/questionStorageService';
 import { useScoreSort } from '../../lib/useScoreSort';
 import { StudentAssignmentModule } from './StudentAssignmentModule';
+import { studentResultService } from '../../services/studentResultService';
 import { getCurrentTeacherProfile, resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
 import { getStudentsFromLocalStorage, getDefault5BRoster, getDefault3CRoster, getClassStudentCount } from '../../services/studentStorageService';
 import { auth, db } from '../../services/firebase';
@@ -1016,13 +1017,13 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   };
 
   // Student submission handler
-  const handleStudentSubmit = () => {
-    if (!solvingAssignment || !studentContent.trim()) return;
+  const handleStudentSubmit = async () => {
+    if (!solvingAssignment || !studentContent.trim() || !currentUserId) return;
 
     const newSubmission: AssignmentSubmission = {
       id: `sub-${Date.now()}`,
       studentId: currentUserId,
-      studentName: currentUserName,
+      studentName: currentUserName || 'Học sinh',
       submittedAt: new Date().toLocaleString('vi-VN'),
       content: studentContent,
       status: 'pending'
@@ -1034,10 +1035,18 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
       submissions: [newSubmission, ...solvingAssignment.submissions]
     };
 
-    onSaveAssignment(updated);
-    setSolvingAssignment(null);
-    setStudentContent('');
-    showToast('Nộp bài tập thành công! Giáo viên và Gemini AI sẽ chấm bài sớm.');
+    try {
+      // Lưu trực tiếp vào Firestore
+      await studentResultService.saveFullAssignmentSubmission(currentUserId, solvingAssignment.id, newSubmission);
+      
+      onSaveAssignment(updated);
+      setSolvingAssignment(null);
+      setStudentContent('');
+      showToast('Nộp bài tập thành công! Giáo viên và Gemini AI sẽ chấm bài sớm.');
+    } catch (err) {
+      console.error('Lỗi khi nộp bài tập:', err);
+      showToast('Nộp bài thất bại, vui lòng thử lại!');
+    }
   };
 
   // AI Grading

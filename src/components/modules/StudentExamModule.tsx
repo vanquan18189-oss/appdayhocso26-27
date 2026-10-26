@@ -38,6 +38,7 @@ import {
 import { getStudentGameProfile } from '../../services/studentGameStoreService';
 import { getEffectiveStudentClassAndGrade, getCurrentStudentSession, getAuthenticStudentCode } from '../../services/studentSessionService';
 import { studentResultService } from '../../services/studentResultService';
+import { normalizeStudentCode } from '../../services/studentCode';
 import { subscribeToExamsFromFirestore, getExamsFromFirestore, getLocalCachedExams, isExamDeleted } from '../../services/examStorageService';
 import { db } from '../../services/firebase';
 import { doc, runTransaction } from 'firebase/firestore';
@@ -886,7 +887,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     return () => clearInterval(timer);
   }, [activeExamSession, mode]);
 
-  const handleAutoSubmitTimeout = (
+  const handleAutoSubmitTimeout = async (
     violationReason?: string,
     isViolationLock: boolean = false,
     finalViolationCount: number = 0
@@ -957,16 +958,11 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           answers
         };
         try {
-          const savedHw = localStorage.getItem(`eduplay_student_submissions_${currentUserId}`);
-          const parsedHw = savedHw ? JSON.parse(savedHw) : [];
-          const updatedHw = [
-            hwSub, 
-            ...(Array.isArray(parsedHw) ? parsedHw.filter((s: any) => s.id !== hwSub.id && s.assignment?.id !== exam.id) : [])
-          ];
-          localStorage.setItem(`eduplay_student_submissions_${currentUserId}`, JSON.stringify(updatedHw));
+          // Lưu bài tập trực tiếp vào Firestore
+          await studentResultService.saveFullAssignmentSubmission(currentUserId, exam.id || 'as-timeout', hwSub);
           window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
         } catch (err) {
-          console.error('Error saving assignment store on timeout:', err);
+          console.error('Error saving assignment to Firestore on timeout:', err);
         }
 
         // Thưởng bài tập theo thang điểm
@@ -982,7 +978,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         const effectiveInfo = getEffectiveStudentClassAndGrade();
         const effectiveStudentClass = session?.className || effectiveInfo.studentClass || 'Lớp 3C';
         const effectiveStudentName = session?.name || session?.fullName || effectiveInfo.studentName || currentUserName;
-        const authenticStudentCode = getAuthenticStudentCode(session, currentUserId, effectiveStudentClass, effectiveStudentName);
+        const authenticStudentCode = normalizeStudentCode(getAuthenticStudentCode(session, currentUserId, effectiveStudentClass, effectiveStudentName));
         const effectiveAcademicYear = session?.academicYear || '2026-2027';
 
         const examSub: ExamSubmissionItem = {
@@ -1005,12 +1001,6 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         const updatedSubmissions = [examSub, ...examHistory.filter(s => s.examId !== examSub.examId)];
         setExamHistory(updatedSubmissions);
         try {
-          localStorage.setItem(`eduplay_student_exam_subs_${authenticStudentCode}`, JSON.stringify(updatedSubmissions));
-          if (currentUserId && currentUserId !== authenticStudentCode) {
-            localStorage.setItem(`eduplay_student_exam_subs_${currentUserId}`, JSON.stringify(updatedSubmissions));
-          }
-
-          // Global exam submissions store for Teacher tracking (Linked via Authentic Student Code)
           const fullExamRecord = {
             ...examSub,
             studentId: authenticStudentCode,
@@ -1032,74 +1022,68 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
               : (scoreNumber >= 8 ? 'Làm bài xuất sắc.' : (scoreNumber >= 5 ? 'Đã hoàn thành đạt yêu cầu.' : 'Cần ôn tập thêm.'))
           };
 
+          // Lưu bài kiểm tra trực tiếp vào Firestore thay vì localStorage
+          await studentResultService.saveFullExamSubmission(authenticStudentCode, exam.id || 'ex-auto', fullExamRecord);
+
+          // Global exam submissions store for Teacher tracking
           const allSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
           const allSubs = allSubsRaw ? JSON.parse(allSubsRaw) : [];
           const filteredAll = Array.isArray(allSubs) ? allSubs.filter((s: any) => !(s.examId === examSub.examId && (s.studentId === authenticStudentCode || s.studentCode === authenticStudentCode || s.maHs === authenticStudentCode || s.sddcn === authenticStudentCode))) : [];
           filteredAll.unshift(fullExamRecord);
           localStorage.setItem('eduplay_all_exam_submissions', JSON.stringify(filteredAll));
 
-          if (exam.id) {
-            const examSubsRaw = localStorage.getItem(`eduplay_exam_subs_${exam.id}`);
-            const examSubs = examSubsRaw ? JSON.parse(examSubsRaw) : [];
-            const filteredExamSubs = Array.isArray(examSubs) ? examSubs.filter((s: any) => !(s.studentId === authenticStudentCode || s.studentCode === authenticStudentCode || s.maHs === authenticStudentCode || s.sddcn === authenticStudentCode)) : [];
-            filteredExamSubs.unshift(fullExamRecord);
-            localStorage.setItem(`eduplay_exam_subs_${exam.id}`, JSON.stringify(filteredExamSubs));
+          // Save directly to Firestore subcollection 'submissions' via atomic transaction (for Teacher)
+          if (db) {
+            const examId = exam.id;
+            const examRef = doc(db, 'exams', examId);
+            const subDocRef = doc(db, 'exams', examId, 'submissions', authenticStudentCode);
 
-            // Save directly to Firestore subcollection 'submissions' via atomic transaction
-            if (db) {
-              const examId = exam.id;
-              const examRef = doc(db, 'exams', examId);
-              const subDocRef = doc(db, 'exams', examId, 'submissions', authenticStudentCode);
+            runTransaction(db, async (transaction) => {
+              const examSnap = await transaction.get(examRef);
+              let existingSubs: any[] = [];
+              if (examSnap.exists()) {
+                const currentData = examSnap.data();
+                existingSubs = Array.isArray(currentData.submissions) ? [...currentData.submissions] : [];
+              }
 
-              runTransaction(db, async (transaction) => {
-                const examSnap = await transaction.get(examRef);
-                let existingSubs: any[] = [];
-                if (examSnap.exists()) {
-                  const currentData = examSnap.data();
-                  existingSubs = Array.isArray(currentData.submissions) ? [...currentData.submissions] : [];
-                }
+              const filtered = existingSubs.filter((s: any) =>
+                (s.studentId || s.studentCode || s.maHs || s.sddcn || '').toLowerCase() !== authenticStudentCode.toLowerCase()
+              );
+              filtered.unshift(fullExamRecord);
 
-                const filtered = existingSubs.filter((s: any) =>
-                  (s.studentId || s.studentCode || s.maHs || s.sddcn || '').toLowerCase() !== authenticStudentCode.toLowerCase()
-                );
-                filtered.unshift(fullExamRecord);
+              const uniqueStudentKeys = new Set(
+                filtered.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean)
+              );
+              const count = uniqueStudentKeys.size;
 
-                const uniqueStudentKeys = new Set(
-                  filtered.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean)
-                );
-                const count = uniqueStudentKeys.size;
+              transaction.set(subDocRef, {
+                ...fullExamRecord,
+                examId,
+                updatedAt: new Date().toISOString()
+              }, { merge: true });
 
-                transaction.set(subDocRef, {
-                  ...fullExamRecord,
-                  examId,
-                  updatedAt: new Date().toISOString()
-                }, { merge: true });
-
-                transaction.set(examRef, {
-                  submissions: filtered,
-                  submissionsCount: count,
-                  completedCount: count,
-                  updatedAt: new Date().toISOString()
-                }, { merge: true });
-              }).catch(e => {
-                console.warn('❌ [Transaction Auto-Submit Đề Thi Error]:', e);
-              });
-            }
+              transaction.set(examRef, {
+                submissions: filtered,
+                submissionsCount: count,
+                completedCount: count,
+                updatedAt: new Date().toISOString()
+              }, { merge: true });
+            }).catch(e => {
+              console.warn('❌ [Transaction Auto-Submit Đề Thi Error]:', e);
+            });
           }
 
-          try {
-            studentResultService.saveExamResult(authenticStudentCode, exam.id || 'ex-auto', {
-              score: scoreNumber,
-              maxScore: 10,
-              submittedAt: nowTimeStr,
-              type: 'exam'
-            });
-          } catch {}
+          studentResultService.saveExamResult(authenticStudentCode, exam.id || 'ex-auto', {
+            score: scoreNumber,
+            maxScore: 10,
+            submittedAt: nowTimeStr,
+            type: 'exam'
+          });
 
           window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
           window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
         } catch (err) {
-          console.error('Error saving exam submission on timeout:', err);
+          console.error('Error saving exam submission to Firestore:', err);
         }
 
         // Thưởng đề kiểm tra

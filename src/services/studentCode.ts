@@ -16,7 +16,11 @@ export interface ParsedStudentCode {
  */
 export function normalizeStudentCode(code?: string): string {
   if (!code || typeof code !== 'string') return '';
-  return code.trim().toUpperCase();
+  // Normalize dashes: –, —, − -> -
+  return code
+    .replace(/[–—−]/g, '-')
+    .trim()
+    .toUpperCase();
 }
 
 /**
