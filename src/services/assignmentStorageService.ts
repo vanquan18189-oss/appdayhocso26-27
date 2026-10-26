@@ -5,6 +5,7 @@ import { HomeworkAssignment } from '../types';
 import { INITIAL_ASSIGNMENTS } from './mockData';
 import { removeUndefined, getCurrentTeacherProfile, resolveCurrentTeacherProfile } from './teacherStorageService';
 import { waitForWriteConfirmation, updateCollectionCacheStatus } from './firestoreWriteVerificationService';
+import { normalizeClassKey } from './studentStorageService';
 import './orderingMigrationService';
 
 const ASSIGNMENTS_CACHE_KEY = 'eduplay_cached_assignments';
@@ -193,9 +194,21 @@ export async function saveAssignmentToFirestore(assignment: HomeworkAssignment):
       updatedAt: new Date().toISOString()
     });
 
+    // Enforce ID structure: as-[ID]-class-lp[classKey]
+    if (!assignment.id.startsWith('as-') || !assignment.id.includes('-class-lp')) {
+      const classKey = normalizeClassKey(assignment.targetClass || assignment.grade || '5A');
+      assignment.id = `as-${assignment.id.replace(/^as-/, '')}-class-lp${classKey.toLowerCase()}`;
+    }
+
+    console.log(`[DEBUG] Saving Assignment to Firestore:`, {
+      docId: assignment.id,
+      payload: cleanedPayload
+    });
+
     try {
       await trackedSetDoc(assignRef, cleanedPayload, { merge: true });
     } catch (setDocErr: any) {
+    // ...
       const errDetails = extractFirestoreErrorDetails(setDocErr);
       console.error(`❌ [LỖI FIRESTORE TỪ CHỐI LƯU BÀI TẬP KHỐI ${normalizedGrade}]`, {
         message: errDetails.message,

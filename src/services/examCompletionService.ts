@@ -1,4 +1,4 @@
-import { getStudentsFromLocalStorage, getDefault3CRoster, getDefault5BRoster, getClassStudentCount } from './studentStorageService';
+import { getStudentsFromLocalStorage, getClassStudentCount, generateDefaultClassRoster } from './studentStorageService';
 import { formatStandardStudentCode, normalizeStudentCode } from './studentCode';
 
 export interface ExamCompletionStats {
@@ -25,8 +25,8 @@ export function getExamCompletion(examId: string, targetClassName: string, examS
 
   const cleanClass = (targetClassName || 'Lớp 3C').replace(/^Lớp\s*/i, '').trim().toUpperCase();
   const stdClassName = targetClassName.startsWith('Lớp ') ? targetClassName : `Lớp ${cleanClass}`;
-  const rawRoster = getStudentsFromLocalStorage(stdClassName) || (cleanClass.includes('3C') ? getDefault3CRoster() : getDefault5BRoster());
-  const classStudentsRoster = (rawRoster && rawRoster.length > 0 ? rawRoster : (cleanClass.includes('3C') ? getDefault3CRoster() : getDefault5BRoster())).map((st, idx) => ({
+  const rawRoster = getStudentsFromLocalStorage(stdClassName) || generateDefaultClassRoster(stdClassName, 38);
+  const classStudentsRoster = rawRoster.map((st, idx) => ({
     ...st,
     stt: st.stt || (idx + 1),
     code: formatStandardStudentCode(st.code, cleanClass, st.stt || (idx + 1)),

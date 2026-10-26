@@ -5,6 +5,7 @@ import { ExamPaper } from '../types';
 import { INITIAL_EXAMS } from './mockData';
 import { removeUndefined } from './teacherStorageService';
 import { waitForWriteConfirmation, updateCollectionCacheStatus } from './firestoreWriteVerificationService';
+import { normalizeClassKey } from './studentStorageService';
 
 const EXAMS_CACHE_KEY = 'eduplay_cached_exams';
 
@@ -116,13 +117,18 @@ export async function saveExamToFirestore(exam: ExamPaper): Promise<void> {
     const normalizedGrade = `Khối ${targetDigit}`;
     exam.grade = normalizedGrade;
 
-    // Check if an existing record matches by ID only
+    // Check if an existing record matches by OLD ID
     const current = getLocalCachedExams();
-    const existsIdx = current.findIndex(e => e.id === exam.id);
+    const oldExistsIdx = current.findIndex(e => e.id === exam.id);
+
+    if (!exam.id.startsWith('ex-') || !exam.id.includes('-class-lp')) {
+      const classKey = normalizeClassKey(exam.targetClass || exam.grade || '5A');
+      exam.id = `ex-${exam.id.replace(/^ex-/, '')}-class-lp${classKey.toLowerCase()}`;
+    }
+
     let updated: ExamPaper[];
-    if (existsIdx >= 0) {
-      updated = [...current];
-      updated[existsIdx] = { ...current[existsIdx], ...exam };
+    if (oldExistsIdx >= 0) {
+      updated = current.map(e => (e.id === current[oldExistsIdx].id ? exam : e));
     } else {
       updated = [exam, ...current];
     }
@@ -139,6 +145,11 @@ export async function saveExamToFirestore(exam: ExamPaper): Promise<void> {
       ...examPayloadToSave,
       grade: normalizedGrade,
       updatedAt: new Date().toISOString()
+    });
+
+    console.log(`[DEBUG] Saving Exam to Firestore:`, {
+      docId: exam.id,
+      payload: cleanedPayload
     });
 
     try {

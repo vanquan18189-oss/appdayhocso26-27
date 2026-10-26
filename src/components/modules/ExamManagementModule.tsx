@@ -2,7 +2,7 @@ import { SUBJECTS, GRADES, CLASSES_BY_GRADE, ALL_CLASSES, EXAM_TYPES, QUESTION_T
 import { getSubjectColorStyles } from '../../utils/subjectColors';
 import { formatScore, formatTotalScore, roundTotalScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
 import { getTeachersFromLocalStorage, resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
-import { getStudentsFromLocalStorage, getDefault5BRoster, getDefault3CRoster, getClassStudentCount, deleteStudentFromClass } from '../../services/studentStorageService';
+import { getStudentsFromLocalStorage, getClassStudentCount, deleteStudentFromClass, generateDefaultClassRoster } from '../../services/studentStorageService';
 import { formatStandardStudentCode, normalizeStudentCode } from '../../services/studentCode';
 import { seedInitialExamsManually, deleteAllExamsFromFirestore } from '../../services/examStorageService';
 import { getExamCompletion } from '../../services/examCompletionService';
@@ -602,8 +602,8 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
 
     const targetClassName = trackingExam.targetClass || 'Lớp 3C';
     const cleanClass = targetClassName.replace(/^Lớp\s*/i, '').trim().toUpperCase();
-    const rawRoster = getStudentsFromLocalStorage(targetClassName) || (targetClassName.includes('3C') ? getDefault3CRoster() : getDefault5BRoster());
-    const classStudentsRoster = (rawRoster && rawRoster.length > 0 ? rawRoster : (targetClassName.includes('3C') ? getDefault3CRoster() : getDefault5BRoster())).map((st, idx) => ({
+    const rawRoster = getStudentsFromLocalStorage(targetClassName) || generateDefaultClassRoster(targetClassName, 38);
+    const classStudentsRoster = rawRoster.map((st, idx) => ({
       ...st,
       stt: st.stt || (idx + 1),
       code: formatStandardStudentCode(st.code, cleanClass, st.stt || (idx + 1)),
@@ -841,8 +841,8 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
 
     const targetClassName = statsExam.targetClass || 'Lớp 3C';
     const cleanClass = targetClassName.replace(/^Lớp\s*/i, '').trim().toUpperCase();
-    const rawRoster = getStudentsFromLocalStorage(targetClassName) || (targetClassName.includes('3C') ? getDefault3CRoster() : getDefault5BRoster());
-    const classStudentsRoster = (rawRoster && rawRoster.length > 0 ? rawRoster : (targetClassName.includes('3C') ? getDefault3CRoster() : getDefault5BRoster())).map((st, idx) => ({
+    const rawRoster = getStudentsFromLocalStorage(targetClassName) || generateDefaultClassRoster(targetClassName, 38);
+    const classStudentsRoster = rawRoster.map((st, idx) => ({
       ...st,
       stt: st.stt || (idx + 1),
       code: formatStandardStudentCode(st.code, cleanClass, st.stt || (idx + 1)),

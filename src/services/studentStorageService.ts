@@ -236,6 +236,20 @@ export function getDefault5BRoster(): StudentRecord[] {
 }
 
 /**
+ * Generate default roster for class 5C
+ */
+export function getDefault5CRoster(): StudentRecord[] {
+  return generateDefaultClassRoster('Lớp 5C', 35);
+}
+
+/**
+ * Generate default roster for class 5D
+ */
+export function getDefault5DRoster(): StudentRecord[] {
+  return generateDefaultClassRoster('Lớp 5D', 35);
+}
+
+/**
  * Danh sách học sinh lớp 3C chuẩn hóa 38 học sinh theo định dạng Mã HS 3C26-27-1 đến 3C26-27-38
  */
 export function getDefault3CRoster(): StudentRecord[] {

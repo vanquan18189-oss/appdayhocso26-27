@@ -63,7 +63,7 @@ import { useScoreSort } from '../../lib/useScoreSort';
 import { StudentAssignmentModule } from './StudentAssignmentModule';
 import { studentResultService } from '../../services/studentResultService';
 import { getCurrentTeacherProfile, resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
-import { getStudentsFromLocalStorage, getDefault5BRoster, getDefault3CRoster, getClassStudentCount } from '../../services/studentStorageService';
+import { getStudentsFromLocalStorage, getClassStudentCount, generateDefaultClassRoster } from '../../services/studentStorageService';
 import { auth, db } from '../../services/firebase';
 import { doc, onSnapshot, getDoc, setDoc } from 'firebase/firestore';
 import { trackedSetDoc } from '../../services/firestoreWriteTracker';
@@ -597,7 +597,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
 
       let totalStudentsSum = 0;
       selectedAssignClasses.forEach((cls) => {
-        const classRoster = getStudentsFromLocalStorage(cls) || (cls.includes('3C') ? getDefault3CRoster() : getDefault5BRoster());
+        const classRoster = getStudentsFromLocalStorage(cls) || generateDefaultClassRoster(cls, 38);
         totalStudentsSum += classRoster && classRoster.length > 0 ? classRoster.length : 35;
       });
 
@@ -770,7 +770,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     const classes = Array.from(new Set(rawClasses.map(c => c.trim()).filter(Boolean)));
 
     classes.forEach((cls, idx) => {
-      const classRoster = getStudentsFromLocalStorage(cls) || (cls.includes('3C') ? getDefault3CRoster() : getDefault5BRoster());
+      const classRoster = getStudentsFromLocalStorage(cls) || generateDefaultClassRoster(cls, 38);
       const realTotal = classRoster && classRoster.length > 0 ? classRoster.length : (cls.includes('3C') ? 38 : 35);
 
       const newAssignment: HomeworkAssignment = {
@@ -933,7 +933,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
 
     const sanitizedQuestions = (formQuestions || []).map(q => sanitizeQuestionForFirestore(q));
 
-    const classRoster = getStudentsFromLocalStorage(formTargetClass) || (formTargetClass.includes('3C') ? getDefault3CRoster() : getDefault5BRoster());
+    const classRoster = getStudentsFromLocalStorage(formTargetClass) || generateDefaultClassRoster(formTargetClass, 38);
     const realTotal = classRoster && classRoster.length > 0 ? classRoster.length : (formTargetClass.includes('3C') ? 38 : (editingAssignment?.totalStudents || 38));
 
     const assignmentToSave: HomeworkAssignment = {
