@@ -580,6 +580,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const [trackingFilter, setTrackingFilter] = useState<'all' | 'need_manual'>('all');
   const [trackingActionMenuId, setTrackingActionMenuId] = useState<string | null>(null);
   const [submissionsVersion, setSubmissionsVersion] = useState<number>(0);
+  const [trackingFirestoreSubs, setTrackingFirestoreSubs] = useState<any[]>([]);
 
   // Real-time synchronization when student submits exam
   useEffect(() => {
@@ -595,6 +596,72 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       window.removeEventListener('storage', handleSubmissionsUpdated);
     };
   }, []);
+
+  // Listen directly to Firestore subcollection 'submissions' when tracking modal is open
+  useEffect(() => {
+    if (!trackingExam?.id || !db) {
+      setTrackingFirestoreSubs([]);
+      return;
+    }
+
+    const examDocId = trackingExam.id;
+    const originalDocId = trackingExam.originalExamId;
+    const unsubList: (() => void)[] = [];
+
+    try {
+      const subColRef = collection(db, 'exams', examDocId, 'submissions');
+      const unsub1 = onSnapshot(subColRef, (snapshot) => {
+        const subs: any[] = [];
+        snapshot.forEach((docSnap) => {
+          subs.push({ ...docSnap.data(), id: docSnap.id, docId: docSnap.id });
+        });
+        setTrackingFirestoreSubs(prev => {
+          const map = new Map<string, any>();
+          prev.forEach(s => {
+            const key = s.id || s.docId || s.studentCode || s.maHs || s.studentId;
+            if (key) map.set(key, s);
+          });
+          subs.forEach(s => {
+            const key = s.id || s.docId || s.studentCode || s.maHs || s.studentId;
+            if (key) map.set(key, s);
+          });
+          return Array.from(map.values());
+        });
+      }, (err) => {
+        console.warn('Lỗi lắng nghe submissions từ Firestore:', err);
+      });
+      unsubList.push(unsub1);
+
+      if (originalDocId && originalDocId !== examDocId) {
+        const origColRef = collection(db, 'exams', originalDocId, 'submissions');
+        const unsub2 = onSnapshot(origColRef, (snapshot) => {
+          const subs: any[] = [];
+          snapshot.forEach((docSnap) => {
+            subs.push({ ...docSnap.data(), id: docSnap.id, docId: docSnap.id });
+          });
+          setTrackingFirestoreSubs(prev => {
+            const map = new Map<string, any>();
+            prev.forEach(s => {
+              const key = s.id || s.docId || s.studentCode || s.maHs || s.studentId;
+              if (key) map.set(key, s);
+            });
+            subs.forEach(s => {
+              const key = s.id || s.docId || s.studentCode || s.maHs || s.studentId;
+              if (key) map.set(key, s);
+            });
+            return Array.from(map.values());
+          });
+        }, () => {});
+        unsubList.push(unsub2);
+      }
+    } catch (e) {
+      console.warn('Không thể thiết lập lắng nghe submissions:', e);
+    }
+
+    return () => {
+      unsubList.forEach(u => u());
+    };
+  }, [trackingExam?.id, trackingExam?.originalExamId]);
 
   // Dynamic tracking students derived from trackingExam.submissions and class roster matching trackingExam.id
   const trackingStudentsList = useMemo(() => {
@@ -615,14 +682,25 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     const candidateSubmissions: any[] = [];
     const targetExamId = String(trackingExam.id || '').trim().toLowerCase();
     const targetOriginalId = String(trackingExam.originalExamId || '').trim().toLowerCase();
+    const targetBaseId = targetExamId.replace(/-class-.*$/, '').replace(/^ex-/, '');
 
     const isExamMatch = (subExamId: string) => {
       const cleanSub = String(subExamId || '').trim().toLowerCase();
-      return Boolean(cleanSub && (cleanSub === targetExamId || (targetOriginalId && cleanSub === targetOriginalId)));
+      if (!cleanSub) return false;
+      if (cleanSub === targetExamId || (targetOriginalId && cleanSub === targetOriginalId)) return true;
+      const subBaseId = cleanSub.replace(/-class-.*$/, '').replace(/^ex-/, '');
+      if (targetBaseId && subBaseId && targetBaseId === subBaseId) return true;
+      return false;
     };
 
     if (Array.isArray(trackingExam.submissions)) {
       trackingExam.submissions.forEach(sub => {
+        if (sub) candidateSubmissions.push(sub);
+      });
+    }
+
+    if (trackingFirestoreSubs.length > 0) {
+      trackingFirestoreSubs.forEach(sub => {
         if (sub) candidateSubmissions.push(sub);
       });
     }
@@ -811,7 +889,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       const idB = String(b?.id || '');
       return idA.localeCompare(idB, undefined, { numeric: true, sensitivity: 'base' });
     });
-  }, [trackingExam, submissionsVersion]);
+  }, [trackingExam, submissionsVersion, trackingFirestoreSubs]);
 
   const filteredTrackingSubmissions = useMemo(() => {
     if (trackingFilter === 'need_manual') {
@@ -834,6 +912,69 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const [statsExam, setStatsExam] = useState<ExamPaper | null>(null);
   const [statsTab, setStatsTab] = useState<'performance' | 'details' | 'questions'>('performance');
   const [viewingQuestion, setViewingQuestion] = useState<number | null>(null);
+  const [statsFirestoreSubs, setStatsFirestoreSubs] = useState<any[]>([]);
+
+  // Listen directly to Firestore subcollection 'submissions' when stats modal is open
+  useEffect(() => {
+    if (!statsExam?.id || !db) {
+      setStatsFirestoreSubs([]);
+      return;
+    }
+
+    const examDocId = statsExam.id;
+    const originalDocId = statsExam.originalExamId;
+    const unsubList: (() => void)[] = [];
+
+    try {
+      const subColRef = collection(db, 'exams', examDocId, 'submissions');
+      const unsub1 = onSnapshot(subColRef, (snapshot) => {
+        const subs: any[] = [];
+        snapshot.forEach((docSnap) => {
+          subs.push({ ...docSnap.data(), id: docSnap.id, docId: docSnap.id });
+        });
+        setStatsFirestoreSubs(prev => {
+          const map = new Map<string, any>();
+          prev.forEach(s => {
+            const key = s.id || s.docId || s.studentCode || s.maHs || s.studentId;
+            if (key) map.set(key, s);
+          });
+          subs.forEach(s => {
+            const key = s.id || s.docId || s.studentCode || s.maHs || s.studentId;
+            if (key) map.set(key, s);
+          });
+          return Array.from(map.values());
+        });
+      }, () => {});
+      unsubList.push(unsub1);
+
+      if (originalDocId && originalDocId !== examDocId) {
+        const origColRef = collection(db, 'exams', originalDocId, 'submissions');
+        const unsub2 = onSnapshot(origColRef, (snapshot) => {
+          const subs: any[] = [];
+          snapshot.forEach((docSnap) => {
+            subs.push({ ...docSnap.data(), id: docSnap.id, docId: docSnap.id });
+          });
+          setStatsFirestoreSubs(prev => {
+            const map = new Map<string, any>();
+            prev.forEach(s => {
+              const key = s.id || s.docId || s.studentCode || s.maHs || s.studentId;
+              if (key) map.set(key, s);
+            });
+            subs.forEach(s => {
+              const key = s.id || s.docId || s.studentCode || s.maHs || s.studentId;
+              if (key) map.set(key, s);
+            });
+            return Array.from(map.values());
+          });
+        }, () => {});
+        unsubList.push(unsub2);
+      }
+    } catch {}
+
+    return () => {
+      unsubList.forEach(u => u());
+    };
+  }, [statsExam?.id, statsExam?.originalExamId]);
 
   // Real-time statistics aggregation for statsExam
   const statsData = useMemo(() => {
@@ -861,13 +1002,23 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       attempts: number;
     }>();
 
+    const targetExamId = String(statsExam.id || '').trim().toLowerCase();
+    const targetOriginalId = String(statsExam.originalExamId || '').trim().toLowerCase();
+    const targetBaseId = targetExamId.replace(/-class-.*$/, '').replace(/^ex-/, '');
+
+    const isMatch = (subExamId: string) => {
+      const cleanSub = String(subExamId || '').trim().toLowerCase();
+      if (!cleanSub) return false;
+      if (cleanSub === targetExamId || (targetOriginalId && cleanSub === targetOriginalId)) return true;
+      const subBaseId = cleanSub.replace(/-class-.*$/, '').replace(/^ex-/, '');
+      if (targetBaseId && subBaseId && targetBaseId === subBaseId) return true;
+      return false;
+    };
+
     const processSub = (item: any, fallbackId?: string) => {
       if (!item) return;
-      const targetExamId = String(statsExam.id || '').trim().toLowerCase();
-      const targetOriginalId = String(statsExam.originalExamId || '').trim().toLowerCase();
       const subExamId = String(item.examId || item.id || item.exam?.id || '').trim().toLowerCase();
-      const isMatch = Boolean(subExamId && (subExamId === targetExamId || (targetOriginalId && subExamId === targetOriginalId)));
-      if (!isMatch) return;
+      if (!isMatch(subExamId)) return;
 
       const rawScore = item.score !== undefined ? item.score : (item.totalScore !== undefined ? item.totalScore : null);
       let numScore: number | null = null;
@@ -906,6 +1057,11 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
         });
       }
     };
+
+    // Quét Firestore subcollection submissions đã lắng nghe thời gian thực
+    if (statsFirestoreSubs.length > 0) {
+      statsFirestoreSubs.forEach(sub => processSub(sub));
+    }
 
     // Quét statsExam.submissions
     if (Array.isArray(statsExam.submissions)) {
@@ -1056,7 +1212,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       studentsScore10,
       questionStats
     };
-  }, [statsExam, submissionsVersion]);
+  }, [statsExam, submissionsVersion, statsFirestoreSubs]);
   const [gradingStudent, setGradingStudent] = useState<any>(null);
   const [retakeStudent, setRetakeStudent] = useState<{id: string, name: string} | null>(null);
   const [deleteStudent, setDeleteStudent] = useState<{id: string, name: string} | null>(null);

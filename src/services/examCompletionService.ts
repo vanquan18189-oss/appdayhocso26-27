@@ -39,6 +39,18 @@ export function getExamCompletion(examId: string, targetClassName: string, examS
   // Gather all submissions from exam prop and localStorage caches
   const allCandidates: any[] = [...(Array.isArray(examSubmissions) ? examSubmissions : [])];
 
+  const targetExamId = String(examId || '').trim().toLowerCase();
+  const targetBaseId = targetExamId.replace(/-class-.*$/, '').replace(/^ex-/, '');
+
+  const isExamMatch = (subExamId: string) => {
+    const cleanSub = String(subExamId || '').trim().toLowerCase();
+    if (!cleanSub || !targetExamId) return false;
+    if (cleanSub === targetExamId) return true;
+    const subBaseId = cleanSub.replace(/-class-.*$/, '').replace(/^ex-/, '');
+    if (targetBaseId && subBaseId && targetBaseId === subBaseId) return true;
+    return false;
+  };
+
   if (typeof window !== 'undefined') {
     try {
       const allSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
@@ -48,7 +60,7 @@ export function getExamCompletion(examId: string, targetClassName: string, examS
           parsed.forEach((item: any) => {
             if (item) {
               const sExamId = String(item.examId || item.id || item.exam?.id || '').trim().toLowerCase();
-              if (sExamId === String(examId).trim().toLowerCase()) {
+              if (isExamMatch(sExamId)) {
                 allCandidates.push(item);
               }
             }
@@ -80,7 +92,7 @@ export function getExamCompletion(examId: string, targetClassName: string, examS
               parsed.forEach((item: any) => {
                 if (item) {
                   const sExamId = String(item.examId || item.id || item.exam?.id || '').trim().toLowerCase();
-                  if (sExamId === String(examId).trim().toLowerCase()) {
+                  if (isExamMatch(sExamId)) {
                     const fallbackCode = key.replace('eduplay_student_exam_subs_', '').replace('eduplay_student_exam_submissions_', '');
                     allCandidates.push({ ...item, fallbackCode });
                   }
