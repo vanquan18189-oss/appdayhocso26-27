@@ -7,17 +7,17 @@ import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import mammoth from 'mammoth';
 
 const firebaseConfig = {
-  apiKey: process.env.FIREBASE_API_KEY || process.env.VITE_FIREBASE_API_KEY || "",
-  authDomain: process.env.FIREBASE_AUTH_DOMAIN || process.env.VITE_FIREBASE_AUTH_DOMAIN || "",
-  projectId: process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || "",
-  storageBucket: process.env.FIREBASE_STORAGE_BUCKET || process.env.VITE_FIREBASE_STORAGE_BUCKET || "",
-  messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID || process.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "",
-  appId: process.env.FIREBASE_APP_ID || process.env.VITE_FIREBASE_APP_ID || "",
-  measurementId: process.env.FIREBASE_MEASUREMENT_ID || process.env.VITE_FIREBASE_MEASUREMENT_ID || ""
+  apiKey: "AIzaSyAazNo3xjmQAHXbjq8aC9Blqy_PSpAHTtI",
+  authDomain: "appdayhoc-dcb36.firebaseapp.com",
+  projectId: "appdayhoc-dcb36",
+  storageBucket: "appdayhoc-dcb36.firebasestorage.app",
+  messagingSenderId: "498653089335",
+  appId: "1:498653089335:web:3d9453134dc6ca238379b2",
+  measurementId: "G-JNQPGWC6F4"
 };
 
 const appFb = initializeApp(firebaseConfig);
-const dbId = process.env.FIREBASE_DATABASE_ID || process.env.VITE_FIREBASE_DATABASE_ID || "ai-studio-eduplayprohthngq-71ccd90c-504d-46b7-a2bb-043f46702509";
+const dbId = "ai-studio-eduplayprohthngq-71ccd90c-504d-46b7-a2bb-043f46702509";
 const db = getFirestore(appFb, dbId);
 
 async function startServer() {
