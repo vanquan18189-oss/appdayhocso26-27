@@ -667,19 +667,6 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     return [];
   });
 
-  useEffect(() => {
-    const exam = activeExamSession?.exam;
-    if (!authenticStudentCode || !exam?.id) return;
-    studentResultService.getExamSubmission(authenticStudentCode, exam.id).then(sub => {
-      if (sub) {
-        setExamHistory(prev => {
-          if (prev.some(s => s.examId === exam.id)) return prev;
-          return [sub, ...prev];
-        });
-      }
-    });
-  }, [authenticStudentCode, activeExamSession?.exam?.id]);
-
   const examSubmissions = examHistory;
   const setExamSubmissions = setExamHistory;
 

@@ -1,4 +1,4 @@
-import { doc, setDoc, getDocFromServer, getDoc } from 'firebase/firestore';
+import { doc, setDoc, getDocFromServer } from 'firebase/firestore';
 import { db } from './firebase';
 import { normalizeStudentCode } from './studentCode';
 
@@ -145,23 +145,6 @@ export const studentResultService = {
     } catch (error) {
       console.error('Lỗi khi lưu kết quả trò chơi:', error);
       throw error;
-    }
-  },
-
-  /**
-   * Tải kết quả bài kiểm tra (Exams) từ Firestore
-   */
-  async getExamSubmission(rawStudentCode: string, examId: string): Promise<any | null> {
-    try {
-      const studentCode = normalizeStudentCode(rawStudentCode);
-      if (!studentCode) return null;
-      // Fetch from: student_results/{studentCode}/exams/{examId}
-      const docRef = doc(db, STUDENT_RESULTS_COLLECTION, studentCode, 'exams', examId);
-      const snap = await getDoc(docRef);
-      return snap.exists() ? snap.data() : null;
-    } catch (error) {
-      console.error('Lỗi khi tải bài kiểm tra từ Firestore:', error);
-      return null;
     }
   },
 
