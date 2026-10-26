@@ -16,11 +16,8 @@ export interface ParsedStudentCode {
  */
 export function normalizeStudentCode(code?: string): string {
   if (!code || typeof code !== 'string') return '';
-  return code
-    .trim()
-    .replace(/[–—−]/g, '-')
-    .replace(/\s+/g, '')
-    .toUpperCase();
+  // Trim, Uppercase, Replace various dashes with standard dash (-)
+  return code.trim().toUpperCase().replace(/[–—−]/g, '-');
 }
 
 /**

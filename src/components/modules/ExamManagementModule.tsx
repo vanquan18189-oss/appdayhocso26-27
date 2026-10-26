@@ -3,7 +3,7 @@ import { getSubjectColorStyles } from '../../utils/subjectColors';
 import { formatScore, formatTotalScore, roundTotalScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
 import { getTeachersFromLocalStorage, resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
 import { getStudentsFromLocalStorage, getDefault5BRoster, getDefault3CRoster, getClassStudentCount, deleteStudentFromClass } from '../../services/studentStorageService';
-import { formatStandardStudentCode } from '../../services/studentCode';
+import { formatStandardStudentCode, normalizeStudentCode } from '../../services/studentCode';
 import { seedInitialExamsManually, deleteAllExamsFromFirestore } from '../../services/examStorageService';
 import { getExamCompletion } from '../../services/examCompletionService';
 import { auth } from '../../services/firebase';
@@ -64,6 +64,7 @@ import {
   FileQuestion, Upload, Volume2, Database
 } from 'lucide-react';
 import { ExamPaper, QuestionItem, UserRole } from '../../types';
+import { firebaseConfig } from '../../firebaseConfig';
 import { generateExamQuestionsAI } from '../../services/geminiService';
 import { exportExamToExcel, downloadExamMatrixTemplate } from '../../services/excelService';
 import { ManualQuestionBankModal } from './ManualQuestionBankModal';
@@ -673,13 +674,13 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     const usedSubIndices = new Set<number>();
 
     classStudentsRoster.forEach(st => {
-      const stdCode = st.code.toUpperCase();
+      const stdCode = normalizeStudentCode(st.code);
       const stName = st.fullName.trim().toLowerCase();
 
       // Pass 1: exact studentCode / maHs / studentId match
       let matchIdx = candidateSubmissions.findIndex((sub, idx) => {
         if (usedSubIndices.has(idx) || !sub) return false;
-        const cands = [sub.studentCode, sub.maHs, sub.studentId, sub.code, sub.fallbackCode].filter(Boolean).map(c => String(c).trim().toUpperCase());
+        const cands = [sub.studentCode, sub.maHs, sub.studentId, sub.code, sub.fallbackCode].filter(Boolean).map(c => normalizeStudentCode(String(c).trim()));
         return cands.some(c => c === stdCode || formatStandardStudentCode(c, cleanClass) === stdCode);
       });
 
@@ -4851,6 +4852,26 @@ return (
 
       
 
+      {window.location.search.includes('debug=1') && (
+        <div className="p-4 bg-yellow-100 border-t border-yellow-200">
+          <h3 className="text-sm font-bold">Debug Tools</h3>
+          <p className="text-xs">ProjectID: {firebaseConfig?.projectId || 'N/A'}</p>
+          <button 
+            className="px-2 py-1 bg-yellow-500 text-white text-xs rounded"
+            onClick={() => {
+              console.log('--- Bắt đầu quét bài nộp lạc mã (Dry-run) ---');
+              const allSubs = JSON.parse(localStorage.getItem('eduplay_all_exam_submissions') || '[]');
+              console.log('Tổng số bài nộp:', allSubs.length);
+              const lost = allSubs.filter((s: any) => !s.studentId || s.studentId === 'u-4' || s.studentId === 'hs-temp');
+              console.log('Số bài nộp lạc mã:', lost.length);
+              lost.forEach((s: any) => console.log('Lạc mã:', s));
+              console.log('--- Kết thúc quét ---');
+            }}
+          >
+            Quét & Sửa Lạc Mã (Dry-run)
+          </button>
+        </div>
+      )}
     </div>
   );
 };
