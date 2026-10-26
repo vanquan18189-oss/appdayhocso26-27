@@ -44,8 +44,6 @@ import { doc, runTransaction } from 'firebase/firestore';
 import { getFirestoreDebugStatus } from '../../services/firestoreWriteVerificationService';
 import { formatScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
 import { stableShuffle, getMatchingPairColor } from '../../utils/arrayUtils';
-import { normalizeStudentCode } from '../../services/studentCode';
-
 
 export interface ExamSubmissionItem {
   id: string;
@@ -984,8 +982,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         const effectiveInfo = getEffectiveStudentClassAndGrade();
         const effectiveStudentClass = session?.className || effectiveInfo.studentClass || 'Lớp 3C';
         const effectiveStudentName = session?.name || session?.fullName || effectiveInfo.studentName || currentUserName;
-        const rawAuthenticCode = getAuthenticStudentCode(session, currentUserId, effectiveStudentClass, effectiveStudentName);
-        const authenticStudentCode = normalizeStudentCode(rawAuthenticCode);
+        const authenticStudentCode = getAuthenticStudentCode(session, currentUserId, effectiveStudentClass, effectiveStudentName);
         const effectiveAcademicYear = session?.academicYear || '2026-2027';
 
         const examSub: ExamSubmissionItem = {
@@ -996,7 +993,6 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           studentId: authenticStudentCode,
           sddcn: authenticStudentCode,
           studentPersistentId: authenticStudentCode,
-
           academicYear: effectiveAcademicYear,
           title: exam.title,
           subject: exam.subject || 'Môn học',

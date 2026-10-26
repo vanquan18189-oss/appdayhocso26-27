@@ -1,5 +1,5 @@
 import { getStudentsFromLocalStorage, getDefault3CRoster, getDefault5BRoster, getClassStudentCount } from './studentStorageService';
-import { formatStandardStudentCode, normalizeStudentCode } from './studentCode';
+import { formatStandardStudentCode } from './studentCode';
 
 export interface ExamCompletionStats {
   totalStudents: number;
@@ -99,14 +99,14 @@ export function getExamCompletion(examId: string, targetClassName: string, examS
 
   allCandidates.forEach((sub) => {
     if (!sub) return;
-    const subStudentId = normalizeStudentCode(String(sub.studentId || sub.maHs || sub.studentCode || sub.code || sub.sddcn || sub.fallbackCode || '').trim());
+    const subStudentId = String(sub.studentId || sub.maHs || sub.studentCode || sub.code || sub.sddcn || sub.fallbackCode || '').trim();
     const subStudentName = String(sub.studentName || sub.name || sub.fullName || '').trim().toLowerCase();
 
     // Try matching roster student
     const matchedRoster = classStudentsRoster.find(st => {
-      const rosterCode = normalizeStudentCode(st.code);
+      const rosterCode = st.code.toUpperCase();
       const rosterName = st.fullName.trim().toLowerCase();
-      const candCodes = [subStudentId, sub.studentCode, sub.maHs, sub.studentId, sub.sddcn].filter(Boolean).map(c => normalizeStudentCode(String(c).trim()));
+      const candCodes = [subStudentId, sub.studentCode, sub.maHs, sub.studentId, sub.sddcn].filter(Boolean).map(c => String(c).trim().toUpperCase());
       
       const isCodeMatch = candCodes.some(c => c === rosterCode || formatStandardStudentCode(c, cleanClass) === rosterCode);
       const isNameMatch = subStudentName && subStudentName.length > 2 && (subStudentName === rosterName || subStudentName.includes(rosterName) || rosterName.includes(subStudentName));

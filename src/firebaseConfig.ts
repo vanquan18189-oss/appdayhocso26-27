@@ -11,13 +11,13 @@ import {
 import { getAuth, Auth } from "firebase/auth";
 
 export const firebaseConfig = {
-  apiKey: (import.meta as any).env?.VITE_FIREBASE_API_KEY || (import.meta as any).env?.FIREBASE_API_KEY || "",
-  authDomain: (import.meta as any).env?.VITE_FIREBASE_AUTH_DOMAIN || (import.meta as any).env?.FIREBASE_AUTH_DOMAIN || "",
-  projectId: (import.meta as any).env?.VITE_FIREBASE_PROJECT_ID || (import.meta as any).env?.FIREBASE_PROJECT_ID || "",
-  storageBucket: (import.meta as any).env?.VITE_FIREBASE_STORAGE_BUCKET || (import.meta as any).env?.FIREBASE_STORAGE_BUCKET || "",
-  messagingSenderId: (import.meta as any).env?.VITE_FIREBASE_MESSAGING_SENDER_ID || (import.meta as any).env?.FIREBASE_MESSAGING_SENDER_ID || "",
-  appId: (import.meta as any).env?.VITE_FIREBASE_APP_ID || (import.meta as any).env?.FIREBASE_APP_ID || "",
-  measurementId: (import.meta as any).env?.VITE_FIREBASE_MEASUREMENT_ID || (import.meta as any).env?.FIREBASE_MEASUREMENT_ID || ""
+  apiKey: (import.meta as any).env?.VITE_FIREBASE_API_KEY || "AIzaSyAazNo3xjmQAHXbjq8aC9Blqy_PSpAHTtI",
+  authDomain: (import.meta as any).env?.VITE_FIREBASE_AUTH_DOMAIN || "appdayhoc-dcb36.firebaseapp.com",
+  projectId: (import.meta as any).env?.VITE_FIREBASE_PROJECT_ID || "appdayhoc-dcb36",
+  storageBucket: (import.meta as any).env?.VITE_FIREBASE_STORAGE_BUCKET || "appdayhoc-dcb36.firebasestorage.app",
+  messagingSenderId: (import.meta as any).env?.VITE_FIREBASE_MESSAGING_SENDER_ID || "498653089335",
+  appId: (import.meta as any).env?.VITE_FIREBASE_APP_ID || "1:498653089335:web:3d9453134dc6ca238379b2",
+  measurementId: (import.meta as any).env?.VITE_FIREBASE_MEASUREMENT_ID || "G-JNQPGWC6F4"
 };
 
 export const app: FirebaseApp = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
