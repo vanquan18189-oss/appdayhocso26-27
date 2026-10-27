@@ -114,15 +114,15 @@ export function getExamCompletion(examId: string, targetClassName: string, examS
     const subStudentId = normalizeStudentCode(String(sub.studentId || sub.maHs || sub.studentCode || sub.code || sub.sddcn || sub.fallbackCode || ''));
     const subStudentName = String(sub.studentName || sub.name || sub.fullName || '').trim().toLowerCase();
 
-    // Try matching roster student
+    // QUY TẮC KHỚP BẮT BUỘC (MỤC 3):
+    // Một bài nộp chỉ thuộc về một học sinh khi và chỉ khi studentCode (đã chuẩn hóa) bằng đúng Mã HS của học sinh đó.
+    // CẤM khớp lỏng theo tên hay dự phòng.
     const matchedRoster = classStudentsRoster.find(st => {
       const rosterCode = st.code.toUpperCase();
-      const rosterName = st.fullName.trim().toLowerCase();
-      const candCodes = [sub.studentId, sub.studentCode, sub.maHs, sub.code, sub.sddcn, sub.fallbackCode].filter(Boolean).map(c => normalizeStudentCode(String(c)));
-      
-      const isCodeMatch = candCodes.some(c => c === rosterCode || formatStandardStudentCode(c, cleanClass) === rosterCode);
-      const isNameMatch = subStudentName && subStudentName.length > 2 && (subStudentName === rosterName || subStudentName.includes(rosterName) || rosterName.includes(subStudentName));
-      return isCodeMatch || isNameMatch;
+      const candCodes = [sub.studentCode, sub.maHs, sub.studentId, sub.code, sub.docId, sub.id]
+        .filter(Boolean)
+        .map(c => normalizeStudentCode(String(c)));
+      return candCodes.some(c => c === rosterCode);
     });
 
     if (matchedRoster) {

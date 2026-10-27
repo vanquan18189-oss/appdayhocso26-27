@@ -71,6 +71,8 @@ import { checkQuestionCorrectLocal } from './StudentExamModule';
 import { useAcademicYear } from '../../contexts/AcademicYearContext';
 import { formatScore, formatTotalScore, roundTotalScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
 
+import { StudentSubmissionDetailModal } from './StudentSubmissionDetailModal';
+
 interface StudentSubmissionRow {
   code: string;
   name: string;
@@ -79,6 +81,7 @@ interface StudentSubmissionRow {
   aiStatus: 'pass' | 'fail' | 'none';
   submittedTime: string;
   status: 'submitted' | 'waiting';
+  rawSubmission?: any;
 }
 
 const CLASS_3A_STUDENTS: StudentSubmissionRow[] = [
@@ -474,7 +477,8 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
           totalScore: finalScore,
           aiStatus: isPassed ? ('pass' as const) : ('fail' as const),
           submittedTime: formatSubmissionDateTime(submission.submittedAt || submission.submittedTime || getCurrentSubmissionTimestamp()),
-          status: 'submitted' as const
+          status: 'submitted' as const,
+          rawSubmission: submission
         };
       } else {
         return {
@@ -2784,372 +2788,20 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
       {/* MODAL: CHẤM LẠI BÀI TẬP HỌC SINH CHI TIẾT   */}
       {/* ========================================== */}
       {selectedStudentDetail && (
-        <div className="fixed inset-0 z-60 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6 animate-fade-in">
-          <div className="bg-white rounded-3xl max-w-4xl w-full p-5 sm:p-7 shadow-2xl border border-slate-200 flex flex-col max-h-[92vh] overflow-y-auto space-y-5 animate-scale-up">
-            
-            {/* 1. HEADER & SWITCH TOGGLE */}
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setRegradeToggle(!regradeToggle)}
-                  className="flex items-center gap-2.5 cursor-pointer group"
-                >
-                  <div className={`w-11 h-6 rounded-full p-1 transition-colors ${regradeToggle ? 'bg-emerald-500' : 'bg-slate-300'}`}>
-                    <div className={`w-4 h-4 bg-white rounded-full shadow-xs transition-transform ${regradeToggle ? 'translate-x-5' : 'translate-x-0'}`} />
-                  </div>
-                  <span className="text-sm font-extrabold text-sky-600 font-heading group-hover:text-sky-700 transition-colors">
-                    Chấm lại bài tập
-                  </span>
-                </button>
-              </div>
-
-              <button
-                onClick={() => setSelectedStudentDetail(null)}
-                className="p-1.5 rounded-xl hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-all cursor-pointer"
-                title="Đóng"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* 2. SUB-HEADER NOTE */}
-            <div className="text-xs font-semibold text-sky-600">
-              Nội dung này do giáo viên tự biên soạn.
-            </div>
-
-            {/* 3. LIGHT PINK BANNER (HỒNG NHẠT) */}
-            <div className="bg-rose-50/80 border border-rose-200 rounded-2xl p-4 sm:p-5 space-y-2.5">
-              <h4 className="text-base font-black text-rose-900">
-                {selectedStudentDetail.name} đã hoàn thành bài tập này!
-              </h4>
-
-              <div className="space-y-1 text-xs text-rose-900/90 font-medium">
-                <p><strong className="text-rose-950 font-bold">Số câu đúng:</strong> {selectedStudentDetail.answers.filter(a => a === 'pass').length}/{selectedStudentDetail.answers.length || 1}</p>
-                <p><strong className="text-rose-950 font-bold">Tổng số câu hỏi:</strong> {detailAssignment?.questions?.length || selectedStudentDetail.answers.length || 1}</p>
-                {isSubjectWithScore(detailAssignment?.subject) ? (
-                  <>
-                    <p><strong className="text-rose-950 font-bold">Điểm bài tập:</strong> <span className="text-rose-600 font-extrabold">{selectedStudentDetail.totalScore !== '-' ? formatTotalScore(selectedStudentDetail.totalScore) : '0'}</span></p>
-                    <p><strong className="text-rose-950 font-bold">Điểm thang 10:</strong> <span className="text-rose-600 font-extrabold">{selectedStudentDetail.totalScore !== '-' ? formatTotalScore(selectedStudentDetail.totalScore) : '0'}</span></p>
-                  </>
-                ) : (
-                  <p><strong className="text-rose-950 font-bold">Mức đánh giá:</strong> <span className="font-extrabold text-emerald-700">{getQualitativeLabel(selectedStudentDetail.answers.filter(a => a === 'pass').length, detailAssignment?.questions?.length || selectedStudentDetail.answers.length || 1)}</span></p>
-                )}
-                <p><strong className="text-rose-950 font-bold">Thời gian nộp bài:</strong> {formatSubmissionDateTime(selectedStudentDetail.submittedTime)}</p>
-              </div>
-
-              <div className="pt-1">
-                <button
-                  onClick={() => {
-                    showToast(`Đã xoá bài làm của học sinh ${selectedStudentDetail.name}`);
-                    setSelectedStudentDetail(null);
-                  }}
-                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-xs transition-all cursor-pointer active:scale-95"
-                >
-                  Xoá bài làm này
-                </button>
-              </div>
-            </div>
-
-            {/* 4. KHỐI BẢNG ĐIỂM & CHI TIẾT CÂU HỎI */}
-            <div className="space-y-4">
-              <h4 className="text-base font-extrabold text-slate-900 font-heading">
-                Bảng điểm
-              </h4>
-
-              {/* Bảng điểm tóm tắt dạng ma trận hàng ngang */}
-              <div className="overflow-x-auto border border-slate-200 rounded-xl bg-white shadow-2xs">
-                <table className="w-full text-center border-collapse text-xs">
-                  <thead>
-                    <tr className="border-b border-slate-200 font-bold text-slate-700">
-                      <th className="py-2.5 px-4 text-left bg-slate-50 border-r border-slate-200 font-extrabold text-slate-800">Câu hỏi</th>
-                      {selectedStudentDetail.answers.map((_, qIdx) => (
-                        <th key={qIdx} className="py-2.5 px-3 bg-amber-50/80 border-r border-slate-200 font-black text-amber-800">
-                          {qIdx + 1}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    <tr className="border-b border-slate-200">
-                      <td className="py-2.5 px-4 text-left font-bold text-slate-700 bg-slate-50 border-r border-slate-200">Điểm</td>
-                      {selectedStudentDetail.answers.map((ans, qIdx) => {
-                        const qCount = selectedStudentDetail.answers.length || 1;
-                        const ptPerQ = Number((10 / qCount).toFixed(1));
-                        return (
-                          <td key={qIdx} className="py-2.5 px-3 font-extrabold text-slate-800 border-r border-slate-200">
-                            {ans === 'pass' ? ptPerQ : 0}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                    <tr>
-                      <td className="py-2.5 px-4 text-left font-bold text-slate-700 bg-slate-50 border-r border-slate-200">Kết quả</td>
-                      {selectedStudentDetail.answers.map((ans, qIdx) => (
-                        <td key={qIdx} className="py-2.5 px-3 border-r last:border-r-0 border-slate-200">
-                          {ans === 'pass' && (
-                            <span className="inline-flex w-5 h-5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-700 items-center justify-center text-[10px] font-black">
-                              ✓
-                            </span>
-                          )}
-                          {ans === 'fail' && (
-                            <span className="inline-flex w-5 h-5 rounded-full bg-rose-100 border border-rose-300 text-rose-700 items-center justify-center text-[10px] font-black">
-                              ✗
-                            </span>
-                          )}
-                          {ans === 'none' && (
-                            <span className="text-slate-300 font-semibold">-</span>
-                          )}
-                        </td>
-                      ))}
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Danh sách 5 câu hỏi hiển thị chi tiết */}
-              <div className="space-y-3 pt-1">
-                {/* Câu 1 */}
-                <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-emerald-700 text-xs">Câu 1 (2.0đ):</span>
-                    <span className="px-2.5 py-0.5 rounded-md text-xs font-medium bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
-                      <Edit3 className="w-3.5 h-3.5" /> Đúng
-                    </span>
-                  </div>
-                  <p className="font-medium text-slate-900 text-base">
-                    Đâu là đối tượng tự nhiên có sẵn trong tự nhiên?
-                  </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm text-slate-700 pt-1">
-                    <div className="p-2.5 rounded-lg border border-slate-200 bg-white font-normal">A. Chiếc quạt điện</div>
-                    <div className="p-2.5 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-900 font-medium flex items-center justify-between">
-                      <span>B. Cây xanh</span>
-                      <span className="text-xs bg-emerald-200 text-emerald-800 px-2 py-0.5 rounded font-medium">Đúng</span>
-                    </div>
-                    <div className="p-2.5 rounded-lg border border-slate-200 bg-white font-normal">C. Bóng đèn điện</div>
-                    <div className="p-2.5 rounded-lg border border-slate-200 bg-white font-normal">D. Ti vi</div>
-                  </div>
-                </div>
-
-                {/* Câu 2 */}
-                <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-emerald-700 text-xs">Câu 2 (2.0đ):</span>
-                    <span className="px-2.5 py-0.5 rounded-md text-xs font-medium bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
-                      <Edit3 className="w-3.5 h-3.5" /> Đúng
-                    </span>
-                  </div>
-                  <p className="font-medium text-slate-900 text-base">
-                    Đâu là sản phẩm công nghệ do con người làm ra để phục vụ cuộc sống?
-                  </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm text-slate-700 pt-1">
-                    <div className="p-2.5 rounded-lg border border-slate-200 bg-white font-normal">A. Hòn đá</div>
-                    <div className="p-2.5 rounded-lg border border-slate-200 bg-white font-normal">B. Dòng sông</div>
-                    <div className="p-2.5 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-900 font-medium flex items-center justify-between">
-                      <span>C. Chiếc ti vi</span>
-                      <span className="text-xs bg-emerald-200 text-emerald-800 px-2 py-0.5 rounded font-medium">Đúng</span>
-                    </div>
-                    <div className="p-2.5 rounded-lg border border-slate-200 bg-white font-normal">D. Cây cối</div>
-                  </div>
-                </div>
-
-                {/* Câu 3 */}
-                <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-emerald-700 text-xs">Câu 3 (2.0đ):</span>
-                    <span className="px-2.5 py-0.5 rounded-md text-xs font-medium bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
-                      <Edit3 className="w-3.5 h-3.5" /> Đúng
-                    </span>
-                  </div>
-                  <p className="font-medium text-slate-900 text-base">
-                    Sản phẩm công nghệ nào dưới đây có tác dụng chiếu sáng trong gia đình?
-                  </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm text-slate-700 pt-1">
-                    <div className="p-2.5 rounded-lg border border-slate-200 bg-white font-normal">A. Quạt điện</div>
-                    <div className="p-2.5 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-900 font-medium flex items-center justify-between">
-                      <span>B. Đèn bàn học</span>
-                      <span className="text-xs bg-emerald-200 text-emerald-800 px-2 py-0.5 rounded font-medium">Đúng</span>
-                    </div>
-                    <div className="p-2.5 rounded-lg border border-slate-200 bg-white font-normal">C. Tủ lạnh</div>
-                    <div className="p-2.5 rounded-lg border border-slate-200 bg-white font-normal">D. Máy thu thanh</div>
-                  </div>
-                </div>
-
-                {/* Câu 4 */}
-                <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-emerald-700 text-xs">Câu 4 (2.0đ):</span>
-                    <span className="px-2.5 py-0.5 rounded-md text-xs font-medium bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
-                      <Edit3 className="w-3.5 h-3.5" /> Đúng
-                    </span>
-                  </div>
-                  <p className="font-medium text-slate-900 text-base">
-                    Sản phẩm công nghệ nào dưới đây dùng để làm mát không gian phòng?
-                  </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm text-slate-700 pt-1">
-                    <div className="p-2.5 rounded-lg border border-slate-200 bg-white font-normal">A. Nồi cơm điện</div>
-                    <div className="p-2.5 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-900 font-medium flex items-center justify-between">
-                      <span>B. Quạt điện</span>
-                      <span className="text-xs bg-emerald-200 text-emerald-800 px-2 py-0.5 rounded font-medium">Đúng</span>
-                    </div>
-                    <div className="p-2.5 rounded-lg border border-slate-200 bg-white font-normal">C. Ti vi</div>
-                    <div className="p-2.5 rounded-lg border border-slate-200 bg-white font-normal">D. Bếp từ</div>
-                  </div>
-                </div>
-
-                {/* Câu 5 */}
-                <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold text-emerald-700 text-xs">Câu 5 (2.0đ):</span>
-                    <span className="px-2.5 py-0.5 rounded-md text-xs font-medium bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
-                      <Edit3 className="w-3.5 h-3.5" /> Đúng
-                    </span>
-                  </div>
-                  <p className="font-medium text-slate-900 text-base">
-                    Tủ lạnh trong gia đình có tác dụng chính là gì?
-                  </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm text-slate-700 pt-1">
-                    <div className="p-2.5 rounded-lg border border-slate-200 bg-white font-normal">A. Giải trí</div>
-                    <div className="p-2.5 rounded-lg border border-slate-200 bg-white font-normal">B. Chiếu sáng</div>
-                    <div className="p-2.5 rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-900 font-medium flex items-center justify-between">
-                      <span>C. Cất giữ và bảo quản thực phẩm</span>
-                      <span className="text-xs bg-emerald-200 text-emerald-800 px-2 py-0.5 rounded font-medium">Đúng</span>
-                    </div>
-                    <div className="p-2.5 rounded-lg border border-slate-200 bg-white font-normal">D. Làm mát cả phòng</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* 5. KHỐI DUYỆT BÀI TẬP & NHẬN XÉT */}
-            <div className="pt-4 border-t border-slate-200 space-y-4">
-              <div className="flex items-center justify-between">
-                <h4 className="text-base font-extrabold text-slate-900 font-heading">
-                  Duyệt bài tập
-                </h4>
-                <span className="px-3 py-1 rounded-full text-xs font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
-                  ✓ Đã chấm & duyệt
-                </span>
-              </div>
-
-              {/* Thông tin bài rèn luyện & người duyệt */}
-              <div className="space-y-1 text-xs text-slate-700 font-medium">
-                <p><strong className="text-slate-900">Bài rèn luyện:</strong> <span className="text-indigo-900 font-extrabold">[Rèn luyện] Bài tập: Luyện tập: bài 1: Tự nhiên và công nghệ</span></p>
-                <p><strong className="text-slate-900">Người tạo:</strong> {detailAssignment?.teacherName || activeTeacherProfile.name}</p>
-                <p><strong className="text-slate-900">Người duyệt:</strong> Hà Thị Trâm</p>
-                <p><strong className="text-slate-900">Thời gian duyệt lần cuối:</strong> 18 tháng 8 lúc 03:56</p>
-              </div>
-
-              {/* Ô nhập điểm duyệt & trạng thái */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
-                <div>
-                  <label className="block text-xs font-extrabold text-slate-900 mb-1.5">
-                    Điểm số bài tập (Thang điểm 10):
-                  </label>
-                  <input
-                    type="text"
-                    value={regradeScore}
-                    onChange={(e) => setRegradeScore(e.target.value)}
-                    className="w-full sm:w-44 p-2.5 text-sm font-black text-slate-900 bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 shadow-2xs"
-                  />
-                  <p className="text-[11px] text-slate-500 italic mt-1.5 leading-snug">
-                    Khi thay đổi điểm số, điểm này sẽ trực tiếp ghi đè lên kết quả AI chấm tự động.
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-extrabold text-slate-900 mb-1.5">
-                    Trạng thái duyệt:
-                  </label>
-                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs text-slate-800 space-y-1">
-                    <div className="font-bold text-slate-900 flex items-center gap-1.5">
-                      <span className="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
-                      Người duyệt cuối cùng: Đặng Văn Hùng
-                    </div>
-                    <div className="text-[11px] text-slate-500">
-                      Hệ thống ghi nhận điểm đã được duyệt thủ công.
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Soạn thảo nhận xét */}
-              <div className="space-y-2 pt-1">
-                <label className="block text-xs font-extrabold text-slate-900">
-                  Nhận xét cho bài tập:
-                </label>
-
-                <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white shadow-2xs">
-                  {/* Toolbar */}
-                  <div className="p-2 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center gap-1 text-xs text-slate-600">
-                    <button type="button" className="p-1 hover:bg-slate-200 rounded font-mono text-[11px]">«</button>
-                    <button type="button" className="p-1 hover:bg-slate-200 rounded font-mono text-[11px]">»</button>
-                    <span className="text-slate-300 mx-0.5">|</span>
-                    <button type="button" className="px-1.5 py-0.5 hover:bg-slate-200 rounded font-bold">∑</button>
-                    <button type="button" className="px-1.5 py-0.5 hover:bg-slate-200 rounded">🖼️</button>
-                    <button type="button" className="px-1.5 py-0.5 hover:bg-slate-200 rounded text-[11px] font-medium border border-slate-200 bg-white">☐ Text LaTeX</button>
-                    <span className="text-slate-300 mx-0.5">|</span>
-                    <select className="px-1.5 py-0.5 hover:bg-slate-200 rounded text-[11px] border border-slate-200 bg-white">
-                      <option>Normal</option>
-                    </select>
-                    <select className="px-1.5 py-0.5 hover:bg-slate-200 rounded text-[11px] border border-slate-200 bg-white">
-                      <option>Arial</option>
-                    </select>
-                    <select className="px-1.5 py-0.5 hover:bg-slate-200 rounded text-[11px] border border-slate-200 bg-white">
-                      <option>15 px</option>
-                    </select>
-                    <span className="text-slate-300 mx-0.5">|</span>
-                    <button type="button" className="px-1.5 py-0.5 hover:bg-slate-200 rounded font-black">B</button>
-                    <button type="button" className="px-1.5 py-0.5 hover:bg-slate-200 rounded italic font-serif">I</button>
-                    <button type="button" className="px-1.5 py-0.5 hover:bg-slate-200 rounded underline">U</button>
-                    <button type="button" className="px-1.5 py-0.5 hover:bg-slate-200 rounded">🎨</button>
-                    <button type="button" className="px-1.5 py-0.5 hover:bg-slate-200 rounded">🟡</button>
-                  </div>
-
-                  {/* Textarea */}
-                  <textarea
-                    rows={3}
-                    value={regradeComment}
-                    onChange={(e) => setRegradeComment(e.target.value)}
-                    className="w-full p-3 text-xs text-slate-800 bg-white focus:outline-hidden resize-y font-medium"
-                    placeholder="Nhập nhận xét..."
-                  />
-                </div>
-              </div>
-
-              {/* Các nút hành động */}
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 border-t border-slate-100">
-                <div className="flex items-center gap-2 w-full sm:w-auto">
-                  <button
-                    onClick={() => {
-                      showToast('Đã chuyển bài tập thành Chưa đạt yêu cầu (Cho học sinh làm lại)!');
-                      setSelectedStudentDetail(null);
-                    }}
-                    className="px-4 py-2.5 rounded-xl text-xs font-extrabold bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 transition-all cursor-pointer flex items-center justify-center gap-1.5 w-full sm:w-auto active:scale-95"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5 text-rose-600" /> Chưa đạt yêu cầu (Cho làm lại)
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      showToast('Đã duyệt lại bài tập thành công!');
-                      setSelectedStudentDetail(null);
-                    }}
-                    className="px-5 py-2.5 rounded-xl text-xs font-extrabold bg-emerald-600 hover:bg-emerald-700 text-white transition-all cursor-pointer shadow-xs flex items-center justify-center gap-1.5 w-full sm:w-auto active:scale-95"
-                  >
-                    <Check className="w-4 h-4" /> Duyệt lại
-                  </button>
-                </div>
-
-                <button
-                  onClick={() => setSelectedStudentDetail(null)}
-                  className="px-6 py-2.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all cursor-pointer w-full sm:w-auto"
-                >
-                  Đóng lại
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <StudentSubmissionDetailModal
+          isOpen={Boolean(selectedStudentDetail)}
+          onClose={() => setSelectedStudentDetail(null)}
+          mode="assignment"
+          targetItem={detailAssignment}
+          studentSubmission={selectedStudentDetail}
+          onSaveRegrade={async () => {
+            showToast(`Đã lưu kết quả chấm lại cho học sinh ${selectedStudentDetail.name} thành công!`);
+          }}
+          onDeleteSubmission={() => {
+            showToast(`Đã xoá bài làm của học sinh ${selectedStudentDetail.name}`);
+            setSelectedStudentDetail(null);
+          }}
+        />
       )}
 
       {/* ========================================== */}

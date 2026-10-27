@@ -39,9 +39,10 @@ import { getStudentGameProfile } from '../../services/studentGameStoreService';
 import { getEffectiveStudentClassAndGrade, getCurrentStudentSession, getAuthenticStudentCode, normalizeClassKey } from '../../services/studentSessionService';
 import { studentResultService } from '../../services/studentResultService';
 import { normalizeStudentCode, formatStandardStudentCode } from '../../services/studentCode';
-import { subscribeToExamsFromFirestore, getExamsFromFirestore, getLocalCachedExams, isExamDeleted } from '../../services/examStorageService';
+import { subscribeToExamsFromFirestore, getExamsFromFirestore, getLocalCachedExams, isExamDeleted, isValidOfficialExam } from '../../services/examStorageService';
+import { removeUndefined } from '../../services/teacherStorageService';
 import { db } from '../../services/firebase';
-import { doc, runTransaction, setDoc, getDoc } from 'firebase/firestore';
+import { doc, runTransaction, setDoc, getDoc, updateDoc } from 'firebase/firestore';
 import { getFirestoreDebugStatus } from '../../services/firestoreWriteVerificationService';
 import { formatScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
 import { stableShuffle, getMatchingPairColor } from '../../utils/arrayUtils';
@@ -49,7 +50,7 @@ import { stableShuffle, getMatchingPairColor } from '../../utils/arrayUtils';
 export interface ExamSubmissionItem {
   id: string;
   type: 'exam';
-  submissionType?: 'exam';
+  submissionType?: 'exam' | 'assignment';
   examId: string;
   studentId?: string;
   sddcn?: string;
@@ -62,6 +63,9 @@ export interface ExamSubmissionItem {
   submittedTime: string;
   exam: ExamPaper;
   answers: Record<number, any>;
+  questionSnapshot?: QuestionItem[];
+  answersById?: Record<string, any>;
+  [key: string]: any;
 }
 
 const isExamSubmission = (sub: any): boolean => {
@@ -84,6 +88,116 @@ const isExamSubmission = (sub: any): boolean => {
   }
 
   return true;
+};
+
+/**
+ * Lấy khóa định danh examId chuẩn hóa cho 1 bản ghi bài nộp để chống trùng lặp tuyệt đối.
+ */
+export const getSubmissionExamKey = (sub: any): string => {
+  if (!sub) return '';
+  const examId = String(sub.examId || sub.exam?.id || '').trim().toLowerCase();
+  if (examId) return examId;
+  const directId = String(sub.id || '').trim().toLowerCase();
+  if (directId.startsWith('sub-')) {
+    const match = directId.match(/^sub-(ex-[^\s]+?)(?:-[0-9a-z]+26-27-[0-9]+)?$/i);
+    if (match) return match[1].toLowerCase();
+  }
+  return directId;
+};
+
+/**
+ * So khớp bài nộp với một đề kiểm tra cụ thể dựa trên examId chính thức.
+ * TUYỆT ĐỐI không dùng regex cắt gọt chuỗi hay so khớp mờ tiêu đề (gây nhận nhầm đề này sang đề khác).
+ */
+export const isExamSubmissionMatch = (sub: any, ex: any): boolean => {
+  if (!sub || !ex || !ex.id) return false;
+  const exId = String(ex.id).trim().toLowerCase();
+  const exOriginalId = ex.originalExamId ? String(ex.originalExamId).trim().toLowerCase() : '';
+
+  const subKey = getSubmissionExamKey(sub);
+  if (subKey && (subKey === exId || (exOriginalId && subKey === exOriginalId))) {
+    return true;
+  }
+
+  const subExamId = String(sub.examId || sub.exam?.id || '').trim().toLowerCase();
+  const subDirectId = String(sub.id || '').trim().toLowerCase();
+
+  // 1. So khớp trực tiếp theo examId
+  if (subExamId && (subExamId === exId || (exOriginalId && subExamId === exOriginalId))) {
+    return true;
+  }
+
+  // 2. So khớp nếu id bài nộp được đặt theo format sub-[examId]-[studentCode]
+  if (subDirectId) {
+    if (subDirectId === `sub-${exId}` || subDirectId.startsWith(`sub-${exId}-`)) {
+      return true;
+    }
+    if (exOriginalId && (subDirectId === `sub-${exOriginalId}` || subDirectId.startsWith(`sub-${exOriginalId}-`))) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+/**
+ * Lấy bài nộp chính xác của học sinh cho một đề kiểm tra cụ thể theo examId và Mã học sinh.
+ * Tuyệt đối không dùng chỉ số mảng (index), không so khớp mờ tránh nhận nhầm đề.
+ */
+export const getExamSubmission = (
+  submissions: any[],
+  exam: ExamPaper | null | undefined,
+  studentCode?: string
+): ExamSubmissionItem | null => {
+  if (!exam || !exam.id) return null;
+
+  const cleanTargetCode = studentCode ? normalizeStudentCode(studentCode) : '';
+
+  // 1. Ưu tiên kiểm tra trực tiếp trong danh sách bài nộp đã nạp
+  if (Array.isArray(submissions) && submissions.length > 0) {
+    const found = submissions.find(sub => {
+      if (!sub) return false;
+      if (!isExamSubmissionMatch(sub, exam)) return false;
+      if (cleanTargetCode) {
+        const subStudentCode = normalizeStudentCode(String(sub.studentId || sub.studentCode || sub.maHs || sub.sddcn || ''));
+        if (subStudentCode && subStudentCode !== cleanTargetCode) {
+          return false;
+        }
+      }
+      return true;
+    });
+    if (found) return found;
+  }
+
+  // 2. Kiểm tra trực tiếp trong mảng submissions nhúng trên chính document của đề kiểm tra (exam.submissions)
+  if (Array.isArray(exam.submissions) && exam.submissions.length > 0) {
+    const foundDocSub = exam.submissions.find((s: any) => {
+      if (!s) return false;
+      const subCode = normalizeStudentCode(String(s.studentId || s.studentCode || s.maHs || s.sddcn || s.code || ''));
+      if (cleanTargetCode && subCode && subCode === cleanTargetCode) return true;
+      return false;
+    });
+    if (foundDocSub) {
+      const numScore = foundDocSub.totalScore !== undefined ? foundDocSub.totalScore : (foundDocSub.score !== undefined ? foundDocSub.score : '-');
+      const rankTier = foundDocSub.rank || (typeof numScore === 'number' ? (numScore >= 8 ? 'Xuất sắc 🏆' : numScore >= 5 ? 'Đạt 👍' : 'Cần cố gắng 📚') : 'Hoàn thành 🎯');
+      return {
+        id: foundDocSub.id || `sub-${exam.id}-${cleanTargetCode}`,
+        type: 'exam',
+        submissionType: 'exam',
+        examId: exam.id,
+        studentId: cleanTargetCode,
+        title: exam.title,
+        subject: exam.subject || 'Môn học',
+        rank: rankTier,
+        score: String(numScore),
+        submittedTime: formatSubmissionDateTime(foundDocSub.submittedAt || foundDocSub.submittedTime || getCurrentSubmissionTimestamp()),
+        exam: exam,
+        answers: foundDocSub.answers || {}
+      } as ExamSubmissionItem;
+    }
+  }
+
+  return null;
 };
 
 export const checkQuestionCorrectLocal = (qi: QuestionItem, choice: any): boolean => {
@@ -296,7 +410,7 @@ export const isMatchingQuestion = (q: QuestionItem): boolean => {
   return false;
 };
 
-const isEssayQuestion = (q: QuestionItem): boolean => {
+export const isEssayQuestion = (q: QuestionItem): boolean => {
   if (!q) return false;
   const typeStr = (q.type || '').trim().toLowerCase();
   return matchesQuestionType(typeStr, 'essay') || 
@@ -306,7 +420,7 @@ const isEssayQuestion = (q: QuestionItem): boolean => {
          typeStr === 'tự luận tự do';
 };
 
-const isTrueFalseQuestion = (q: QuestionItem): boolean => {
+export const isTrueFalseQuestion = (q: QuestionItem): boolean => {
   if (!q) return false;
   const typeStr = (q.type || '').trim().toLowerCase();
   return matchesQuestionType(typeStr, 'true_false') || 
@@ -317,7 +431,7 @@ const isTrueFalseQuestion = (q: QuestionItem): boolean => {
          (q.statements && Array.isArray(q.statements) && q.statements.length > 0);
 };
 
-const isMultipleResponseQuestion = (q: QuestionItem): boolean => {
+export const isMultipleResponseQuestion = (q: QuestionItem): boolean => {
   if (!q) return false;
   const typeStr = (q.type || '').trim().toLowerCase();
   return matchesQuestionType(typeStr, 'multiple_response') || 
@@ -329,7 +443,7 @@ const isMultipleResponseQuestion = (q: QuestionItem): boolean => {
          typeStr === 'multi_choice';
 };
 
-const isFillBlankQuestion = (q: QuestionItem): boolean => {
+export const isFillBlankQuestion = (q: QuestionItem): boolean => {
   if (!q) return false;
   const typeStr = (q.type || '').trim().toLowerCase();
   return matchesQuestionType(typeStr, 'fill_blank') || 
@@ -358,7 +472,7 @@ export const getLatestCorrectOrder = (q: QuestionItem): string[] => {
   return getCorrectOrderingSequence(q);
 };
 
-const isClassificationQuestion = (q: QuestionItem): boolean => {
+export const isClassificationQuestion = (q: QuestionItem): boolean => {
   if (!q) return false;
   const typeStr = (q.type || '').trim().toLowerCase();
   return matchesQuestionType(typeStr, 'classification') || 
@@ -642,10 +756,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           if (Array.isArray(parsedAll)) {
             foundItems = parsedAll.filter((s: any) => {
               const cands = [s.studentId, s.studentCode, s.maHs, s.code, s.sddcn].filter(Boolean).map(c => normalizeStudentCode(String(c)));
-              const nameCand = String(s.studentName || s.name || '').trim().toLowerCase();
-              return cands.includes(authenticStudentCode) || 
-                     (currentUserId && cands.includes(normalizeStudentCode(currentUserId))) ||
-                     (effectiveStudentName && nameCand && nameCand === effectiveStudentName.toLowerCase());
+              return cands.includes(authenticStudentCode);
             });
           }
         }
@@ -654,17 +765,13 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
       if (foundItems.length > 0) {
         return foundItems
           .filter(isExamSubmission)
+          .filter((s: any) => Boolean(s.examId || s.exam?.id))
           .map((s: any) => ({
             ...s,
             type: 'exam' as const,
             submissionType: 'exam' as const,
-            examId: s.examId || s.id || s.exam?.id || 'ex-legacy',
-            exam: s.exam || {
-              id: s.examId || s.id || s.exam?.id || 'ex-legacy',
-              title: s.title || 'Đề kiểm tra',
-              subject: s.subject || 'Môn học',
-              questions: s.questions || []
-            }
+            examId: String(s.examId || s.exam?.id),
+            exam: s.exam
           }));
       }
     } catch {}
@@ -743,43 +850,94 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           }
         });
 
-        // 3. For any liveExam that the student hasn't matched yet, check sub-collection exams/{ex.id}/submissions/{authenticStudentCode}
+        // 3. For any liveExam that the student hasn't matched yet, check sub-collection exams/{docId}/submissions/{studentCode}
         if (db && liveExams.length > 0) {
           const promises = liveExams.map(async (ex) => {
-            const alreadyMatched = firestoreItems.some(item => item.examId === ex.id || item.exam?.id === ex.id) ||
-                                   localItems.some(item => item.examId === ex.id || item.exam?.id === ex.id);
+            const alreadyMatched = firestoreItems.some(item => isExamSubmissionMatch(item, ex)) ||
+                                   localItems.some(item => isExamSubmissionMatch(item, ex));
             if (alreadyMatched) return null;
 
-            try {
-              let subDocRef = doc(db, 'exams', ex.id, 'submissions', authenticStudentCode);
-              let subSnap = await getDoc(subDocRef);
-              if (!subSnap.exists() && ex.originalExamId && ex.originalExamId !== ex.id) {
-                subDocRef = doc(db, 'exams', ex.originalExamId, 'submissions', authenticStudentCode);
-                subSnap = await getDoc(subDocRef);
+            const examBaseId = (ex.originalExamId || ex.id || '').replace(/^(ex|as)-/, '').replace(/-class-.*$/, '');
+            const rawClass = ex.targetClass || studentClass || '3C';
+            const clsKey = normalizeClassKey(rawClass).toLowerCase();
+
+            const candDocIds = Array.from(new Set([
+              ex.id,
+              `ex-${examBaseId}-class-${clsKey}`,
+              `ex-${examBaseId}-class-lp${clsKey}`,
+              ex.originalExamId
+            ].filter(Boolean) as string[]));
+
+            const candStudentCodes = Array.from(new Set([
+              authenticStudentCode,
+              normalizeStudentCode(currentUserId || ''),
+              session?.code ? normalizeStudentCode(session.code) : '',
+              session?.id ? normalizeStudentCode(session.id) : '',
+              session?.sddcn ? normalizeStudentCode(session.sddcn) : ''
+            ].filter(Boolean) as string[]));
+
+            for (const docId of candDocIds) {
+              for (const sc of candStudentCodes) {
+                try {
+                  const subDocRef = doc(db, 'exams', docId, 'submissions', sc);
+                  const subSnap = await getDoc(subDocRef);
+                  if (subSnap.exists()) {
+                    const data = subSnap.data();
+                    const numScore = data.score !== undefined ? data.score : (data.totalScore !== undefined ? data.totalScore : '-');
+                    const rankTier = data.rank || 'Hoàn thành 🎯';
+                    return {
+                      id: data.id || `sub-${ex.id}-${authenticStudentCode}`,
+                      type: 'exam' as const,
+                      submissionType: 'exam' as const,
+                      examId: ex.id,
+                      studentId: authenticStudentCode,
+                      sddcn: authenticStudentCode,
+                      studentPersistentId: authenticStudentCode,
+                      academicYear: session?.academicYear || '2026-2027',
+                      title: ex.title,
+                      subject: ex.subject || 'Môn học',
+                      rank: rankTier,
+                      score: String(numScore),
+                      submittedTime: formatSubmissionDateTime(data.submittedAt || data.submittedTime || getCurrentSubmissionTimestamp()),
+                      exam: ex,
+                      answers: data.answers || {},
+                      answersById: data.answersById,
+                      questionSnapshot: data.questionSnapshot
+                    } as ExamSubmissionItem;
+                  }
+                } catch {}
+
+                // Also check assignments collection if assignment-oriented
+                try {
+                  const asDocRef = doc(db, 'assignments', docId, 'submissions', sc);
+                  const asSnap = await getDoc(asDocRef);
+                  if (asSnap.exists()) {
+                    const data = asSnap.data();
+                    const numScore = data.score !== undefined ? data.score : (data.totalScore !== undefined ? data.totalScore : '-');
+                    const rankTier = data.rank || 'Hoàn thành 🎯';
+                    return {
+                      id: data.id || `sub-${ex.id}-${authenticStudentCode}`,
+                      type: 'exam' as const,
+                      submissionType: 'exam' as const,
+                      examId: ex.id,
+                      studentId: authenticStudentCode,
+                      sddcn: authenticStudentCode,
+                      studentPersistentId: authenticStudentCode,
+                      academicYear: session?.academicYear || '2026-2027',
+                      title: ex.title,
+                      subject: ex.subject || 'Môn học',
+                      rank: rankTier,
+                      score: String(numScore),
+                      submittedTime: formatSubmissionDateTime(data.submittedAt || data.submittedTime || getCurrentSubmissionTimestamp()),
+                      exam: ex,
+                      answers: data.answers || {},
+                      answersById: data.answersById,
+                      questionSnapshot: data.questionSnapshot
+                    } as ExamSubmissionItem;
+                  }
+                } catch {}
               }
-              if (subSnap.exists()) {
-                const data = subSnap.data();
-                const numScore = data.score !== undefined ? data.score : (data.totalScore !== undefined ? data.totalScore : '-');
-                const rankTier = data.rank || 'Hoàn thành 🎯';
-                return {
-                  id: data.id || `sub-${ex.id}-${authenticStudentCode}`,
-                  type: 'exam' as const,
-                  submissionType: 'exam' as const,
-                  examId: ex.id,
-                  studentId: authenticStudentCode,
-                  sddcn: authenticStudentCode,
-                  studentPersistentId: authenticStudentCode,
-                  academicYear: session?.academicYear || '2026-2027',
-                  title: ex.title,
-                  subject: ex.subject || 'Môn học',
-                  rank: rankTier,
-                  score: String(numScore),
-                  submittedTime: formatSubmissionDateTime(data.submittedAt || data.submittedTime || getCurrentSubmissionTimestamp()),
-                  exam: ex,
-                  answers: data.answers || {}
-                } as ExamSubmissionItem;
-              }
-            } catch {}
+            }
             return null;
           });
 
@@ -789,16 +947,16 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           });
         }
 
-        // 4. Merge Local items and Firestore items (keyed by canonical exam rootId)
+        // 4. Merge Local items and Firestore items (keyed strictly by canonical examId to prevent duplicates)
         const mergedMap = new Map<string, ExamSubmissionItem>();
         localItems.forEach(item => {
-          const examId = (item.examId || item.exam?.id || item.id || '').replace(/-class-.*$/, '').replace(/^ex-/, '').toLowerCase();
-          const key = examId || item.title || item.id;
+          if (!item) return;
+          const key = getSubmissionExamKey(item);
           if (key) mergedMap.set(key, item);
         });
         firestoreItems.forEach(item => {
-          const examId = (item.examId || item.exam?.id || item.id || '').replace(/-class-.*$/, '').replace(/^ex-/, '').toLowerCase();
-          const key = examId || item.title || item.id;
+          if (!item) return;
+          const key = getSubmissionExamKey(item);
           if (!key) return;
           const existing = mergedMap.get(key);
           if (!existing) {
@@ -826,8 +984,14 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     };
 
     syncExamHistory();
+    window.addEventListener('eduplay_exam_submissions_updated', syncExamHistory);
+    window.addEventListener('eduplay_student_submissions_updated', syncExamHistory);
+    window.addEventListener('storage', syncExamHistory);
     return () => {
       isCancelled = true;
+      window.removeEventListener('eduplay_exam_submissions_updated', syncExamHistory);
+      window.removeEventListener('eduplay_student_submissions_updated', syncExamHistory);
+      window.removeEventListener('storage', syncExamHistory);
     };
   }, [liveExams, authenticStudentCode, currentUserId, effectiveStudentName]);
 
@@ -967,19 +1131,20 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         }
       });
 
-      // Merge LocalStorage and Firestore items
+      // Merge LocalStorage and Firestore items (keyed strictly by canonical examId)
       const mergedMap = new Map<string, ExamSubmissionItem>();
       localItems.forEach((item: any) => {
-        const key = item.examId || item.exam?.id || item.id;
+        const key = getSubmissionExamKey(item);
         if (key) mergedMap.set(key, {
           ...item,
           type: 'exam' as const,
           submissionType: 'exam' as const,
-          examId: item.examId || item.exam?.id || item.id
+          examId: item.examId || item.exam?.id || key
         });
       });
       firestoreItems.forEach(item => {
-        const key = item.examId || item.exam?.id || item.id;
+        const key = getSubmissionExamKey(item);
+        if (!key) return;
         const existing = mergedMap.get(key);
         if (!existing) {
           mergedMap.set(key, item);
@@ -1100,210 +1265,268 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
       exam.examType === 'Bài tập';
 
     if (!isPreviewMode) {
-      if (isAssignment) {
-        // Lưu riêng biệt chỉ vào kho Bài tập (assignmentHistory / eduplay_student_submissions_${currentUserId})
-        const hwSub = {
-          id: 'sub-' + Date.now(),
-          type: 'assignment' as const,
-          submissionType: 'assignment' as const,
-          studentId: currentUserId,
-          title: exam.title,
-          subject: exam.subject || 'Môn học',
-          rank: rankTier,
-          score: scoreVal,
-          submittedTime: nowTimeStr,
-          assignment: {
-            id: exam.id,
-            title: exam.title,
-            subject: exam.subject,
-            grade: exam.grade,
-            questions: exam.questions
-          },
-          answers
-        };
-        try {
-          const savedHw = localStorage.getItem(`eduplay_student_submissions_${currentUserId}`);
-          const parsedHw = savedHw ? JSON.parse(savedHw) : [];
-          const examBaseId = (exam.id || '').replace(/-class-.*$/, '').replace(/^as-/, '').toLowerCase();
-          const examTitleNorm = (exam.title || '').trim().toLowerCase()
-            .replace(/^bài tập tự luyện:\s*/i, '')
-            .replace(/^bài tập:\s*/i, '')
-            .replace(/^luyện tập:\s*/i, '')
-            .replace(/^rèn luyện:\s*/i, '')
-            .replace(/\s+/g, ' ');
+      const session = getCurrentStudentSession();
+      const effectiveInfo = getEffectiveStudentClassAndGrade();
+      const effectiveStudentClass = session?.className || effectiveInfo.studentClass || 'Lớp 3C';
+      const effectiveStudentName = session?.name || session?.fullName || effectiveInfo.studentName || currentUserName;
+      const cleanClass = (effectiveStudentClass || '3C').replace(/^Lớp\s*/i, '').trim().toUpperCase();
+      const authenticStudentCode = normalizeStudentCode(formatStandardStudentCode(
+        getAuthenticStudentCode(session, currentUserId, effectiveStudentClass, effectiveStudentName),
+        cleanClass
+      ));
+      const effectiveAcademicYear = session?.academicYear || '2026-2027';
 
-          const remainingHw = Array.isArray(parsedHw) ? parsedHw.filter((s: any) => {
-            if (s.id === hwSub.id) return false;
-            const sRawId = (s.assignment?.id || s.id || '').replace(/-class-.*$/, '').replace(/^as-/, '').toLowerCase();
-            if (examBaseId && sRawId && examBaseId === sRawId) return false;
-            const sTitle = (s.assignment?.title || s.title || '').trim().toLowerCase()
-              .replace(/^bài tập tự luyện:\s*/i, '')
-              .replace(/^bài tập:\s*/i, '')
-              .replace(/^luyện tập:\s*/i, '')
-              .replace(/^rèn luyện:\s*/i, '')
-              .replace(/\s+/g, ' ');
-            if (examTitleNorm && sTitle && examTitleNorm === sTitle) return false;
-            return true;
-          }) : [];
-          const updatedHw = [hwSub, ...remainingHw];
-          localStorage.setItem(`eduplay_student_submissions_${currentUserId}`, JSON.stringify(updatedHw));
+      // ID chính thức của đề kiểm tra hiện hành
+      const officialExamId = exam.id;
 
-          // Lưu bài tập trực tiếp vào Firestore
-          await studentResultService.saveFullAssignmentSubmission(currentUserId, exam.id || 'as-timeout', hwSub);
-          window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
-        } catch (err) {
-          console.error('Error saving assignment to Firestore on timeout:', err);
-        }
+      const answersById: Record<string, any> = {};
+      (exam.questions || []).forEach((q: any, idx: number) => {
+        const key = q.id || `q_${idx}`;
+        answersById[key] = answers[idx];
+      });
+      const qSnapshot = (exam.questions || []).map((q: any) => ({ ...q }));
 
-        // Thưởng bài tập theo thang điểm
-        const questions = exam.questions || [];
-        let correctCount = 0;
-        questions.forEach((q, idx) => {
-          if (checkQuestionCorrectLocal(q, answers[idx])) correctCount++;
-        });
-        awardAssignmentReward(currentUserId, exam.id || 'as-timeout', exam.title, correctCount, questions.length || 1, scoreNumber);
-      } else {
-        // Lưu riêng biệt chỉ vào kho Đề kiểm tra (examHistory / eduplay_student_exam_subs_${authenticStudentCode})
-        const session = getCurrentStudentSession();
-        const effectiveInfo = getEffectiveStudentClassAndGrade();
-        const effectiveStudentClass = session?.className || effectiveInfo.studentClass || 'Lớp 3C';
-        const effectiveStudentName = session?.name || session?.fullName || effectiveInfo.studentName || currentUserName;
-        const cleanClass = (effectiveStudentClass || '3C').replace(/^Lớp\s*/i, '').trim().toUpperCase();
-        const authenticStudentCode = normalizeStudentCode(formatStandardStudentCode(
-          getAuthenticStudentCode(session, currentUserId, effectiveStudentClass, effectiveStudentName),
-          cleanClass
-        ));
-        const effectiveAcademicYear = session?.academicYear || '2026-2027';
+      const examSub: ExamSubmissionItem = {
+        id: 'sub-' + Date.now(),
+        type: 'exam',
+        submissionType: 'exam',
+        examId: officialExamId,
+        studentId: authenticStudentCode,
+        sddcn: session?.sddcn || authenticStudentCode,
+        studentPersistentId: authenticStudentCode,
+        academicYear: effectiveAcademicYear,
+        title: exam.title,
+        subject: exam.subject || 'Môn học',
+        rank: rankTier,
+        score: scoreVal,
+        submittedTime: nowTimeStr,
+        exam,
+        questionSnapshot: qSnapshot,
+        answers,
+        answersById
+      };
+      const updatedSubmissions = [examSub, ...examHistory.filter(s => getSubmissionExamKey(s) !== getSubmissionExamKey(examSub))];
+      setExamHistory(updatedSubmissions);
 
-        const classKey = normalizeClassKey(exam.targetClass || effectiveStudentClass || '5C');
-        const examBaseId = (exam.originalExamId || exam.id || 'ex-auto').replace(/^ex-/, '').replace(/-class-.*$/, '');
-        const examDocId = (exam.id && exam.id.includes('-class-lp'))
-          ? exam.id
-          : `ex-${examBaseId}-class-lp${classKey.toLowerCase()}`;
-
-        const examSub: ExamSubmissionItem = {
-          id: 'sub-' + Date.now(),
-          type: 'exam',
-          submissionType: 'exam',
-          examId: examDocId,
+      try {
+        const fullExamRecord = {
+          ...examSub,
           studentId: authenticStudentCode,
-          sddcn: authenticStudentCode,
+          sddcn: session?.sddcn || authenticStudentCode,
           studentPersistentId: authenticStudentCode,
           academicYear: effectiveAcademicYear,
-          title: exam.title,
-          subject: exam.subject || 'Môn học',
-          rank: rankTier,
-          score: scoreVal,
-          submittedTime: nowTimeStr,
-          exam,
-          answers
+          studentCode: authenticStudentCode,
+          maHs: authenticStudentCode,
+          studentName: effectiveStudentName,
+          studentClass: effectiveStudentClass,
+          totalScore: scoreNumber,
+          submittedAt: nowTimeStr,
+          attempts: 1,
+          questionSnapshot: qSnapshot,
+          answers,
+          answersById,
+          violationCount: finalViolationCount || 3,
+          isViolationLocked: isViolationLock,
+          violationReason: violationReason || '',
+          feedback: isViolationLock 
+            ? 'Bài thi bị khóa & tự động nộp do học sinh vi phạm quy chế rời màn hình/chuyển tab quá 3 lần.' 
+            : (scoreNumber >= 8 ? 'Làm bài xuất sắc, nắm chắc kiến thức.' : (scoreNumber >= 5 ? 'Đã hoàn thành đạt yêu cầu.' : 'Cần ôn tập và rèn luyện thêm.'))
         };
-        const updatedSubmissions = [examSub, ...examHistory.filter(s => s.examId !== examSub.examId)];
-        setExamHistory(updatedSubmissions);
-        try {
-          const fullExamRecord = {
-            ...examSub,
-            studentId: authenticStudentCode,
-            sddcn: authenticStudentCode,
-            studentPersistentId: authenticStudentCode,
-            academicYear: effectiveAcademicYear,
-            studentCode: authenticStudentCode,
-            maHs: authenticStudentCode,
-            studentName: effectiveStudentName,
-            studentClass: effectiveStudentClass,
-            totalScore: scoreNumber,
-            submittedAt: nowTimeStr,
-            attempts: 1,
-            violationCount: finalViolationCount || 3,
-            isViolationLocked: isViolationLock,
-            violationReason: violationReason || '',
-            feedback: isViolationLock 
-              ? 'Bài thi bị khóa & tự động nộp do học sinh vi phạm quy chế rời màn hình/chuyển tab quá 3 lần.' 
-              : (scoreNumber >= 8 ? 'Làm bài xuất sắc.' : (scoreNumber >= 5 ? 'Đã hoàn thành đạt yêu cầu.' : 'Cần ôn tập thêm.'))
-          };
 
-          const targetDocIds = Array.from(new Set([exam.id, examDocId, exam.originalExamId].filter(Boolean) as string[]));
-
-          // 1. Ghi trực tiếp vào Firestore sub-collection 'submissions' với Document ID là Mã HS chuẩn cho tất cả ID tương ứng
-          if (db) {
-            for (const targetId of targetDocIds) {
-              const subDocRef = doc(db, 'exams', targetId, 'submissions', authenticStudentCode);
-              try {
-                await setDoc(subDocRef, {
-                  ...fullExamRecord,
-                  examId: targetId,
-                  updatedAt: new Date().toISOString()
-                }, { merge: true });
-                console.log(`💾 [Timeout Auto-Submit] Đã ghi trực tiếp vào exams/${targetId}/submissions/${authenticStudentCode}`);
-              } catch (errSub) {
-                console.error(`❌ Lỗi ghi trực tiếp subcollection exams/${targetId}/submissions:`, errSub);
-              }
-
-              // 2. Cập nhật mảng submissions trên master document của đề thi
-              const examRef = doc(db, 'exams', targetId);
-              try {
-                await runTransaction(db, async (transaction) => {
-                  const examSnap = await transaction.get(examRef);
-                  let existingSubs: any[] = [];
-                  if (examSnap.exists()) {
-                    const currentData = examSnap.data();
-                    existingSubs = Array.isArray(currentData.submissions) ? [...currentData.submissions] : [];
-                  }
-
-                  const filtered = existingSubs.filter((s: any) =>
-                    (s.studentId || s.studentCode || s.maHs || s.sddcn || '').toLowerCase() !== authenticStudentCode.toLowerCase()
-                  );
-                  filtered.unshift(fullExamRecord);
-
-                  const uniqueStudentKeys = new Set(
-                    filtered.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean)
-                  );
-                  const count = uniqueStudentKeys.size;
-
-                  transaction.set(examRef, {
-                    submissions: filtered,
-                    submissionsCount: count,
-                    completedCount: count,
-                    updatedAt: new Date().toISOString()
-                  }, { merge: true });
-                });
-              } catch (tErr) {
-                console.warn(`Transaction error on ${targetId}, fallback to setDoc:`, tErr);
-                await setDoc(examRef, {
-                  submissionsCount: 1,
-                  completedCount: 1,
-                  updatedAt: new Date().toISOString()
-                }, { merge: true });
-              }
-            }
+        // 1. Ghi bài nộp vào đúng Firestore sub-collection 'submissions' của đề kiểm tra chính thức
+        if (db && officialExamId) {
+          const subDocRef = doc(db, 'exams', officialExamId, 'submissions', authenticStudentCode);
+          try {
+            await setDoc(subDocRef, {
+              ...fullExamRecord,
+              examId: officialExamId,
+              updatedAt: new Date().toISOString()
+            }, { merge: true });
+            console.log(`💾 [Timeout Auto-Submit] Đã ghi trực tiếp vào Firestore: exams/${officialExamId}/submissions/${authenticStudentCode}`);
+          } catch (errSub) {
+            console.error(`❌ Lỗi ghi trực tiếp subcollection exams/${officialExamId}/submissions:`, errSub);
           }
 
-          // 3. Đồng bộ vào kho student_results cho mọi ID tương ứng
-          for (const targetId of targetDocIds) {
-            await studentResultService.saveFullExamSubmission(authenticStudentCode, targetId, fullExamRecord);
-            await studentResultService.saveExamResult(authenticStudentCode, targetId, {
-              score: scoreNumber,
-              maxScore: 10,
-              submittedAt: nowTimeStr,
-              type: 'exam'
+          // Cập nhật mảng submissions trên master document của đề kiểm tra (TUYỆT ĐỐI không tạo document mới nếu document không tồn tại)
+          const examRef = doc(db, 'exams', officialExamId);
+          try {
+            await runTransaction(db, async (transaction) => {
+              const examSnap = await transaction.get(examRef);
+              if (!examSnap.exists()) {
+                console.warn(`[Timeout Auto-Submit] Document exams/${officialExamId} không tồn tại trên Firestore, không tạo bản nháp lỗi.`);
+                return;
+              }
+
+              const currentData = examSnap.data();
+              const existingSubs = Array.isArray(currentData.submissions) ? [...currentData.submissions] : [];
+
+              const filtered = existingSubs.filter((s: any) =>
+                (s.studentId || s.studentCode || s.maHs || s.sddcn || '').toLowerCase() !== authenticStudentCode.toLowerCase()
+              );
+              filtered.unshift(fullExamRecord);
+
+              const uniqueStudentKeys = new Set(
+                filtered.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean)
+              );
+              const count = uniqueStudentKeys.size;
+
+              // Sử dụng transaction.update để đảm bảo CHỈ cập nhật tài liệu đã có, KHÔNG tạo bản nháp mới
+              transaction.update(examRef, {
+                submissions: filtered,
+                submissionsCount: count,
+                completedCount: count,
+                updatedAt: new Date().toISOString()
+              });
             });
+          } catch (tErr) {
+            console.warn(`Transaction update error on ${officialExamId}:`, tErr);
           }
 
-          // 4. Global cache & local storage
-          const allSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
-          const allSubs = allSubsRaw ? JSON.parse(allSubsRaw) : [];
-          const filteredAll = Array.isArray(allSubs) ? allSubs.filter((s: any) => !(s.examId === examSub.examId && (s.studentId === authenticStudentCode || s.studentCode === authenticStudentCode || s.maHs === authenticStudentCode || s.sddcn === authenticStudentCode))) : [];
-          filteredAll.unshift(fullExamRecord);
-          localStorage.setItem('eduplay_all_exam_submissions', JSON.stringify(filteredAll));
-          localStorage.setItem(`eduplay_student_exam_subs_${authenticStudentCode}`, JSON.stringify(updatedSubmissions));
+          // Đồng bộ thêm vào đề gốc nếu có originalExamId khác officialExamId
+          if (exam.originalExamId && exam.originalExamId !== officialExamId) {
+            try {
+              const origSubDocRef = doc(db, 'exams', exam.originalExamId, 'submissions', authenticStudentCode);
+              await setDoc(origSubDocRef, {
+                ...fullExamRecord,
+                examId: exam.originalExamId,
+                updatedAt: new Date().toISOString()
+              }, { merge: true });
 
-          window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
-          window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
-        } catch (err) {
-          console.error('Error saving exam submission to Firestore:', err);
+              const origExamRef = doc(db, 'exams', exam.originalExamId);
+              await runTransaction(db, async (transaction) => {
+                const origSnap = await transaction.get(origExamRef);
+                if (!origSnap.exists()) return;
+                const origData = origSnap.data();
+                const origExisting = Array.isArray(origData.submissions) ? [...origData.submissions] : [];
+                const origFiltered = origExisting.filter((s: any) =>
+                  (s.studentId || s.studentCode || s.maHs || s.sddcn || '').toLowerCase() !== authenticStudentCode.toLowerCase()
+                );
+                origFiltered.unshift(fullExamRecord);
+                const uniqueKeys = new Set(origFiltered.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean));
+                transaction.update(origExamRef, {
+                  submissions: origFiltered,
+                  submissionsCount: uniqueKeys.size,
+                  completedCount: uniqueKeys.size,
+                  updatedAt: new Date().toISOString()
+                });
+              });
+            } catch {}
+          }
+
+          // Nếu là bài tập hoặc ID có prefix as-, đồng bộ thêm vào collection assignments
+          if (isAssignment || officialExamId.startsWith('as-')) {
+            try {
+              const asSubDocRef = doc(db, 'assignments', officialExamId, 'submissions', authenticStudentCode);
+              await setDoc(asSubDocRef, {
+                ...fullExamRecord,
+                assignmentId: officialExamId,
+                updatedAt: new Date().toISOString()
+              }, { merge: true });
+
+              const asRef = doc(db, 'assignments', officialExamId);
+              await runTransaction(db, async (transaction) => {
+                const asSnap = await transaction.get(asRef);
+                if (!asSnap.exists()) return;
+                const asData = asSnap.data();
+                const asSubs = Array.isArray(asData.submissions) ? [...asData.submissions] : [];
+                const asFiltered = asSubs.filter((s: any) =>
+                  (s.studentId || s.studentCode || s.maHs || s.sddcn || '').toLowerCase() !== authenticStudentCode.toLowerCase()
+                );
+                asFiltered.unshift(fullExamRecord);
+                const uniqueAsKeys = new Set(asFiltered.map((s: any) => (s.studentId || s.studentCode || s.maHs || '').trim().toLowerCase()).filter(Boolean));
+                transaction.update(asRef, {
+                  submissions: asFiltered,
+                  submissionsCount: uniqueAsKeys.size,
+                  completedCount: uniqueAsKeys.size,
+                  updatedAt: new Date().toISOString()
+                });
+              });
+            } catch {}
+          }
         }
 
-        // Thưởng đề kiểm tra
+        // 2. Đồng bộ vào kho student_results
+        await studentResultService.saveFullExamSubmission(authenticStudentCode, officialExamId, fullExamRecord);
+        await studentResultService.saveExamResult(authenticStudentCode, officialExamId, {
+          score: scoreNumber,
+          maxScore: 10,
+          submittedAt: nowTimeStr,
+          type: 'exam'
+        });
+        if (exam.originalExamId && exam.originalExamId !== officialExamId) {
+          await studentResultService.saveFullExamSubmission(authenticStudentCode, exam.originalExamId, fullExamRecord);
+          await studentResultService.saveExamResult(authenticStudentCode, exam.originalExamId, {
+            score: scoreNumber,
+            maxScore: 10,
+            submittedAt: nowTimeStr,
+            type: 'exam'
+          });
+        }
+        if (isAssignment) {
+          await studentResultService.saveFullAssignmentSubmission(authenticStudentCode, officialExamId, fullExamRecord);
+          await studentResultService.saveAssignmentResult(authenticStudentCode, {
+            assignmentId: officialExamId,
+            score: scoreNumber,
+            maxScore: 10,
+            submittedAt: nowTimeStr,
+            answers
+          });
+        }
+
+        // 3. Global cache & local storage
+        const allSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
+        const allSubs = allSubsRaw ? JSON.parse(allSubsRaw) : [];
+        const filteredAll = Array.isArray(allSubs) ? allSubs.filter((s: any) => !(s.examId === examSub.examId && (s.studentId === authenticStudentCode || s.studentCode === authenticStudentCode || s.maHs === authenticStudentCode || s.sddcn === authenticStudentCode))) : [];
+        filteredAll.unshift(fullExamRecord);
+        localStorage.setItem('eduplay_all_exam_submissions', JSON.stringify(filteredAll));
+        localStorage.setItem(`eduplay_student_exam_subs_${authenticStudentCode}`, JSON.stringify(updatedSubmissions));
+        if (currentUserId && currentUserId !== authenticStudentCode) {
+          localStorage.setItem(`eduplay_student_exam_subs_${currentUserId}`, JSON.stringify(updatedSubmissions));
+        }
+
+        if (isAssignment) {
+          const hwSub = {
+            id: examSub.id,
+            type: 'assignment' as const,
+            submissionType: 'assignment' as const,
+            studentId: authenticStudentCode,
+            title: exam.title,
+            subject: exam.subject || 'Môn học',
+            rank: rankTier,
+            score: scoreVal,
+            submittedTime: nowTimeStr,
+            assignment: {
+              id: exam.id,
+              title: exam.title,
+              subject: exam.subject,
+              grade: exam.grade,
+              questions: exam.questions
+            },
+            questionSnapshot: qSnapshot,
+            answers,
+            answersById
+          };
+          try {
+            const savedHw = localStorage.getItem(`eduplay_student_submissions_${authenticStudentCode}`);
+            const parsedHw = savedHw ? JSON.parse(savedHw) : [];
+            localStorage.setItem(`eduplay_student_submissions_${authenticStudentCode}`, JSON.stringify([hwSub, ...parsedHw.filter((s: any) => s.id !== hwSub.id)]));
+            if (currentUserId && currentUserId !== authenticStudentCode) {
+              localStorage.setItem(`eduplay_student_submissions_${currentUserId}`, JSON.stringify([hwSub, ...parsedHw.filter((s: any) => s.id !== hwSub.id)]));
+            }
+          } catch {}
+        }
+
+        window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
+        window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
+        window.dispatchEvent(new Event('storage'));
+      } catch (err) {
+        console.error('Error saving exam submission to Firestore:', err);
+      }
+
+      // Thưởng đề kiểm tra / bài tập
+      if (isAssignment) {
+        awardAssignmentReward(currentUserId, exam.id || 'as-timeout', exam.title, correct, questions.length || 1, scoreNumber);
+      } else {
         awardExamReward(currentUserId, exam.id || 'ex-auto', exam.title, scoreNumber);
       }
 
@@ -1481,12 +1704,33 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     return false;
   };
 
-  // Lọc riêng biệt chỉ các bài làm thuộc loại đề kiểm tra (type === 'exam')
+  // Lọc riêng biệt chỉ các bài làm thuộc loại đề kiểm tra (type === 'exam'), đảm bảo tuyệt đối không trùng lặp (1 examId = 1 dòng duy nhất)
   const filteredExamHistory = useMemo(() => {
-    return (examHistory || []).filter(sub => {
-      if (sub.type !== 'exam') return false;
-      return true;
+    const map = new Map<string, ExamSubmissionItem>();
+    (examHistory || []).forEach(sub => {
+      if (!sub || sub.type !== 'exam') return;
+      const key = getSubmissionExamKey(sub);
+      if (!key) return;
+
+      if (!map.has(key)) {
+        map.set(key, sub);
+      } else {
+        const existing = map.get(key)!;
+        const subHasAnswers = Boolean(sub.answers && Object.keys(sub.answers).length > 0);
+        const existingHasAnswers = Boolean(existing.answers && Object.keys(existing.answers).length > 0);
+        if (subHasAnswers && !existingHasAnswers) {
+          map.set(key, sub);
+        } else if (subHasAnswers === existingHasAnswers) {
+          map.set(key, {
+            ...existing,
+            ...sub,
+            exam: sub.exam || existing.exam,
+            answers: subHasAnswers ? sub.answers : existing.answers
+          });
+        }
+      }
     });
+    return Array.from(map.values());
   }, [examHistory]);
 
   // Diagnostic Audit Log for storage & real-time exams
@@ -1496,7 +1740,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     console.log(`Tổng số đề kiểm tra nhận được: ${exams.length}`);
     console.log(`Lịch sử bài kiểm tra nộp (${filteredExamHistory.length} bài):`, filteredExamHistory);
     exams.forEach((ex, idx) => {
-      const isSub = filteredExamHistory.some(sub => (sub.examId && sub.examId === ex.id) || (sub.exam?.id && sub.exam.id === ex.id));
+      const isSub = filteredExamHistory.some(sub => isExamSubmissionMatch(sub, ex));
       console.log(`[#${idx + 1}] ID: ${ex.id} | Title: "${ex.title}" | Target: "${ex.targetClass}" | Grade: "${ex.grade}" | IsSubmitted: ${isSub}`);
     });
     console.groupEnd();
@@ -1597,9 +1841,10 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
   const todoExams = useMemo(() => {
     const now = new Date();
 
-    // 1. Filter by subject and class matching, excluding deleted exams
+    // 1. Filter by subject and class matching, excluding deleted exams and ghost drafts
     const filtered = (liveExams || []).filter(ex => {
       if (!ex || !ex.id) return false;
+      if (!isValidOfficialExam(ex)) return false;
       if (isExamDeleted?.(ex.id) || (ex.originalExamId && isExamDeleted?.(ex.originalExamId))) {
         return false;
       }
@@ -1637,7 +1882,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     // 3. Filter urgent if active
     if (filterUrgent) {
       return deduplicated.filter(ex => {
-        const isSub = filteredExamHistory.some(sub => (sub.examId && sub.examId === ex.id) || (sub.exam?.id && sub.exam.id === ex.id));
+        const isSub = filteredExamHistory.some(sub => isExamSubmissionMatch(sub, ex));
         const status = getExamStatus(ex, isSub, now);
         if (status !== 'open') return false;
         const endDate = parseExamDateTime(ex.endTime);
@@ -1657,7 +1902,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     const totalCount = todoExams.length;
     const completedCount = filteredExamHistory.length;
     const pendingCount = todoExams.filter(
-      ex => !filteredExamHistory.some(sub => (sub.examId && sub.examId === ex.id) || (sub.exam?.id && sub.exam.id === ex.id))
+      ex => !filteredExamHistory.some(sub => isExamSubmissionMatch(sub, ex))
     ).length;
 
     let avgScoreStr = '0 / 10';
@@ -1686,7 +1931,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
       exam.examType === 'Bài tập';
     const canRetake = allowMultipleAttempts !== undefined ? allowMultipleAttempts : isAssignment;
 
-    const isSubmitted = filteredExamHistory.some(sub => (sub.examId && sub.examId === exam.id) || (sub.exam?.id && sub.exam.id === exam.id));
+    const isSubmitted = filteredExamHistory.some(sub => isExamSubmissionMatch(sub, exam));
     const currentStatus = getExamStatus(exam, isSubmitted, new Date());
 
     if (currentStatus === 'closed') {
@@ -1829,238 +2074,290 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         exam.examType === 'Bài tập';
 
       if (!isPreviewMode) {
-        if (isAssignment) {
-          // Lưu riêng biệt chỉ vào kho Bài tập (eduplay_student_submissions_${currentUserId})
-          const hwSub = {
-            id: 'sub-' + Date.now(),
-            type: 'assignment' as const,
-            submissionType: 'assignment' as const,
-            studentId: currentUserId,
-            title: exam.title,
-            subject: exam.subject || 'Môn học',
-            rank: rankTier,
-            score: scoreVal,
-            submittedTime: nowTimeStr,
-            assignment: {
-              id: exam.id,
-              title: exam.title,
-              subject: exam.subject,
-              grade: exam.grade,
-              questions: exam.questions
-            },
-            answers
-          };
-          try {
-            const savedHw = localStorage.getItem(`eduplay_student_submissions_${currentUserId}`);
-            const parsedHw = savedHw ? JSON.parse(savedHw) : [];
-            const examBaseId = (exam.id || '').replace(/-class-.*$/, '').replace(/^as-/, '').toLowerCase();
-            const examTitleNorm = (exam.title || '').trim().toLowerCase()
-              .replace(/^bài tập tự luyện:\s*/i, '')
-              .replace(/^bài tập:\s*/i, '')
-              .replace(/^luyện tập:\s*/i, '')
-              .replace(/^rèn luyện:\s*/i, '')
-              .replace(/\s+/g, ' ');
+        const session = getCurrentStudentSession();
+        const effectiveInfo = getEffectiveStudentClassAndGrade();
+        const effectiveStudentClass = session?.className || effectiveInfo.studentClass || 'Lớp 3C';
+        const effectiveStudentName = session?.name || session?.fullName || effectiveInfo.studentName || currentUserName;
+        const cleanClass = (effectiveStudentClass || '3C').replace(/^Lớp\s*/i, '').trim().toUpperCase();
+        const authenticStudentCode = normalizeStudentCode(formatStandardStudentCode(
+          getAuthenticStudentCode(session, currentUserId, effectiveStudentClass, effectiveStudentName),
+          cleanClass
+        ));
+        const effectiveAcademicYear = session?.academicYear || '2026-2027';
 
-            const remainingHw = Array.isArray(parsedHw) ? parsedHw.filter((s: any) => {
-              if (s.id === hwSub.id) return false;
-              const sRawId = (s.assignment?.id || s.id || '').replace(/-class-.*$/, '').replace(/^as-/, '').toLowerCase();
-              if (examBaseId && sRawId && examBaseId === sRawId) return false;
-              const sTitle = (s.assignment?.title || s.title || '').trim().toLowerCase()
-                .replace(/^bài tập tự luyện:\s*/i, '')
-                .replace(/^bài tập:\s*/i, '')
-                .replace(/^luyện tập:\s*/i, '')
-                .replace(/^rèn luyện:\s*/i, '')
-                .replace(/\s+/g, ' ');
-              if (examTitleNorm && sTitle && examTitleNorm === sTitle) return false;
-              return true;
-            }) : [];
+        // ID chính thức của đề kiểm tra hiện hành
+        const officialExamId = exam.id;
 
-            const updatedHw = [hwSub, ...remainingHw];
-            localStorage.setItem(`eduplay_student_submissions_${currentUserId}`, JSON.stringify(updatedHw));
-            window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
-          } catch (err) {
-            console.error('Error saving assignment store:', err);
-          }
+        const answersById: Record<string, any> = {};
+        (exam.questions || []).forEach((q: any, idx: number) => {
+          const key = q.id || `q_${idx}`;
+          answersById[key] = answers[idx];
+        });
+        const qSnapshot = (exam.questions || []).map((q: any) => ({ ...q }));
 
-          // Thưởng bài tập theo thang điểm
-          const questions = exam.questions || [];
-          let correctCount = 0;
-          questions.forEach((q, idx) => {
-            if (checkQuestionCorrectLocal(q, answers[idx])) correctCount++;
-          });
-          awardAssignmentReward(currentUserId, exam.id || 'as-submit', exam.title, correctCount, questions.length || 1, scoreNumber);
+        const examSub: ExamSubmissionItem = {
+          id: 'sub-' + Date.now(),
+          type: 'exam',
+          submissionType: isAssignment ? ('assignment' as const) : ('exam' as const),
+          examId: officialExamId,
+          studentId: authenticStudentCode,
+          sddcn: session?.sddcn || authenticStudentCode,
+          studentPersistentId: authenticStudentCode,
+          academicYear: effectiveAcademicYear,
+          title: exam.title,
+          subject: exam.subject || 'Môn học',
+          rank: rankTier,
+          score: scoreVal,
+          submittedTime: nowTimeStr,
+          exam,
+          assignment: isAssignment ? (exam as any) : null,
+          questionSnapshot: qSnapshot,
+          answers,
+          answersById
+        };
+        const updatedSubmissions = [examSub, ...examHistory.filter(s => getSubmissionExamKey(s) !== getSubmissionExamKey(examSub))];
+        setExamHistory(updatedSubmissions);
 
-          if (onSubmitted) {
-            try {
-              onSubmitted(hwSub);
-            } catch (err) {
-              console.error('Error invoking onSubmitted callback:', err);
-            }
-          }
-        } else {
-          // Lưu riêng biệt chỉ vào kho Đề kiểm tra (eduplay_student_exam_subs_${authenticStudentCode})
-          const session = getCurrentStudentSession();
-          const effectiveInfo = getEffectiveStudentClassAndGrade();
-          const effectiveStudentClass = session?.className || effectiveInfo.studentClass || 'Lớp 3C';
-          const effectiveStudentName = session?.name || session?.fullName || effectiveInfo.studentName || currentUserName;
-          const cleanClass = (effectiveStudentClass || '3C').replace(/^Lớp\s*/i, '').trim().toUpperCase();
-          const authenticStudentCode = normalizeStudentCode(formatStandardStudentCode(
-            getAuthenticStudentCode(session, currentUserId, effectiveStudentClass, effectiveStudentName),
-            cleanClass
-          ));
-          const effectiveAcademicYear = session?.academicYear || '2026-2027';
-
-          const classKey = normalizeClassKey(exam.targetClass || effectiveStudentClass || '5C');
-          const examBaseId = (exam.originalExamId || exam.id || 'ex-manual').replace(/^ex-/, '').replace(/-class-.*$/, '');
-          const examDocId = (exam.id && exam.id.includes('-class-lp'))
-            ? exam.id
-            : `ex-${examBaseId}-class-lp${classKey.toLowerCase()}`;
-
-          const examSub: ExamSubmissionItem = {
-            id: 'sub-' + Date.now(),
-            type: 'exam',
-            submissionType: 'exam',
-            examId: examDocId,
+        try {
+          const rawExamRecord = {
+            ...examSub,
             studentId: authenticStudentCode,
-            sddcn: authenticStudentCode,
+            sddcn: session?.sddcn || authenticStudentCode,
             studentPersistentId: authenticStudentCode,
             academicYear: effectiveAcademicYear,
-            title: exam.title,
-            subject: exam.subject || 'Môn học',
-            rank: rankTier,
-            score: scoreVal,
-            submittedTime: nowTimeStr,
-            exam,
-            answers
+            studentCode: authenticStudentCode,
+            maHs: authenticStudentCode,
+            studentName: effectiveStudentName,
+            studentClass: effectiveStudentClass,
+            totalScore: scoreNumber,
+            submittedAt: nowTimeStr,
+            attempts: 1,
+            questionSnapshot: qSnapshot,
+            answers,
+            answersById,
+            feedback: scoreNumber >= 8 ? 'Làm bài xuất sắc, nắm chắc kiến thức.' : (scoreNumber >= 5 ? 'Đã hoàn thành đạt yêu cầu.' : 'Cần ôn tập và rèn luyện thêm.')
           };
-          const updatedSubmissions = [examSub, ...examHistory.filter(s => s.examId !== examSub.examId)];
-          setExamHistory(updatedSubmissions);
-          try {
-            const fullExamRecord = {
-              ...examSub,
-              studentId: authenticStudentCode,
-              sddcn: authenticStudentCode,
-              studentPersistentId: authenticStudentCode,
-              academicYear: effectiveAcademicYear,
-              studentCode: authenticStudentCode,
-              maHs: authenticStudentCode,
-              studentName: effectiveStudentName,
-              studentClass: effectiveStudentClass,
-              totalScore: scoreNumber,
-              submittedAt: nowTimeStr,
-              attempts: 1,
-              feedback: scoreNumber >= 8 ? 'Làm bài xuất sắc.' : (scoreNumber >= 5 ? 'Đã hoàn thành đạt yêu cầu.' : 'Cần ôn tập thêm.')
-            };
+          const fullExamRecord = removeUndefined(rawExamRecord);
 
-            const targetDocIds = Array.from(new Set([exam.id, examDocId, exam.originalExamId].filter(Boolean) as string[]));
-
-            // 1. Ghi trực tiếp vào Firestore sub-collection 'submissions' với Document ID là Mã HS chuẩn cho tất cả ID tương ứng
-            if (db) {
-              for (const targetId of targetDocIds) {
-                const subDocRef = doc(db, 'exams', targetId, 'submissions', authenticStudentCode);
-                try {
-                  await setDoc(subDocRef, {
-                    ...fullExamRecord,
-                    examId: targetId,
-                    updatedAt: new Date().toISOString()
-                  }, { merge: true });
-                  console.log(`💾 [Nộp bài] Đã ghi trực tiếp vào Firestore: exams/${targetId}/submissions/${authenticStudentCode}`);
-                } catch (subErr) {
-                  console.error(`❌ Lỗi ghi trực tiếp Firestore subcollection exams/${targetId}/submissions:`, subErr);
-                }
-
-                // 2. Cập nhật mảng submissions trên master document của đề thi
-                const examRef = doc(db, 'exams', targetId);
-                try {
-                  await runTransaction(db, async (transaction) => {
-                    const examSnap = await transaction.get(examRef);
-                    let existingSubs: any[] = [];
-                    if (examSnap.exists()) {
-                      const currentData = examSnap.data();
-                      existingSubs = Array.isArray(currentData.submissions) ? [...currentData.submissions] : [];
-                    }
-
-                    const filtered = existingSubs.filter((s: any) =>
-                      (s.studentId || s.studentCode || s.maHs || s.sddcn || '').toLowerCase() !== authenticStudentCode.toLowerCase()
-                    );
-                    filtered.unshift(fullExamRecord);
-
-                    const uniqueStudentKeys = new Set(
-                      filtered.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean)
-                    );
-                    const count = uniqueStudentKeys.size;
-
-                    transaction.set(examRef, {
-                      submissions: filtered,
-                      submissionsCount: count,
-                      completedCount: count,
-                      updatedAt: new Date().toISOString()
-                    }, { merge: true });
-                  });
-                } catch (tErr) {
-                  console.warn(`Transaction error on ${targetId}, fallback to setDoc:`, tErr);
-                  await setDoc(examRef, {
-                    submissionsCount: 1,
-                    completedCount: 1,
-                    updatedAt: new Date().toISOString()
-                  }, { merge: true });
-                }
-              }
+          // 1. Ghi bài nộp vào đúng Firestore sub-collection 'submissions' của đề kiểm tra chính thức
+          if (db && officialExamId) {
+            const subDocRef = doc(db, 'exams', officialExamId, 'submissions', authenticStudentCode);
+            try {
+              await setDoc(subDocRef, removeUndefined({
+                ...fullExamRecord,
+                examId: officialExamId,
+                updatedAt: new Date().toISOString()
+              }), { merge: true });
+              console.log(`💾 [Nộp bài] Đã ghi trực tiếp vào Firestore: exams/${officialExamId}/submissions/${authenticStudentCode}`);
+            } catch (subErr) {
+              console.error(`❌ Lỗi ghi trực tiếp Firestore subcollection exams/${officialExamId}/submissions:`, subErr);
             }
 
-            // 3. Đồng bộ vào kho student_results cho mọi ID tương ứng
-            for (const targetId of targetDocIds) {
-              await studentResultService.saveFullExamSubmission(authenticStudentCode, targetId, fullExamRecord);
-              await studentResultService.saveExamResult(authenticStudentCode, targetId, {
-                score: scoreNumber,
-                maxScore: 10,
-                submittedAt: nowTimeStr,
-                type: 'exam'
+            // 2. Cập nhật mảng submissions trên master document của đề thi (TUYỆT ĐỐI không tạo document mới nếu document không tồn tại)
+            const examRef = doc(db, 'exams', officialExamId);
+            try {
+              await runTransaction(db, async (transaction) => {
+                const examSnap = await transaction.get(examRef);
+                if (!examSnap.exists()) {
+                  console.warn(`[Nộp bài] Document exams/${officialExamId} không tồn tại trên Firestore, không tạo bản nháp lỗi.`);
+                  return;
+                }
+
+                const currentData = examSnap.data();
+                const existingSubs = Array.isArray(currentData.submissions) ? [...currentData.submissions] : [];
+
+                const filtered = existingSubs.filter((s: any) =>
+                  (s.studentId || s.studentCode || s.maHs || s.sddcn || '').toLowerCase() !== authenticStudentCode.toLowerCase()
+                );
+                filtered.unshift(fullExamRecord);
+
+                const uniqueStudentKeys = new Set(
+                  filtered.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean)
+                );
+                const count = uniqueStudentKeys.size;
+
+                // Sử dụng transaction.update để đảm bảo CHỈ cập nhật tài liệu đã có, KHÔNG tạo bản nháp mới
+                transaction.update(examRef, {
+                  submissions: filtered,
+                  submissionsCount: count,
+                  completedCount: count,
+                  updatedAt: new Date().toISOString()
+                });
               });
+            } catch (tErr) {
+              console.warn(`Transaction update error on ${officialExamId}:`, tErr);
             }
 
-            // 4. Global cache & local storage
-            localStorage.setItem(`eduplay_student_exam_subs_${authenticStudentCode}`, JSON.stringify(updatedSubmissions));
-            if (currentUserId && currentUserId !== authenticStudentCode) {
-              localStorage.setItem(`eduplay_student_exam_subs_${currentUserId}`, JSON.stringify(updatedSubmissions));
+            // Đồng bộ thêm vào đề gốc nếu có originalExamId khác officialExamId
+            if (exam.originalExamId && exam.originalExamId !== officialExamId) {
+              try {
+                const origSubDocRef = doc(db, 'exams', exam.originalExamId, 'submissions', authenticStudentCode);
+                await setDoc(origSubDocRef, removeUndefined({
+                  ...fullExamRecord,
+                  examId: exam.originalExamId,
+                  updatedAt: new Date().toISOString()
+                }), { merge: true });
+
+                const origExamRef = doc(db, 'exams', exam.originalExamId);
+                await runTransaction(db, async (transaction) => {
+                  const origSnap = await transaction.get(origExamRef);
+                  if (!origSnap.exists()) return;
+                  const origData = origSnap.data();
+                  const origExisting = Array.isArray(origData.submissions) ? [...origData.submissions] : [];
+                  const origFiltered = origExisting.filter((s: any) =>
+                    (s.studentId || s.studentCode || s.maHs || s.sddcn || '').toLowerCase() !== authenticStudentCode.toLowerCase()
+                  );
+                  origFiltered.unshift(fullExamRecord);
+                  const uniqueKeys = new Set(origFiltered.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean));
+                  transaction.update(origExamRef, {
+                    submissions: origFiltered,
+                    submissionsCount: uniqueKeys.size,
+                    completedCount: uniqueKeys.size,
+                    updatedAt: new Date().toISOString()
+                  });
+                });
+              } catch {}
             }
 
-            const allSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
-            const allSubs = allSubsRaw ? JSON.parse(allSubsRaw) : [];
-            const filteredAll = Array.isArray(allSubs) ? allSubs.filter((s: any) => !(s.examId === examSub.examId && (s.studentId === authenticStudentCode || s.studentCode === authenticStudentCode || s.maHs === authenticStudentCode || s.sddcn === authenticStudentCode))) : [];
-            filteredAll.unshift(fullExamRecord);
-            localStorage.setItem('eduplay_all_exam_submissions', JSON.stringify(filteredAll));
+            // Nếu là bài tập hoặc ID có prefix as-, ghi đồng bộ cả vào assignments
+            if (isAssignment || officialExamId.startsWith('as-')) {
+              try {
+                const asSubDocRef = doc(db, 'assignments', officialExamId, 'submissions', authenticStudentCode);
+                await setDoc(asSubDocRef, removeUndefined({
+                  ...fullExamRecord,
+                  assignmentId: officialExamId,
+                  updatedAt: new Date().toISOString()
+                }), { merge: true });
 
-            if (examDocId) {
-              const examSubsRaw = localStorage.getItem(`eduplay_exam_subs_${examDocId}`);
-              const examSubs = examSubsRaw ? JSON.parse(examSubsRaw) : [];
-              const filteredExamSubs = Array.isArray(examSubs) ? examSubs.filter((s: any) => !(s.studentId === authenticStudentCode || s.studentCode === authenticStudentCode || s.maHs === authenticStudentCode || s.sddcn === authenticStudentCode)) : [];
-              filteredExamSubs.unshift(fullExamRecord);
-              localStorage.setItem(`eduplay_exam_subs_${examDocId}`, JSON.stringify(filteredExamSubs));
+                const asRef = doc(db, 'assignments', officialExamId);
+                await runTransaction(db, async (transaction) => {
+                  const asSnap = await transaction.get(asRef);
+                  if (!asSnap.exists()) return;
+                  const asData = asSnap.data();
+                  const asSubs = Array.isArray(asData.submissions) ? [...asData.submissions] : [];
+                  const asFiltered = asSubs.filter((s: any) =>
+                    (s.studentId || s.studentCode || s.maHs || s.sddcn || '').toLowerCase() !== authenticStudentCode.toLowerCase()
+                  );
+                  asFiltered.unshift(fullExamRecord);
+                  const uniqueAsKeys = new Set(asFiltered.map((s: any) => (s.studentId || s.studentCode || s.maHs || '').trim().toLowerCase()).filter(Boolean));
+                  transaction.update(asRef, {
+                    submissions: asFiltered,
+                    submissionsCount: uniqueAsKeys.size,
+                    completedCount: uniqueAsKeys.size,
+                    updatedAt: new Date().toISOString()
+                  });
+                });
+              } catch {}
             }
-
-            window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
-            window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
-          } catch (err) {
-            console.error('Error saving exam submission:', err);
           }
 
-          // Thưởng đề kiểm tra
+          // 3. Đồng bộ vào kho student_results cho officialExamId (và originalExamId nếu có)
+          await studentResultService.saveFullExamSubmission(authenticStudentCode, officialExamId, fullExamRecord);
+          await studentResultService.saveExamResult(authenticStudentCode, officialExamId, {
+            score: scoreNumber,
+            maxScore: 10,
+            submittedAt: nowTimeStr,
+            type: 'exam'
+          });
+          if (exam.originalExamId && exam.originalExamId !== officialExamId) {
+            await studentResultService.saveFullExamSubmission(authenticStudentCode, exam.originalExamId, fullExamRecord);
+            await studentResultService.saveExamResult(authenticStudentCode, exam.originalExamId, {
+              score: scoreNumber,
+              maxScore: 10,
+              submittedAt: nowTimeStr,
+              type: 'exam'
+            });
+          }
+          if (isAssignment) {
+            await studentResultService.saveFullAssignmentSubmission(authenticStudentCode, officialExamId, fullExamRecord);
+            await studentResultService.saveAssignmentResult(authenticStudentCode, {
+              assignmentId: officialExamId,
+              score: scoreNumber,
+              maxScore: 10,
+              submittedAt: nowTimeStr,
+              answers
+            });
+          }
+
+          // 4. Global cache & local storage
+          localStorage.setItem(`eduplay_student_exam_subs_${authenticStudentCode}`, JSON.stringify(updatedSubmissions));
+          if (currentUserId && currentUserId !== authenticStudentCode) {
+            localStorage.setItem(`eduplay_student_exam_subs_${currentUserId}`, JSON.stringify(updatedSubmissions));
+          }
+
+          const allSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
+          const allSubs = allSubsRaw ? JSON.parse(allSubsRaw) : [];
+          const filteredAll = Array.isArray(allSubs) ? allSubs.filter((s: any) => !(s.examId === examSub.examId && (s.studentId === authenticStudentCode || s.studentCode === authenticStudentCode || s.maHs === authenticStudentCode || s.sddcn === authenticStudentCode))) : [];
+          filteredAll.unshift(fullExamRecord);
+          localStorage.setItem('eduplay_all_exam_submissions', JSON.stringify(filteredAll));
+
+          if (officialExamId) {
+            const examSubsRaw = localStorage.getItem(`eduplay_exam_subs_${officialExamId}`);
+            const examSubs = examSubsRaw ? JSON.parse(examSubsRaw) : [];
+            const filteredExamSubs = Array.isArray(examSubs) ? examSubs.filter((s: any) => !(s.studentId === authenticStudentCode || s.studentCode === authenticStudentCode || s.maHs === authenticStudentCode || s.sddcn === authenticStudentCode)) : [];
+            filteredExamSubs.unshift(fullExamRecord);
+            localStorage.setItem(`eduplay_exam_subs_${officialExamId}`, JSON.stringify(filteredExamSubs));
+          }
+
+          // Lưu vào kho Bài tập nếu đang là bài tập
+          if (isAssignment) {
+            const hwSub = {
+              id: examSub.id,
+              type: 'assignment' as const,
+              submissionType: 'assignment' as const,
+              studentId: authenticStudentCode,
+              title: exam.title,
+              subject: exam.subject || 'Môn học',
+              rank: rankTier,
+              score: scoreVal,
+              submittedTime: nowTimeStr,
+              assignment: {
+                id: exam.id,
+                title: exam.title,
+                subject: exam.subject,
+                grade: exam.grade,
+                questions: exam.questions
+              },
+              questionSnapshot: qSnapshot,
+              answers,
+              answersById
+            };
+            try {
+              const savedHw = localStorage.getItem(`eduplay_student_submissions_${authenticStudentCode}`);
+              const parsedHw = savedHw ? JSON.parse(savedHw) : [];
+              localStorage.setItem(`eduplay_student_submissions_${authenticStudentCode}`, JSON.stringify([hwSub, ...parsedHw.filter((s: any) => s.id !== hwSub.id)]));
+              if (currentUserId && currentUserId !== authenticStudentCode) {
+                localStorage.setItem(`eduplay_student_submissions_${currentUserId}`, JSON.stringify([hwSub, ...parsedHw.filter((s: any) => s.id !== hwSub.id)]));
+              }
+            } catch {}
+          }
+
+          window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
+          window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
+          window.dispatchEvent(new Event('storage'));
+        } catch (err) {
+          console.error('Error saving exam submission:', err);
+        }
+
+        // Thưởng bài tập / đề kiểm tra
+        if (isAssignment) {
+          awardAssignmentReward(currentUserId, exam.id || 'as-submit', exam.title, correct, questions.length || 1, scoreNumber);
+        } else {
           try {
             awardExamReward(currentUserId, exam.id || 'ex-manual', exam.title, scoreNumber);
           } catch (err) {
             console.error('Error awarding exam reward:', err);
           }
+        }
 
-          if (onSubmitted) {
-            try {
-              onSubmitted(examSub);
-            } catch (err) {
-              console.error('Error invoking onSubmitted callback:', err);
-            }
+        if (onSubmitted) {
+          try {
+            onSubmitted(examSub);
+          } catch (err) {
+            console.error('Error invoking onSubmitted callback:', err);
           }
         }
-        
+
         // Complete live quiz session in Firestore & localStorage (Chỉ áp dụng cho Bài tập / mode === 'assignment' khi bật Real-time)
         if (mode === 'assignment' && activeExamSession?.exam?.enableRealtimeLeaderboard) {
           try {
@@ -3425,7 +3722,8 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               {todoExams.map((ex, idx) => {
-                const isAlreadySubmitted = filteredExamHistory.some(sub => (sub.examId && sub.examId === ex.id) || (sub.exam?.id && sub.exam.id === ex.id));
+                const studentSub = getExamSubmission(filteredExamHistory, ex, authenticStudentCode);
+                const isAlreadySubmitted = Boolean(studentSub);
                 const stateType = getExamStatus(ex, isAlreadySubmitted, new Date());
                 const subjColor = getSubjectColorStyles(ex.subject);
 
@@ -3595,7 +3893,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                   {filteredExamHistory.map((sub, index) => {
                     const subjColor = getSubjectColorStyles(sub.subject);
                     return (
-                    <tr key={sub.id} className="hover:bg-slate-50/80 transition-colors">
+                    <tr key={`${sub.id || 'sub'}-${sub.examId || 'ex'}-${index}`} className="hover:bg-slate-50/80 transition-colors">
                       <td className="py-4 px-6 font-bold text-slate-500">#{index + 1}</td>
                       <td className="py-4 px-6 font-bold text-slate-900">{sub.title}</td>
                       <td className="py-4 px-6">

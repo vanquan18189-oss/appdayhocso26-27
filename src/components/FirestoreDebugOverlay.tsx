@@ -24,6 +24,11 @@ export const FirestoreDebugOverlay: React.FC = () => {
   const [isMinimized, setIsMinimized] = useState<boolean>(false);
   const [stats, setStats] = useState<FirestoreWriteStatsSummary>(getFirestoreWriteStats());
   const [rateLimitWarning, setRateLimitWarning] = useState<BlockedMetricItem | null>(null);
+  const [showDupModal, setShowDupModal] = useState<{
+    isOpen: boolean;
+    results: any[];
+    studentCode: string;
+  }>({ isOpen: false, results: [], studentCode: '' });
 
   useEffect(() => {
     // Check if ?debug=1 or debug=true in location search/hash
@@ -114,6 +119,24 @@ export const FirestoreDebugOverlay: React.FC = () => {
             </div>
 
             <div className="flex items-center gap-2">
+              <button
+                onClick={async () => {
+                  try {
+                    const { checkDuplicateExamsAndSubmissions } = await import('../services/debugSubmissionFixer');
+                    const studentCode = localStorage.getItem('eduplay_last_student_code') || '3C26-27-14';
+                    const results = await checkDuplicateExamsAndSubmissions(studentCode);
+                    setShowDupModal({ isOpen: true, results, studentCode });
+                  } catch (e) {
+                    alert('Lỗi khi kiểm tra đề trùng: ' + String(e));
+                  }
+                }}
+                className="flex items-center gap-1.5 px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors cursor-pointer text-[11px] font-bold shadow-xs"
+                title="Kiểm tra đề trùng tiêu đề và vị trí bài nộp"
+              >
+                <Layers className="w-3.5 h-3.5 text-indigo-200" />
+                <span>Kiểm tra đề trùng & bài nộp gán nhầm</span>
+              </button>
+
               <button
                 onClick={async () => {
                   resetFirestoreWriteStats();
@@ -268,6 +291,118 @@ export const FirestoreDebugOverlay: React.FC = () => {
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* MODAL KIỂM TRA ĐỀ TRÙNG VÀ BÀI NỘP GÁN NHẦM */}
+      {showDupModal.isOpen && (
+        <div className="fixed inset-0 z-[9999999] bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 text-slate-100 rounded-2xl max-w-2xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="bg-slate-800 px-6 py-4 border-b border-slate-700 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Layers className="w-5 h-5 text-indigo-400" />
+                <h3 className="font-bold text-white text-base">
+                  Kiểm tra đề trùng & Bài nộp gán nhầm ({showDupModal.studentCode})
+                </h3>
+              </div>
+              <button
+                onClick={() => setShowDupModal({ isOpen: false, results: [], studentCode: '' })}
+                className="w-8 h-8 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 flex items-center justify-center font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-4 flex-1 text-xs">
+              {showDupModal.results.length === 0 ? (
+                <div className="p-4 bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 rounded-xl text-center font-medium">
+                  ✨ Không phát hiện đề nào bị trùng tiêu đề hoặc bài nộp bị gán nhầm! Tất cả các đề thi đang hoạt động hoàn toàn chính xác.
+                </div>
+              ) : (
+                showDupModal.results.map((group, idx) => (
+                  <div key={idx} className="bg-slate-800/60 border border-slate-700 rounded-xl p-4 space-y-3">
+                    <div className="flex items-center justify-between border-b border-slate-700 pb-2">
+                      <span className="font-bold text-sm text-indigo-300">
+                        {idx + 1}. {group.title}
+                      </span>
+                      <span className="bg-amber-500/20 text-amber-300 px-2.5 py-0.5 rounded-full font-mono text-[11px] font-bold border border-amber-500/30">
+                        {group.exams.length} đề trùng tiêu đề
+                      </span>
+                    </div>
+
+                    <div className="space-y-2">
+                      <span className="text-slate-400 font-semibold block uppercase text-[10px]">Danh sách ID các đề cùng tên:</span>
+                      {group.exams.map((ex: any) => (
+                        <div key={ex.id} className="bg-slate-900/80 p-2.5 rounded-lg border border-slate-700/60 font-mono text-[11px] flex items-center justify-between">
+                          <div>
+                            <span className="text-slate-200 font-bold">ID: {ex.id}</span>
+                            {ex.targetClass && <span className="text-slate-400 ml-2">Class: {ex.targetClass}</span>}
+                            {ex.grade && <span className="text-slate-400 ml-2">Grade: {ex.grade}</span>}
+                          </div>
+                          <span className="text-emerald-400 font-bold">{ex.submissionsCount || 0} bài nộp</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="space-y-1">
+                      <span className="text-slate-400 font-semibold block uppercase text-[10px]">Vị trí bài nộp hiện tại của học sinh ({showDupModal.studentCode}):</span>
+                      {group.studentSubmissions.length === 0 ? (
+                        <div className="text-slate-500 italic p-2 bg-slate-900/40 rounded-lg">Chưa tìm thấy bài nộp của học sinh này trong nhóm đề trùng.</div>
+                      ) : (
+                        group.studentSubmissions.map((sub: any, sIdx: number) => (
+                          <div key={sIdx} className="bg-emerald-950/30 border border-emerald-500/30 p-2 rounded-lg text-emerald-300 font-mono font-medium flex justify-between">
+                            <span>Đang nằm ở đề ID: <b>{sub.examId}</b></span>
+                            <span>Điểm: {sub.score || '-'} | Nộp: {sub.submittedTime || 'Gần đây'}</span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    {group.proposedMigration && (
+                      <div className="bg-indigo-950/40 border border-indigo-500/40 p-3 rounded-xl space-y-2">
+                        <span className="text-indigo-300 font-bold flex items-center gap-1.5 uppercase text-[10px]">
+                          <span>💡 Phương án đề xuất chuyển bài nộp:</span>
+                        </span>
+                        <p className="text-slate-300 text-xs leading-relaxed">
+                          {group.proposedMigration.reason}
+                        </p>
+                        <button
+                          onClick={async () => {
+                            const confirmed = window.confirm(
+                              `[XÁC NHẬN ADMIN]\nBạn có chắc chắn muốn sao chép & chuyển bài nộp của học sinh ${group.proposedMigration.studentCode} từ đề "${group.proposedMigration.fromExamId}" sang đúng đề "${group.proposedMigration.toExamId}" không?\n\n(Dữ liệu gốc tại đề cũ sẽ KHÔNG bị xóa).`
+                            );
+                            if (confirmed) {
+                              const { reassignSubmissionToExam } = await import('../services/debugSubmissionFixer');
+                              const res = await reassignSubmissionToExam(
+                                group.proposedMigration.fromExamId,
+                                group.proposedMigration.toExamId,
+                                group.proposedMigration.studentCode
+                              );
+                              alert(res.message);
+                              setShowDupModal({ isOpen: false, results: [], studentCode: '' });
+                            }
+                          }}
+                          className="py-2 px-4 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-lg text-xs transition-all shadow-md cursor-pointer"
+                        >
+                          Xác nhận chuyển bài nộp về đúng đề (Admin)
+                        </button>
+                      </div>
+                    )}
+
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="p-4 bg-slate-800 border-t border-slate-700 flex justify-end">
+              <button
+                onClick={() => setShowDupModal({ isOpen: false, results: [], studentCode: '' })}
+                className="py-2 px-5 bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold rounded-xl text-xs cursor-pointer"
+              >
+                Đóng
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>,

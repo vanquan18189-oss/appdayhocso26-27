@@ -107,9 +107,18 @@ export function formatStandardStudentCode(rawCode?: string, defaultClass: string
     const num = parseInt(legacyMatch[2], 10);
     return `${cls}26-27-${num}`;
   }
-  if (stt && typeof stt === 'number') {
+  if (stt && typeof stt === 'number' && !isNaN(stt) && stt > 0) {
     const cls = (defaultClass || '3C').replace(/^Lớp\s*/i, '').trim().toUpperCase();
     return `${cls}26-27-${stt}`;
+  }
+  // Check if clean has ANY trailing number (e.g. "st-temp-7", "user-22", "hs-7")
+  const trailingNumMatch = clean.match(/(\d+)(?!.*\d)/);
+  if (trailingNumMatch) {
+    const num = parseInt(trailingNumMatch[1], 10);
+    if (!isNaN(num) && num > 0) {
+      const cls = (defaultClass || '3C').replace(/^Lớp\s*/i, '').trim().toUpperCase();
+      return `${cls}26-27-${num}`;
+    }
   }
   return clean || `${(defaultClass || '3C').replace(/^Lớp\s*/i, '').trim().toUpperCase()}26-27-1`;
 }

@@ -2,9 +2,9 @@ import { SUBJECTS, GRADES, CLASSES_BY_GRADE, ALL_CLASSES, EXAM_TYPES, QUESTION_T
 import { getSubjectColorStyles } from '../../utils/subjectColors';
 import { formatScore, formatTotalScore, roundTotalScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
 import { getTeachersFromLocalStorage, resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
-import { getStudentsFromLocalStorage, getClassStudentCount, deleteStudentFromClass, generateDefaultClassRoster } from '../../services/studentStorageService';
+import { getStudentsFromLocalStorage, getClassStudentCount, deleteStudentFromClass, generateDefaultClassRoster, normalizeClassKey } from '../../services/studentStorageService';
 import { formatStandardStudentCode, normalizeStudentCode } from '../../services/studentCode';
-import { seedInitialExamsManually, deleteAllExamsFromFirestore } from '../../services/examStorageService';
+import { seedInitialExamsManually, deleteAllExamsFromFirestore, isValidOfficialExam } from '../../services/examStorageService';
 import { getExamCompletion } from '../../services/examCompletionService';
 import { auth } from '../../services/firebase';
 import { collection, onSnapshot, doc, getDocFromServer } from 'firebase/firestore';
@@ -74,6 +74,7 @@ import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { getLocalCachedQuestions, QUESTIONS_CACHE_KEY, saveQuestionsBatchToFirestore } from '../../services/questionStorageService';
 import { useScoreSort } from '../../lib/useScoreSort';
 import { ExamQuestionEditorCard, normalizeQuestionType } from './ExamQuestionEditorCard';
+import { StudentSubmissionDetailModal } from './StudentSubmissionDetailModal';
 
 export interface TrackingSubmissionStudent {
   id: string;
@@ -86,6 +87,7 @@ export interface TrackingSubmissionStudent {
   status: 'submitted' | 'waiting';
   aiNote?: string;
   needManual?: boolean;
+  rawSubmission?: any;
 }
 
 export const TRACKING_STUDENTS_LIST: TrackingSubmissionStudent[] = [
@@ -500,6 +502,13 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       return;
     }
 
+    // Kiểm tra cảnh báo nếu giao trùng lớp
+    const existingClasses = (assignmentExam.targetClass || '').split(',').map(c => c.trim()).filter(Boolean);
+    const duplicatedClasses = uniqueClasses.filter(c => existingClasses.includes(c));
+    if (duplicatedClasses.length > 0 && existingClasses.length > 0) {
+      showToast(`⚠️ Đề thi này đã được giao cho (${duplicatedClasses.join(', ')}). Hệ thống sẽ cập nhật lại thông tin bài giao.`, 'error');
+    }
+
     isSubmittingAssignmentRef.current = true;
     const rootExamId = assignmentExam.originalExamId || assignmentExam.id.replace(/-class-.*$/, '');
 
@@ -606,35 +615,26 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
 
     const examDocId = trackingExam.id;
     const originalDocId = trackingExam.originalExamId;
+    const targetClassStr = trackingExam.targetClass || '';
+    const classKey = normalizeClassKey(targetClassStr).toLowerCase();
+    const examBaseId = (originalDocId || examDocId || '').replace(/^ex-/, '').replace(/^as-/, '').replace(/-class-.*$/, '');
+
+    const standardDocId = `ex-${examBaseId}-class-${classKey}`;
+    const legacyDocId = `ex-${examBaseId}-class-lp${classKey}`;
+
+    const candDocIds = Array.from(new Set([
+      examDocId,
+      standardDocId,
+      legacyDocId,
+      originalDocId
+    ].filter(Boolean) as string[]));
+
     const unsubList: (() => void)[] = [];
 
-    try {
-      const subColRef = collection(db, 'exams', examDocId, 'submissions');
-      const unsub1 = onSnapshot(subColRef, (snapshot) => {
-        const subs: any[] = [];
-        snapshot.forEach((docSnap) => {
-          subs.push({ ...docSnap.data(), id: docSnap.id, docId: docSnap.id });
-        });
-        setTrackingFirestoreSubs(prev => {
-          const map = new Map<string, any>();
-          prev.forEach(s => {
-            const key = s.id || s.docId || s.studentCode || s.maHs || s.studentId;
-            if (key) map.set(key, s);
-          });
-          subs.forEach(s => {
-            const key = s.id || s.docId || s.studentCode || s.maHs || s.studentId;
-            if (key) map.set(key, s);
-          });
-          return Array.from(map.values());
-        });
-      }, (err) => {
-        console.warn('Lỗi lắng nghe submissions từ Firestore:', err);
-      });
-      unsubList.push(unsub1);
-
-      if (originalDocId && originalDocId !== examDocId) {
-        const origColRef = collection(db, 'exams', originalDocId, 'submissions');
-        const unsub2 = onSnapshot(origColRef, (snapshot) => {
+    candDocIds.forEach((docId) => {
+      try {
+        const subColRef = collection(db, 'exams', docId, 'submissions');
+        const unsub = onSnapshot(subColRef, (snapshot) => {
           const subs: any[] = [];
           snapshot.forEach((docSnap) => {
             subs.push({ ...docSnap.data(), id: docSnap.id, docId: docSnap.id });
@@ -642,26 +642,28 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
           setTrackingFirestoreSubs(prev => {
             const map = new Map<string, any>();
             prev.forEach(s => {
-              const key = s.id || s.docId || s.studentCode || s.maHs || s.studentId;
+              const key = s.docId || s.id || s.studentCode || s.maHs || s.studentId;
               if (key) map.set(key, s);
             });
             subs.forEach(s => {
-              const key = s.id || s.docId || s.studentCode || s.maHs || s.studentId;
+              const key = s.docId || s.id || s.studentCode || s.maHs || s.studentId;
               if (key) map.set(key, s);
             });
             return Array.from(map.values());
           });
-        }, () => {});
-        unsubList.push(unsub2);
+        }, (err) => {
+          console.warn(`Lỗi lắng nghe submissions từ Firestore exams/${docId}:`, err);
+        });
+        unsubList.push(unsub);
+      } catch (e) {
+        console.warn(`Không thể thiết lập lắng nghe submissions exams/${docId}:`, e);
       }
-    } catch (e) {
-      console.warn('Không thể thiết lập lắng nghe submissions:', e);
-    }
+    });
 
     return () => {
       unsubList.forEach(u => u());
     };
-  }, [trackingExam?.id, trackingExam?.originalExamId]);
+  }, [trackingExam?.id, trackingExam?.originalExamId, trackingExam?.targetClass]);
 
   // Dynamic tracking students derived from trackingExam.submissions and class roster matching trackingExam.id
   const trackingStudentsList = useMemo(() => {
@@ -756,64 +758,28 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       } catch {}
     }
 
-    // Match candidate submissions uniquely to each student in roster and auto-heal
+    // Match candidate submissions uniquely to each student in roster strictly by normalized studentCode (Rule 3)
     const studentSubMap = new Map<string, any>();
     const usedSubIndices = new Set<number>();
 
     classStudentsRoster.forEach(st => {
       const stdCode = st.code.toUpperCase();
-      const stName = st.fullName.trim().toLowerCase();
 
-      // Pass 1: exact studentCode / maHs / studentId match
-      let matchIdx = candidateSubmissions.findIndex((sub, idx) => {
+      // QUY TẮC KHỚP BẮT BUỘC (MỤC 3):
+      // Một bài nộp chỉ thuộc về một học sinh khi và chỉ khi studentCode (đã chuẩn hóa) bằng đúng Mã HS của học sinh đó.
+      // CẤM khớp lỏng theo tên, STT, SĐDCN hay dự phòng lấy bài nộp của học sinh khác.
+      const matchIdx = candidateSubmissions.findIndex((sub, idx) => {
         if (usedSubIndices.has(idx) || !sub) return false;
-        const cands = [sub.studentCode, sub.maHs, sub.studentId, sub.code, sub.fallbackCode].filter(Boolean).map(c => normalizeStudentCode(String(c)));
-        return cands.some(c => c === stdCode || formatStandardStudentCode(c, cleanClass) === stdCode);
+        const cands = [sub.studentCode, sub.maHs, sub.studentId, sub.code, sub.docId, sub.id]
+          .filter(Boolean)
+          .map(c => normalizeStudentCode(String(c)));
+        return cands.some(c => c === stdCode);
       });
-
-      // Pass 2: full name match
-      if (matchIdx === -1) {
-        matchIdx = candidateSubmissions.findIndex((sub, idx) => {
-          if (usedSubIndices.has(idx) || !sub) return false;
-          const subName = String(sub.studentName || sub.name || sub.fullName || '').trim().toLowerCase();
-          return subName && subName.length > 2 && (subName === stName || subName.includes(stName) || stName.includes(subName));
-        });
-      }
-
-      // Pass 3: SĐDCN match
-      if (matchIdx === -1 && st.sddcn) {
-        matchIdx = candidateSubmissions.findIndex((sub, idx) => {
-          if (usedSubIndices.has(idx) || !sub) return false;
-          return sub.sddcn && String(sub.sddcn).trim() === String(st.sddcn).trim();
-        });
-      }
-
-      // Pass 4: STT match if present
-      if (matchIdx === -1 && typeof st.stt === 'number') {
-        matchIdx = candidateSubmissions.findIndex((sub, idx) => {
-          if (usedSubIndices.has(idx) || !sub) return false;
-          return sub.stt === st.stt;
-        });
-      }
 
       if (matchIdx !== -1) {
         usedSubIndices.add(matchIdx);
         const sub = candidateSubmissions[matchIdx];
         studentSubMap.set(stdCode, sub);
-
-        // Auto-heal legacy submission in localStorage to standard format
-        if (typeof window !== 'undefined' && (sub.studentId !== stdCode || sub.studentCode !== stdCode || sub.maHs !== stdCode)) {
-          try {
-            const healed = {
-              ...sub,
-              studentId: stdCode,
-              studentCode: stdCode,
-              maHs: stdCode,
-              studentName: st.fullName
-            };
-            localStorage.setItem(`eduplay_student_exam_subs_${stdCode}`, JSON.stringify([healed]));
-          } catch {}
-        }
       }
     });
 
@@ -869,7 +835,8 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
           submittedTime: formatSubmissionDateTime(submission.submittedAt || submission.submittedTime || getCurrentSubmissionTimestamp()),
           status: 'submitted' as const,
           aiNote: submission.feedback || (roundedTotal >= 8 ? 'Làm bài xuất sắc, nắm chắc kiến thức.' : (roundedTotal >= 5 ? 'Đã hoàn thành đạt yêu cầu.' : 'Cần ôn tập và rèn luyện thêm.')),
-          needManual: roundedTotal < 5
+          needManual: roundedTotal < 5,
+          rawSubmission: submission
         };
       } else {
         return {
@@ -881,6 +848,34 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
           submittedTime: 'CHỜ HỌC SINH',
           status: 'waiting' as const
         };
+      }
+    });
+
+    // CẢNH BÁO NGHI BẢN SAO (MỤC 5):
+    // Quét phát hiện nếu có từ 2 bài nộp trở lên có cùng thời gian nộp và cùng 100% chuỗi đáp án
+    const signatureMap = new Map<string, string[]>();
+    mapped.forEach(item => {
+      if (item.status === 'submitted' && item.rawSubmission) {
+        const subTime = String(item.submittedTime || '').trim();
+        const ansSig = JSON.stringify(item.rawSubmission.answers || {});
+        const sig = `${subTime}___${ansSig}`;
+        const existing = signatureMap.get(sig) || [];
+        existing.push(item.id);
+        signatureMap.set(sig, existing);
+      }
+    });
+
+    mapped.forEach(item => {
+      if (item.status === 'submitted' && item.rawSubmission) {
+        const subTime = String(item.submittedTime || '').trim();
+        const ansSig = JSON.stringify(item.rawSubmission.answers || {});
+        const sig = `${subTime}___${ansSig}`;
+        const matches = signatureMap.get(sig) || [];
+        if (matches.length >= 2) {
+          const others = matches.filter(m => m !== item.id);
+          item.badge = 'Nghi bản sao';
+          item.aiNote = `⚠️ Nghi bản sao: Trùng thời gian nộp (${subTime}) và trùng 100% đáp án với bài nộp của (${others.join(', ')})`;
+        }
       }
     });
 
@@ -1646,7 +1641,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   // Tự động chuẩn hóa dữ liệu cũ (backward compatibility):
   // Nếu có bản ghi chứa nhiều lớp dạng chuỗi gộp, tự động phân tách thành các bản ghi độc lập
   useEffect(() => {
-    const legacyExams = (exams || []).filter(e => e.targetClass && e.targetClass.includes(','));
+    const legacyExams = (exams || []).filter(e => isValidOfficialExam(e) && e.targetClass && e.targetClass.includes(','));
     if (legacyExams.length > 0) {
       legacyExams.forEach(exam => {
         const classes = exam.targetClass!.split(',').map(c => c.trim()).filter(Boolean);
@@ -1681,6 +1676,9 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const normalizedExams = useMemo(() => {
     const list: ExamPaper[] = [];
     (exams || []).forEach(exam => {
+      // TUYỆT ĐỐI loại bỏ các bản nháp rác phát sinh do nộp bài (không có câu hỏi, không có tiêu đề, hoặc không phải đề chính thức)
+      if (!isValidOfficialExam(exam)) return;
+
       if (exam.targetClass && exam.targetClass.includes(',')) {
         const classes = exam.targetClass.split(',').map(c => c.trim()).filter(Boolean);
         if (classes.length > 0) {
@@ -4062,6 +4060,28 @@ return (
                 </div>
               </div>
               <div className="flex items-center gap-3">
+                {typeof window !== 'undefined' && window.location.search.includes('debug=1') && (
+                  <button
+                    onClick={() => {
+                      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify({
+                        examId: trackingExam.id,
+                        title: trackingExam.title,
+                        targetClass: trackingExam.targetClass,
+                        submissions: trackingStudentsList
+                      }, null, 2));
+                      const downloadAnchor = document.createElement('a');
+                      downloadAnchor.setAttribute("href", dataStr);
+                      downloadAnchor.setAttribute("download", `ban-sao-bai-nop-${trackingExam.id}.json`);
+                      document.body.appendChild(downloadAnchor);
+                      downloadAnchor.click();
+                      downloadAnchor.remove();
+                    }}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm whitespace-nowrap"
+                    title="Tải bản sao bài nộp của đề này (JSON) cho Admin"
+                  >
+                    <Download className="w-4 h-4 text-indigo-200" /> Tải bản sao bài nộp của đề này (JSON)
+                  </button>
+                )}
                 <button
                   onClick={() => handleExportExcel(trackingExam)}
                   className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm whitespace-nowrap"
@@ -4721,219 +4741,33 @@ return (
       )}
 
 
-      {/* Grading Modal */}
-      {gradingStudent && trackingExam && (() => {
-        const targetStudentSubmission = trackingStudentsList.find(st => st.id === gradingStudent.id) || {
-          id: gradingStudent.id,
-          name: gradingStudent.name,
-          answers: Array.from({ length: trackingExam.questions?.length || 5 }).map(() => 'pass' as const),
-          totalScore: 10,
-          attempts: 1,
-          submittedTime: getCurrentSubmissionTimestamp(),
-          status: 'submitted' as const
-        };
-
-        const totalQCount = trackingExam.questions?.length || 5;
-        const correctAnswersCount = targetStudentSubmission ? targetStudentSubmission.answers.filter(a => a === 'pass').length : 0;
-        const calculatedScore = targetStudentSubmission && targetStudentSubmission.totalScore !== null 
-          ? Math.round(targetStudentSubmission.totalScore) 
-          : Number(Math.round((correctAnswersCount / totalQCount) * 10));
-
-        return (
-          <div className="fixed inset-0 z-[70] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="bg-white rounded-3xl max-w-4xl w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh] animate-scale-up">
-              {/* Header */}
-              <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-white shrink-0">
-                <div className="flex items-center gap-2">
-                  <ToggleRight className="w-6 h-6 text-emerald-600" />
-                  <h3 className="text-lg font-black text-slate-800">Chấm lại bài kiểm tra</h3>
-                </div>
-                <button
-                  onClick={() => setGradingStudent(null)}
-                  className="p-2 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              <div className="overflow-auto flex-1 bg-white p-6 space-y-6">
-                <div>
-                  <p className="text-xs font-bold text-blue-700 mb-4">Nội dung này do giáo viên tự biên soạn.</p>
-                  
-                  <div className="bg-rose-50 rounded-2xl p-5 border border-rose-100">
-                    <h4 className="text-base font-black text-slate-800 mb-3">{targetStudentSubmission.name || gradingStudent.name} đã hoàn thành bài kiểm tra này!</h4>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-y-2 gap-x-4 text-sm font-medium text-slate-700 mb-5">
-                      <div className="flex items-center gap-2">
-                        <span className="text-rose-700 font-bold w-36">Số câu đúng:</span> {correctAnswersCount}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-rose-700 font-bold w-36">Tổng số câu hỏi:</span> {totalQCount}
-                      </div>
-                      {isSubjectWithScore(trackingExam.subject) ? (
-                        <>
-                          <div className="flex items-center gap-2">
-                            <span className="text-rose-700 font-bold w-36">Điểm bài thi:</span> {calculatedScore}
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-rose-700 font-bold w-36">Điểm thang 10:</span> <span className="font-black text-rose-600">{calculatedScore}</span>
-                          </div>
-                        </>
-                      ) : (
-                        <div className="flex items-center gap-2 md:col-span-2">
-                          <span className="text-rose-700 font-bold w-36">Mức đánh giá:</span>
-                          <span className={`px-2.5 py-0.5 rounded-full font-black text-xs ${
-                            getQualitativeLevel(correctAnswersCount, totalQCount) === 'T' ? 'bg-emerald-100 text-emerald-800' :
-                            getQualitativeLevel(correctAnswersCount, totalQCount) === 'H' ? 'bg-sky-100 text-sky-800' :
-                            'bg-rose-100 text-rose-800'
-                          }`}>
-                            {getQualitativeLabel(correctAnswersCount, totalQCount)}
-                          </span>
-                        </div>
-                      )}
-                      <div className="flex items-center gap-2">
-                        <span className="text-rose-700 font-bold w-36">Thời gian làm bài:</span> {trackingExam.durationMinutes || 15} phút
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-rose-700 font-bold w-36">Thời gian nộp bài:</span> {formatSubmissionDateTime(targetStudentSubmission.submittedTime)}
-                      </div>
-                    </div>
-                    <button 
-                      onClick={() => {
-                        deleteStudentFromClass(trackingExam.targetClass || 'Lớp 3C', gradingStudent.id);
-                        setGradingStudent(null);
-                        showToast('Đã xóa bài làm của học sinh thành công!', 'success');
-                      }}
-                      className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-sm rounded-xl transition-colors shadow-sm cursor-pointer"
-                    >
-                      Xóa bài làm này
-                    </button>
-                  </div>
-
-                  <div className="mt-8">
-                    <h4 className="text-lg font-black text-slate-800 mb-4">Bảng điểm chi tiết ({totalQCount} câu)</h4>
-                    <div className="overflow-x-auto rounded-xl border border-slate-200">
-                      <table className="w-full text-center text-xs whitespace-nowrap">
-                        <thead>
-                          <tr className="border-b border-slate-200 bg-slate-50 font-bold text-slate-600">
-                            <th className="p-3 border-r border-slate-200 text-left bg-slate-100">Câu hỏi</th>
-                            {Array.from({ length: totalQCount }).map((_, qIdx) => (
-                              <th key={qIdx} className="p-3 border-r border-slate-200 text-indigo-700">
-                                {qIdx + 1}
-                              </th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody className="font-bold text-slate-700">
-                          {isSubjectWithScore(trackingExam.subject) && (
-                            <tr className="border-b border-slate-200">
-                              <td className="p-3 border-r border-slate-200 text-left font-bold text-slate-600 bg-slate-50">Điểm</td>
-                              {Array.from({ length: totalQCount }).map((_, qIdx) => {
-                                const isPass = targetStudentSubmission.answers[qIdx] === 'pass';
-                                const qItem = trackingExam.questions?.[qIdx];
-                                const qPoints = ((qItem as any)?.points || (qItem as any)?.score || Number((10 / totalQCount).toFixed(1)));
-                                return (
-                                  <td key={qIdx} className="p-3 border-r border-slate-200">
-                                    {isPass ? formatScore(qPoints) : '0'}
-                                  </td>
-                                );
-                              })}
-                            </tr>
-                          )}
-                          <tr>
-                            <td className="p-3 border-r border-slate-200 text-left font-bold text-slate-600 bg-slate-50">Kết quả</td>
-                            {Array.from({ length: totalQCount }).map((_, qIdx) => {
-                              const isPass = targetStudentSubmission.answers[qIdx] === 'pass';
-                              return (
-                                <td key={qIdx} className="p-3 border-r border-slate-200">
-                                  {isPass ? (
-                                    <CheckCircle2 className="w-4 h-4 text-emerald-500 mx-auto" />
-                                  ) : (
-                                    <X className="w-4 h-4 text-rose-400 mx-auto" />
-                                  )}
-                                </td>
-                              );
-                            })}
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
-                  <div className="mt-8 space-y-6">
-                    <h4 className="text-lg font-black text-slate-800 mb-2">Chi tiết từng câu hỏi trong đề</h4>
-                    {trackingExam.questions?.map((q, qIdx) => {
-                      const isPass = targetStudentSubmission.answers[qIdx] === 'pass';
-                      const qType = normalizeQuestionType(q.type);
-                      return (
-                        <div key={q.id || qIdx} className="p-4 rounded-2xl border border-slate-200 bg-slate-50/50 space-y-3">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2 text-sm font-bold">
-                              <span className={isPass ? 'text-emerald-700' : 'text-rose-600'}>
-                                Câu {qIdx + 1} {isSubjectWithScore(trackingExam.subject) ? `(${formatScore((q as any).points || (q as any).score || (10 / totalQCount))}đ)` : ''}:
-                              </span>
-                              <span className={`flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold ${isPass ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
-                                {isPass ? '✓ Đúng' : '✗ Sai'}
-                              </span>
-                            </div>
-                            <span className="text-xs text-slate-400 font-medium">{getQuestionTypeLabel(q.type)}</span>
-                          </div>
-                          <p className="text-sm font-bold text-slate-800">{q.content}</p>
-
-                          {qType === 'multiple_choice' && q.options && (
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                              {q.options.map((opt, oIdx) => {
-                                const letters = ['A', 'B', 'C', 'D', 'E', 'F'];
-                                const letter = letters[oIdx] || String.fromCharCode(65 + oIdx);
-                                const isCorrectOpt = (q.correctAnswer || 'A').toUpperCase() === letter;
-                                return (
-                                  <div key={oIdx} className={`p-2.5 rounded-xl border flex items-center gap-3 text-xs ${isCorrectOpt ? 'border-emerald-500 bg-emerald-50 font-bold text-emerald-900' : 'border-slate-200 bg-white text-slate-700'}`}>
-                                    <div className={`w-6 h-6 rounded-md flex items-center justify-center font-bold text-xs shrink-0 ${isCorrectOpt ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-600'}`}>
-                                      {letter}
-                                    </div>
-                                    <span>{opt}</span>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-
-                          {q.explanation && (
-                            <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 font-medium">
-                              💡 <strong>Giải thích / Gợi ý:</strong> {q.explanation}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  <div className="mt-8 pt-6 border-t border-slate-200 space-y-4">
-                    <div className="flex items-center justify-between">
-                      <h4 className="text-base font-black text-slate-800">Nhận xét & Đánh giá bài thi</h4>
-                      <span className="px-3 py-1 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-700 text-[11px] font-bold">
-                        Đã chấm tự động bởi AI / Giáo viên
-                      </span>
-                    </div>
-                    <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-700 leading-relaxed">
-                      {(targetStudentSubmission as any).aiNote || `Học sinh đã hoàn thành ${correctAnswersCount}/${totalQCount} câu đúng. Đạt điểm số ${calculatedScore}/10.`}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Footer */}
-              <div className="p-4 border-t border-slate-100 bg-white flex justify-end shrink-0">
-                <button
-                  onClick={() => setGradingStudent(null)}
-                  className="px-6 py-2.5 bg-slate-800 hover:bg-slate-900 text-white font-bold text-sm rounded-xl transition-colors cursor-pointer"
-                >
-                  Đóng lại
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
+      {/* Grading Modal / Chi tiết bài làm */}
+      {gradingStudent && trackingExam && (
+        <StudentSubmissionDetailModal
+          isOpen={true}
+          onClose={() => setGradingStudent(null)}
+          mode="exam"
+          targetItem={trackingExam}
+          studentSubmission={trackingStudentsList.find(st => st.id === gradingStudent.id) || {
+            id: gradingStudent.id,
+            name: gradingStudent.name,
+            studentCode: gradingStudent.id
+          }}
+          onSaveRegrade={() => {
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('eduplay_exam_submissions_updated'));
+              window.dispatchEvent(new CustomEvent('eduplay_student_submissions_updated'));
+            }
+          }}
+          onDeleteSubmission={() => {
+            setGradingStudent(null);
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('eduplay_exam_submissions_updated'));
+              window.dispatchEvent(new CustomEvent('eduplay_student_submissions_updated'));
+            }
+          }}
+        />
+      )}
 
 
       {/* Retake Confirmation Modal */}

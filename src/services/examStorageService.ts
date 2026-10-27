@@ -10,6 +10,32 @@ import { normalizeClassKey } from './studentStorageService';
 const EXAMS_CACHE_KEY = 'eduplay_cached_exams';
 
 /**
+ * Kiểm tra xem một đề thi có phải là đề kiểm tra chính thức hợp lệ hay không.
+ * Loại bỏ hoàn toàn các bản nháp rác/tài liệu sinh tự động lỗi (không có câu hỏi, không có tiêu đề, hoặc chỉ là vỏ bọc bài nộp).
+ */
+export function isValidOfficialExam(exam: Partial<ExamPaper> | null | undefined): boolean {
+  if (!exam || typeof exam !== 'object') return false;
+  if (!exam.id || typeof exam.id !== 'string') return false;
+  if ((exam as any).isDeleted) return false;
+
+  // Tiêu đề bắt buộc phải có nội dung và không được rỗng
+  const title = (exam.title || '').trim();
+  if (!title) return false;
+
+  // Bắt buộc phải có danh sách câu hỏi hợp lệ với ít nhất 1 câu hỏi
+  // (Loại bỏ triệt để các bản ghi rác/nháp phát sinh do nộp bài chỉ chứa submissions/submissionsCount)
+  if (!Array.isArray(exam.questions) || exam.questions.length === 0) {
+    return false;
+  }
+
+  // Bắt buộc phải có môn học
+  const subject = (exam.subject || '').trim();
+  if (!subject) return false;
+
+  return true;
+}
+
+/**
  * Deduplication helper for exam papers
  */
 export function getExamDeduplicationKey(e: Partial<ExamPaper>): string {
@@ -39,6 +65,7 @@ export function deduplicateExams(exams: ExamPaper[]): ExamPaper[] {
 
   (exams || []).forEach(exam => {
     if (!exam || !exam.id) return;
+    if (!isValidOfficialExam(exam)) return;
     if (seenIds.has(exam.id)) return;
 
     seenIds.add(exam.id);
@@ -49,23 +76,65 @@ export function deduplicateExams(exams: ExamPaper[]): ExamPaper[] {
 }
 
 /**
- * Quét và dọn dẹp các bản ghi đề thi trùng lặp trong cả LocalStorage và Firestore
+ * Quét và dọn dẹp các bản ghi đề thi trùng lặp và bản nháp rác trong cả LocalStorage và Firestore
  */
 export async function cleanDuplicateExams(): Promise<void> {
   try {
     const cached = getLocalCachedExams();
     const cleanList = deduplicateExams(cached);
     if (cleanList.length !== cached.length) {
-      console.log(`🧹 Đã dọn dẹp ${cached.length - cleanList.length} đề thi trùng lặp trong LocalStorage`);
+      console.log(`🧹 Đã dọn dẹp ${cached.length - cleanList.length} đề thi trùng lặp/bản nháp rác trong LocalStorage`);
       saveExamsToLocalStorage(cleanList);
+    }
+
+    // Quét Firestore để dọn dẹp các tài liệu rác/bản nháp sinh tự động không có câu hỏi hoặc không có tiêu đề
+    if (db) {
+      try {
+        const snap = await getDocs(collection(db, 'exams'));
+        if (!snap.empty) {
+          const ghostDocs: string[] = [];
+          snap.forEach(docSnap => {
+            const data = docSnap.data();
+            const examObj = { id: docSnap.id, ...data } as ExamPaper;
+            if (!isValidOfficialExam(examObj)) {
+              ghostDocs.push(docSnap.id);
+            }
+          });
+
+          if (ghostDocs.length > 0) {
+            console.log(`🧹 Phát hiện ${ghostDocs.length} bản nháp rác trong Firestore. Đang tiến hành làm sạch...`, ghostDocs);
+            const batch = trackedWriteBatch(db, { isUserInitiated: false, actionType: 'admin_batch' });
+            ghostDocs.forEach(id => {
+              batch.delete(doc(db, 'exams', id));
+            });
+            await batch.commit();
+            console.log(`✅ Đã xóa sạch ${ghostDocs.length} bản nháp rác khỏi Cloud Firestore!`);
+          }
+        }
+      } catch (fErr) {
+        console.warn('Lỗi quét dọn bản nháp rác trên Firestore:', fErr);
+      }
     }
   } catch (err) {
     console.warn('Lỗi khi chạy cleanDuplicateExams:', err);
   }
 }
 
-// Chạy dọn dẹp tự động khi tải
+// Chạy dọn dẹp tự động khi khởi động
 if (typeof window !== 'undefined') {
+  try {
+    const cached = localStorage.getItem(EXAMS_CACHE_KEY);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (Array.isArray(parsed)) {
+        const clean = parsed.filter(isValidOfficialExam);
+        if (clean.length !== parsed.length) {
+          localStorage.setItem(EXAMS_CACHE_KEY, JSON.stringify(deduplicateExams(clean)));
+        }
+      }
+    }
+  } catch {}
+
   setTimeout(() => {
     cleanDuplicateExams().catch(console.error);
   }, 1000);
@@ -180,7 +249,7 @@ export async function saveExamToFirestore(exam: ExamPaper): Promise<void> {
 }
 
 /**
- * Lấy toàn bộ danh sách Đề kiểm tra từ Firestore
+ * Lấy toàn bộ danh sách Đề kiểm tra chính thức từ Firestore
  */
 export async function getExamsFromFirestore(): Promise<ExamPaper[]> {
   try {
@@ -190,10 +259,15 @@ export async function getExamsFromFirestore(): Promise<ExamPaper[]> {
     if (!examsSnap.empty) {
       const exams: ExamPaper[] = [];
       examsSnap.forEach(docSnap => {
-        exams.push({ id: docSnap.id, ...docSnap.data() } as ExamPaper);
+        const data = docSnap.data();
+        const examObj = { id: docSnap.id, ...data } as ExamPaper;
+        if (isValidOfficialExam(examObj)) {
+          exams.push(examObj);
+        }
       });
-      saveExamsToLocalStorage(exams);
-      return exams;
+      const clean = deduplicateExams(exams);
+      saveExamsToLocalStorage(clean);
+      return clean;
     }
 
     // Nếu rỗng, không gieo mầm dữ liệu mẫu
@@ -230,7 +304,11 @@ export function subscribeToExamsFromFirestore(
         if (!snapshot.empty) {
           const loadedExams: ExamPaper[] = [];
           snapshot.forEach((docSnap) => {
-            loadedExams.push({ id: docSnap.id, ...docSnap.data() } as ExamPaper);
+            const data = docSnap.data();
+            const examObj = { id: docSnap.id, ...data } as ExamPaper;
+            if (isValidOfficialExam(examObj)) {
+              loadedExams.push(examObj);
+            }
           });
           const cleanLoaded = deduplicateExams(loadedExams);
           cleanLoaded.sort((a, b) => (b.id > a.id ? 1 : -1));

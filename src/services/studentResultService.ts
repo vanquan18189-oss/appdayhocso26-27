@@ -4,6 +4,25 @@ import { normalizeStudentCode } from './studentCode';
 
 export const STUDENT_RESULTS_COLLECTION = 'student_results';
 
+function cleanPayload<T>(obj: T): T {
+  if (obj === undefined) return '' as any;
+  if (Array.isArray(obj)) {
+    return obj
+      .filter((item) => item !== undefined)
+      .map((item) => cleanPayload(item)) as any;
+  }
+  if (obj !== null && typeof obj === 'object' && !(obj instanceof Date)) {
+    const cleaned: any = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (value !== undefined) {
+        cleaned[key] = cleanPayload(value);
+      }
+    }
+    return cleaned;
+  }
+  return obj;
+}
+
 export interface StudentResultDocument {
   studentCode: string;
   updatedAt: string;
@@ -179,10 +198,10 @@ export const studentResultService = {
 
       // Save to: student_results/{studentCode}/exams/{examId}
       const docRef = doc(db, STUDENT_RESULTS_COLLECTION, studentCode, 'exams', examId);
-      await setDoc(docRef, {
+      await setDoc(docRef, cleanPayload({
         ...submissionData,
         updatedAt: new Date().toISOString(),
-      }, { merge: true });
+      }), { merge: true });
       return true;
     } catch (error) {
       console.error('Lỗi khi lưu bài kiểm tra vào Firestore:', error);
@@ -204,10 +223,10 @@ export const studentResultService = {
 
       // Save to: student_results/{studentCode}/assignments/{assignmentId}
       const docRef = doc(db, STUDENT_RESULTS_COLLECTION, studentCode, 'assignments', assignmentId);
-      await setDoc(docRef, {
+      await setDoc(docRef, cleanPayload({
         ...submissionData,
         updatedAt: new Date().toISOString(),
-      }, { merge: true });
+      }), { merge: true });
       return true;
     } catch (error) {
       console.error('Lỗi khi lưu bài tập vào Firestore:', error);

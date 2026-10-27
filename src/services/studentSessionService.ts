@@ -1,5 +1,6 @@
 import { getSubjectsForClassOrGrade, SchoolClassItem } from './classStorageService';
-import { formatStandardStudentCode } from './studentCode';
+import { formatStandardStudentCode, isValidStudentCode, normalizeStudentCode } from './studentCode';
+import { getStudentsFromLocalStorage, generateDefaultClassRoster } from './studentStorageService';
 
 export interface ActiveStudentInfo {
   studentId: string;
@@ -9,7 +10,7 @@ export interface ActiveStudentInfo {
 }
 
 /**
- * Lấy Mã học sinh chuẩn hóa tuyệt đối theo định dạng chuẩn lớp học (ví dụ: 3C26-27-1)
+ * Lấy Mã học sinh chuẩn hóa tuyệt đối theo định dạng chuẩn lớp học (ví dụ: 3C26-27-7, 5C26-27-22)
  * Tuyệt đối không trả về Auth UID ngẫu nhiên hay ID generic.
  */
 export function getAuthenticStudentCode(
@@ -22,11 +23,33 @@ export function getAuthenticStudentCode(
   const rawClass = sess?.className || sess?.class || targetClass || 'Lớp 3C';
   const cleanClass = rawClass.replace(/^Lớp\s*/i, '').trim().toUpperCase();
 
+  // 1. Kiểm tra ngay nếu bất kỳ mã nào truyền vào đã theo đúng chuẩn [Lớp]26-27-[STT]
+  const candCodes = [
+    sess?.code,
+    sess?.studentCode,
+    sess?.maHs,
+    currentUserId,
+    sess?.id,
+    sess?.username
+  ].filter(Boolean).map(c => String(c).trim());
+
+  for (const cand of candCodes) {
+    if (isValidStudentCode(cand)) {
+      return normalizeStudentCode(cand);
+    }
+  }
+
+  // 2. Nếu session đã có số thứ tự stt hợp lệ
+  if (typeof sess?.stt === 'number' && !isNaN(sess.stt) && sess.stt > 0) {
+    return `${cleanClass}26-27-${sess.stt}`;
+  }
+
+  // 3. Tra cứu từ danh sách lớp (Roster)
+  let roster: any[] = [];
   if (typeof window !== 'undefined') {
     try {
       const normKey = normalizeClassKey(rawClass);
       const directData = localStorage.getItem(`eduplay_students_${normKey}`) || localStorage.getItem(`eduplay_students_${normKey.toLowerCase()}`);
-      let roster: any[] = [];
       if (directData) {
         roster = JSON.parse(directData);
       } else {
@@ -36,59 +59,78 @@ export function getAuthenticStudentCode(
           roster = parsedDb[rawClass] || parsedDb[normKey] || parsedDb[normKey.toLowerCase()] || [];
         }
       }
+    } catch {}
+  }
 
-      if (Array.isArray(roster) && roster.length > 0) {
-        // 1.1 Match by code
-        const rawSessCode = sess?.code || sess?.studentCode || sess?.maHs;
-        if (rawSessCode && rawSessCode !== 'u-4' && rawSessCode !== 'hs-temp' && rawSessCode.length <= 25) {
-          const matchByCode = roster.find(st => {
-            const cands = [st.code, st.studentCode, st.maHs, st.id].filter(Boolean).map(c => String(c).trim().toLowerCase());
-            return cands.includes(String(rawSessCode).trim().toLowerCase());
-          });
-          if (matchByCode) {
-            return formatStandardStudentCode(matchByCode.code, cleanClass, matchByCode.stt);
-          }
-          return formatStandardStudentCode(rawSessCode, cleanClass);
-        }
-
-        // 1.2 Match by name
-        const targetName = (sess?.name || sess?.fullName || studentName || '').trim().toLowerCase();
-        if (targetName && targetName !== 'học sinh' && targetName !== 'student') {
-          const matchByName = roster.find(st => {
-            const sName = (st.fullName || st.name || '').trim().toLowerCase();
-            return sName && (sName === targetName || sName.includes(targetName) || targetName.includes(sName));
-          });
-          if (matchByName) {
-            return formatStandardStudentCode(matchByName.code, cleanClass, matchByName.stt);
-          }
-        }
-
-        // 1.3 Match by stt
-        if (sess?.stt && typeof sess.stt === 'number') {
-          const matchByStt = roster.find(st => st.stt === sess.stt);
-          if (matchByStt) {
-            return formatStandardStudentCode(matchByStt.code, cleanClass, matchByStt.stt);
-          }
-        }
-
-        // 1.4 Match by sddcn
-        if (sess?.sddcn) {
-          const matchBySddcn = roster.find(st => st.sddcn === sess.sddcn);
-          if (matchBySddcn) {
-            return formatStandardStudentCode(matchBySddcn.code, cleanClass, matchBySddcn.stt);
-          }
-        }
+  // Nếu chưa có trong localStorage, lấy từ bộ quản lý học sinh chuẩn hóa
+  if (!Array.isArray(roster) || roster.length === 0) {
+    try {
+      const fetched = getStudentsFromLocalStorage(cleanClass);
+      if (Array.isArray(fetched) && fetched.length > 0) {
+        roster = fetched;
+      } else {
+        roster = generateDefaultClassRoster(cleanClass, 38);
       }
     } catch {}
   }
 
-  // 2. Nếu session có code hợp lệ
-  const candCode = sess?.code || sess?.studentCode || sess?.maHs;
-  if (candCode && candCode !== 'u-4' && candCode !== 'hs-temp' && candCode.length <= 25) {
-    return formatStandardStudentCode(candCode, cleanClass);
+  if (Array.isArray(roster) && roster.length > 0) {
+    // 3.1 So khớp theo Tên học sinh (ưu tiên tuyệt đối nếu có tên, ví dụ "Tống Nhật Duy")
+    const targetName = (sess?.name || sess?.fullName || studentName || '').trim().toLowerCase();
+    if (targetName && targetName !== 'học sinh' && targetName !== 'student') {
+      const matchByName = roster.find(st => {
+        const sName = (st.fullName || st.name || '').trim().toLowerCase();
+        return sName && (sName === targetName || sName.includes(targetName) || targetName.includes(sName));
+      });
+      if (matchByName) {
+        return formatStandardStudentCode(matchByName.code, cleanClass, matchByName.stt);
+      }
+    }
+
+    // 3.2 So khớp theo Code / ID trong danh sách
+    for (const cand of candCodes) {
+      if (cand && cand !== 'u-4' && cand !== 'hs-temp' && cand.length <= 30) {
+        const candNorm = cand.toLowerCase();
+        const matchByCode = roster.find(st => {
+          const cands = [st.code, st.studentCode, st.maHs, st.id, st.username]
+            .filter(Boolean)
+            .map(c => String(c).trim().toLowerCase());
+          return cands.includes(candNorm);
+        });
+        if (matchByCode) {
+          return formatStandardStudentCode(matchByCode.code, cleanClass, matchByCode.stt);
+        }
+      }
+    }
+
+    // 3.3 So khớp theo SĐDCN
+    const sddcn = sess?.sddcn || sess?.idCard;
+    if (sddcn) {
+      const matchBySddcn = roster.find(st => st.sddcn === sddcn || st.idCard === sddcn);
+      if (matchBySddcn) {
+        return formatStandardStudentCode(matchBySddcn.code, cleanClass, matchBySddcn.stt);
+      }
+    }
   }
 
-  // 3. Fallback an toàn theo đúng chuẩn Lớp-NămHọc-STT
+  // 4. Nếu có mã candidate với STT ở đuôi (ví dụ: st-3c-7, hs-3c-7, 3c7, hs-7)
+  for (const cand of candCodes) {
+    if (cand && cand !== 'u-4' && cand !== 'hs-temp') {
+      const formatted = formatStandardStudentCode(cand, cleanClass);
+      if (isValidStudentCode(formatted)) {
+        return formatted;
+      }
+      const numMatch = cand.match(/(\d+)(?!.*\d)/);
+      if (numMatch && numMatch[1]) {
+        const num = parseInt(numMatch[1], 10);
+        if (!isNaN(num) && num > 0) {
+          return `${cleanClass}26-27-${num}`;
+        }
+      }
+    }
+  }
+
+  // 5. Fallback an toàn theo đúng chuẩn Lớp-NămHọc-STT
   return `${cleanClass}26-27-1`;
 }
 
