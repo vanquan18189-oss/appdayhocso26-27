@@ -19,8 +19,12 @@ import { StudentProgressTable } from './stats/StudentProgressTable';
 import {
   getLessonStudentsProgressData,
   calculateStatsOverview,
-  calculate5EActivityStats
+  calculate5EActivityStats,
+  fetchAndCacheFirestoreLessonProgress
 } from '../../services/lessonStatsService';
+import { db } from '../../firebaseConfig';
+import { collection, onSnapshot } from 'firebase/firestore';
+import { ELEARNING_STUDENT_PROGRESS_COLLECTION } from './LessonFlowController';
 import * as XLSX from 'xlsx';
 
 interface LessonProgressStatsModalProps {
@@ -53,26 +57,66 @@ export const LessonProgressStatsModal: React.FC<LessonProgressStatsModalProps> =
     return getLessonStudentsProgressData(lesson.id, lesson.title, lesson.grade);
   }, [lesson, refreshKey]);
 
-  // Real-time synchronization: listen for localStorage changes or window focus
+  // Real-time synchronization and Firestore progress sync
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || !lesson) return;
+
+    let unsubscribe: (() => void) | undefined;
+
+    const loadFirestoreData = async () => {
+      await fetchAndCacheFirestoreLessonProgress(lesson.id);
+      setRefreshKey(prev => prev + 1);
+    };
+
+    loadFirestoreData();
+
+    if (db) {
+      try {
+        const colRef = collection(db, ELEARNING_STUDENT_PROGRESS_COLLECTION);
+        unsubscribe = onSnapshot(colRef, (snapshot) => {
+          snapshot.forEach(docSnap => {
+            const data = docSnap.data();
+            if (data && data.lessonId) {
+              const dLessonId = String(data.lessonId).toLowerCase();
+              const targetId = String(lesson.id).toLowerCase();
+              if (dLessonId === targetId || dLessonId.includes(targetId) || targetId.includes(dLessonId)) {
+                const studentId = data.studentId || docSnap.id.split('___')[0];
+                if (studentId) {
+                  const key = `viet_elearning_student_progress_${studentId}_${data.lessonId}`;
+                  const altKey = `viet_elearning_student_progress_${studentId}_${lesson.id}`;
+                  try {
+                    localStorage.setItem(key, JSON.stringify(data));
+                    localStorage.setItem(altKey, JSON.stringify(data));
+                  } catch {}
+                }
+              }
+            }
+          });
+          setRefreshKey(prev => prev + 1);
+        }, (err) => {
+          console.warn('Firestore progress snapshot error:', err);
+        });
+      } catch (e) {
+        console.warn('Failed to attach progress snapshot:', e);
+      }
+    }
 
     const handleSync = () => {
-      setRefreshKey(prev => prev + 1);
+      loadFirestoreData();
     };
 
     window.addEventListener('storage', handleSync);
     window.addEventListener('focus', handleSync);
 
-    // Auto-refresh interval (every 10 seconds while modal is open)
     const interval = setInterval(handleSync, 10000);
 
     return () => {
+      if (unsubscribe) unsubscribe();
       window.removeEventListener('storage', handleSync);
       window.removeEventListener('focus', handleSync);
       clearInterval(interval);
     };
-  }, [isOpen]);
+  }, [isOpen, lesson]);
 
   // Manual refresh trigger
   const handleManualRefresh = useCallback(() => {

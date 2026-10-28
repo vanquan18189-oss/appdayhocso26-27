@@ -1,8 +1,41 @@
 import { StudentRecord } from '../types';
 import { getAllStudentsFromLocalStorage, getStudentsFromLocalStorage, getCurrentActiveAcademicYear, getStudentClassInfo } from './studentStorageService';
 import { getLocalCachedAssignedELearning } from './elearningAssignmentService';
-import { getStudentLessonProgress } from '../components/modules/LessonFlowController';
+import { getStudentLessonProgress, ELEARNING_STUDENT_PROGRESS_COLLECTION } from '../components/modules/LessonFlowController';
 import { Student5EProgress, StatsOverview, Activity5EStats, ActivityDetail, ActivityStatus } from '../components/modules/stats/types';
+import { db } from '../firebaseConfig';
+import { collection, getDocs } from 'firebase/firestore';
+
+/**
+ * Fetch and cache Firestore lesson progress records into localStorage for instant synchronous stats calculation
+ */
+export async function fetchAndCacheFirestoreLessonProgress(lessonId: string): Promise<void> {
+  if (!db || !lessonId) return;
+  try {
+    const colRef = collection(db, ELEARNING_STUDENT_PROGRESS_COLLECTION);
+    const snap = await getDocs(colRef);
+    snap.forEach(docSnap => {
+      const data = docSnap.data();
+      if (data && data.lessonId) {
+        const dLessonId = String(data.lessonId).toLowerCase();
+        const targetId = String(lessonId).toLowerCase();
+        if (dLessonId === targetId || dLessonId.includes(targetId) || targetId.includes(dLessonId)) {
+          const studentId = data.studentId || docSnap.id.split('___')[0];
+          if (studentId) {
+            const key = `viet_elearning_student_progress_${studentId}_${data.lessonId}`;
+            const altKey = `viet_elearning_student_progress_${studentId}_${lessonId}`;
+            try {
+              localStorage.setItem(key, JSON.stringify(data));
+              localStorage.setItem(altKey, JSON.stringify(data));
+            } catch {}
+          }
+        }
+      }
+    });
+  } catch (err) {
+    console.warn('Failed to fetch/cache firestore lesson progress:', err);
+  }
+}
 
 /**
  * Helper to calculate stats from students
@@ -100,23 +133,54 @@ function getRealStudentLessonProgress(student: StudentRecord, lessonId: string, 
     student.stt && student.className ? `st-${student.className.replace(/\s+/g, '').toLowerCase()}-${student.stt}` : null
   ].filter(Boolean) as string[];
 
-  for (const id of identifiers) {
-    const prog = getStudentLessonProgress(id, lessonId);
-    if (prog) {
-      if (prog.academicYear && prog.academicYear !== activeYear) {
-        continue;
-      }
-      return prog;
-    }
+  const lessonVariants = Array.from(new Set([
+    lessonId,
+    lessonId.toLowerCase(),
+    lessonId.replace(/^les-/i, ''),
+    lessonId.replace(/[^a-zA-Z0-9_-]/g, '_')
+  ].filter(Boolean)));
 
-    try {
-      const raw = localStorage.getItem(`viet_elearning_student_progress_${id}_${lessonId}`);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed.academicYear && parsed.academicYear !== activeYear) {
+  for (const id of identifiers) {
+    for (const lVar of lessonVariants) {
+      const prog = getStudentLessonProgress(id, lVar);
+      if (prog) {
+        if (prog.academicYear && prog.academicYear !== activeYear) {
           continue;
         }
-        return parsed;
+        return prog;
+      }
+
+      try {
+        const raw = localStorage.getItem(`viet_elearning_student_progress_${id}_${lVar}`);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed.academicYear && parsed.academicYear !== activeYear) {
+            continue;
+          }
+          return parsed;
+        }
+      } catch {}
+    }
+
+    // Comprehensive fallback: scan localStorage keys for any progress entry matching this student ID
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith(`viet_elearning_student_progress_${id}_`)) {
+          const raw = localStorage.getItem(key);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed) {
+              const pLessonId = String(parsed.lessonId || '').toLowerCase();
+              if (!pLessonId || lessonVariants.some(v => pLessonId.includes(v.toLowerCase()) || v.toLowerCase().includes(pLessonId))) {
+                if (parsed.academicYear && parsed.academicYear !== activeYear) {
+                  continue;
+                }
+                return parsed;
+              }
+            }
+          }
+        }
       }
     } catch {}
   }
