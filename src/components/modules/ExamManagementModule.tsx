@@ -825,6 +825,12 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
 
         const roundedTotal = Math.round(numScore);
 
+        const isAiFailedOrUncertain = Boolean(
+          submission.aiStatus === 'failed' || 
+          submission.aiStatus === 'uncertain' || 
+          submission.needManual === true
+        );
+
         return {
           id: st.code || `st-${idx + 1}`,
           name: st.name || st.fullName || `Học sinh ${idx + 1}`,
@@ -835,7 +841,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
           submittedTime: formatSubmissionDateTime(submission.submittedAt || submission.submittedTime || getCurrentSubmissionTimestamp()),
           status: 'submitted' as const,
           aiNote: submission.feedback || (roundedTotal >= 8 ? 'Làm bài xuất sắc, nắm chắc kiến thức.' : (roundedTotal >= 5 ? 'Đã hoàn thành đạt yêu cầu.' : 'Cần ôn tập và rèn luyện thêm.')),
-          needManual: roundedTotal < 5,
+          needManual: isAiFailedOrUncertain,
           rawSubmission: submission
         };
       } else {
@@ -851,30 +857,35 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       }
     });
 
-    // CẢNH BÁO NGHI BẢN SAO (MỤC 5):
-    // Quét phát hiện nếu có từ 2 bài nộp trở lên có cùng thời gian nộp và cùng 100% chuỗi đáp án
+    // CẢNH BÁO NGHI BẢN SAO (MỤC 5 & Yêu cầu mới):
+    // Quét phát hiện nếu có từ 2 bài nộp trở lên có cùng submittedAt (tới mili-giây / exact timestamp hoặc copiedFrom explicit) và cùng đáp án
     const signatureMap = new Map<string, string[]>();
     mapped.forEach(item => {
       if (item.status === 'submitted' && item.rawSubmission) {
-        const subTime = String(item.submittedTime || '').trim();
+        const exactTime = Number(item.rawSubmission.submittedAtTimestamp || item.rawSubmission.timestamp || item.rawSubmission.submittedAt || 0);
+        const copiedFrom = String(item.rawSubmission.copiedFrom || '').trim();
         const ansSig = JSON.stringify(item.rawSubmission.answers || {});
-        const sig = `${subTime}___${ansSig}`;
-        const existing = signatureMap.get(sig) || [];
-        existing.push(item.id);
-        signatureMap.set(sig, existing);
+        if (exactTime > 0 || copiedFrom) {
+          const sig = `${exactTime || copiedFrom}___${ansSig}`;
+          const existing = signatureMap.get(sig) || [];
+          existing.push(item.id);
+          signatureMap.set(sig, existing);
+        }
       }
     });
 
     mapped.forEach(item => {
       if (item.status === 'submitted' && item.rawSubmission) {
-        const subTime = String(item.submittedTime || '').trim();
+        const exactTime = Number(item.rawSubmission.submittedAtTimestamp || item.rawSubmission.timestamp || item.rawSubmission.submittedAt || 0);
+        const copiedFrom = String(item.rawSubmission.copiedFrom || '').trim();
         const ansSig = JSON.stringify(item.rawSubmission.answers || {});
-        const sig = `${subTime}___${ansSig}`;
+        const sig = `${exactTime || copiedFrom}___${ansSig}`;
         const matches = signatureMap.get(sig) || [];
-        if (matches.length >= 2) {
+        if ((exactTime > 0 || copiedFrom) && matches.length >= 2) {
           const others = matches.filter(m => m !== item.id);
           item.badge = 'Nghi bản sao';
-          item.aiNote = `⚠️ Nghi bản sao: Trùng thời gian nộp (${subTime}) và trùng 100% đáp án với bài nộp của (${others.join(', ')})`;
+          item.aiNote = `⚠️ Nghi bản sao: Trùng thời gian nộp chính xác (${item.submittedTime}) và trùng 100% đáp án với bài nộp của (${others.join(', ')})`;
+          item.needManual = true;
         }
       }
     });
