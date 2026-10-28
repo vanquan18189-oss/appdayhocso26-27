@@ -96,23 +96,122 @@ const isExamSubmission = (sub: any): boolean => {
 export const getSubmissionExamKey = (sub: any): string => {
   if (!sub) return '';
   const examId = String(sub.examId || sub.exam?.id || '').trim().toLowerCase();
-  if (examId) return examId;
+  if (examId) return examId.replace(/-class-lp/i, '-class-');
   const directId = String(sub.id || '').trim().toLowerCase();
   if (directId.startsWith('sub-')) {
     const match = directId.match(/^sub-(ex-[^\s]+?)(?:-[0-9a-z]+26-27-[0-9]+)?$/i);
-    if (match) return match[1].toLowerCase();
+    if (match) return match[1].toLowerCase().replace(/-class-lp/i, '-class-');
   }
   return directId;
 };
 
 /**
- * So khớp bài nộp với một đề kiểm tra cụ thể dựa trên examId chính thức.
- * TUYỆT ĐỐI không dùng regex cắt gọt chuỗi hay so khớp mờ tiêu đề (gây nhận nhầm đề này sang đề khác).
+ * Hàm dọn các bản ghi bài nộp trùng lặp (cùng studentId + examId + thời gian nộp gần nhau, hoặc cùng đề thi duy nhất)
+ * Giữ lại 1 bản ghi tốt nhất / đầy đủ nhất.
+ */
+export function deduplicateExamSubmissions<T extends {
+  id?: string;
+  examId?: string;
+  studentId?: string;
+  studentCode?: string;
+  maHs?: string;
+  sddcn?: string;
+  title?: string;
+  subject?: string;
+  score?: any;
+  submittedTime?: string;
+  submittedAt?: string;
+  answers?: any;
+  exam?: any;
+  [key: string]: any;
+}>(submissions: T[]): T[] {
+  if (!Array.isArray(submissions) || submissions.length === 0) return [];
+
+  const result: T[] = [];
+  const seenMap = new Map<string, T>();
+
+  submissions.forEach((item) => {
+    if (!item) return;
+
+    // Student identifier
+    const stdId = normalizeStudentCode(item.studentId || item.studentCode || item.maHs || item.sddcn || '');
+    
+    // Canonical exam identifier
+    const rawExamId = String(item.examId || item.exam?.id || item.id || '').trim().toLowerCase();
+    const baseExamId = rawExamId.replace(/-class-.*$/i, '').replace(/^ex-/i, '').replace(/^as-/i, '');
+    
+    const cleanTitle = String(item.title || item.exam?.title || '')
+      .trim()
+      .toLowerCase()
+      .replace(/^đề kiểm tra:\s*/i, '')
+      .replace(/^đề kiểm tra\s*-\s*/i, '')
+      .replace(/\s+/g, ' ');
+    const cleanSubj = String(item.subject || item.exam?.subject || '').trim().toLowerCase();
+
+    // Unique deduplication keys: combine student + canonical base ID or student + title + subject
+    const primaryKey = baseExamId ? `${stdId}__base_${baseExamId}` : `${stdId}__sem_${cleanTitle}__${cleanSubj}`;
+    const fallbackTitleKey = cleanTitle ? `${stdId}__sem_${cleanTitle}__${cleanSubj}` : '';
+
+    // Check if an entry with this key exists
+    let matchedKey: string | null = null;
+    if (seenMap.has(primaryKey)) {
+      matchedKey = primaryKey;
+    } else if (fallbackTitleKey && seenMap.has(fallbackTitleKey)) {
+      matchedKey = fallbackTitleKey;
+    }
+
+    if (!matchedKey) {
+      seenMap.set(primaryKey, item);
+      if (fallbackTitleKey) {
+        seenMap.set(fallbackTitleKey, item);
+      }
+      result.push(item);
+    } else {
+      // Duplicate found! Decide which one to keep
+      const existing = seenMap.get(matchedKey)!;
+      const existingIdx = result.indexOf(existing);
+
+      const itemScoreNum = parseFloat(String(item.score || 0)) || 0;
+      const existScoreNum = parseFloat(String(existing.score || 0)) || 0;
+      const itemHasAnswers = Boolean(item.answers && Object.keys(item.answers).length > 0);
+      const existHasAnswers = Boolean(existing.answers && Object.keys(existing.answers).length > 0);
+
+      // Keep the one with higher score or richer answer data
+      let keepItem = existing;
+      if (itemScoreNum > existScoreNum) {
+        keepItem = { ...existing, ...item };
+      } else if (itemHasAnswers && !existHasAnswers) {
+        keepItem = { ...existing, ...item };
+      } else {
+        keepItem = {
+          ...existing,
+          exam: existing.exam || item.exam,
+          answers: existHasAnswers ? existing.answers : item.answers,
+          questionSnapshot: (existing as any).questionSnapshot || (item as any).questionSnapshot
+        };
+      }
+
+      seenMap.set(matchedKey, keepItem);
+      seenMap.set(primaryKey, keepItem);
+      if (fallbackTitleKey) seenMap.set(fallbackTitleKey, keepItem);
+
+      if (existingIdx !== -1) {
+        result[existingIdx] = keepItem;
+      }
+    }
+  });
+
+  return result;
+}
+
+/**
+ * So khớp bài nộp với một đề kiểm tra cụ thể dựa trên examId chính thức hoặc canonical baseId.
  */
 export const isExamSubmissionMatch = (sub: any, ex: any): boolean => {
   if (!sub || !ex || !ex.id) return false;
   const exId = String(ex.id).trim().toLowerCase();
   const exOriginalId = ex.originalExamId ? String(ex.originalExamId).trim().toLowerCase() : '';
+  const exBaseId = exId.replace(/-class-.*$/i, '').replace(/^ex-/i, '');
 
   const subKey = getSubmissionExamKey(sub);
   if (subKey && (subKey === exId || (exOriginalId && subKey === exOriginalId))) {
@@ -121,18 +220,35 @@ export const isExamSubmissionMatch = (sub: any, ex: any): boolean => {
 
   const subExamId = String(sub.examId || sub.exam?.id || '').trim().toLowerCase();
   const subDirectId = String(sub.id || '').trim().toLowerCase();
+  const subBaseId = subExamId.replace(/-class-.*$/i, '').replace(/^ex-/i, '');
 
   // 1. So khớp trực tiếp theo examId
   if (subExamId && (subExamId === exId || (exOriginalId && subExamId === exOriginalId))) {
     return true;
   }
 
-  // 2. So khớp nếu id bài nộp được đặt theo format sub-[examId]-[studentCode]
+  // 2. So khớp theo base ID của đề kiểm tra
+  if (subBaseId && exBaseId && subBaseId === exBaseId) {
+    return true;
+  }
+
+  // 3. So khớp nếu id bài nộp được đặt theo format sub-[examId]-[studentCode] hoặc ${studentId}_${examId}_${attempt}
   if (subDirectId) {
-    if (subDirectId === `sub-${exId}` || subDirectId.startsWith(`sub-${exId}-`)) {
+    if (subDirectId === `sub-${exId}` || subDirectId.startsWith(`sub-${exId}-`) || subDirectId.includes(`_${exId}_`)) {
       return true;
     }
-    if (exOriginalId && (subDirectId === `sub-${exOriginalId}` || subDirectId.startsWith(`sub-${exOriginalId}-`))) {
+    if (exOriginalId && (subDirectId === `sub-${exOriginalId}` || subDirectId.startsWith(`sub-${exOriginalId}-`) || subDirectId.includes(`_${exOriginalId}_`))) {
+      return true;
+    }
+  }
+
+  // 4. So khớp theo ngữ nghĩa (tiêu đề + môn học)
+  const cleanSubTitle = (sub.title || sub.exam?.title || '').trim().toLowerCase().replace(/^đề kiểm tra:\s*/i, '').replace(/^đề kiểm tra\s*-\s*/i, '').replace(/\s+/g, ' ');
+  const cleanExTitle = (ex.title || '').trim().toLowerCase().replace(/^đề kiểm tra:\s*/i, '').replace(/^đề kiểm tra\s*-\s*/i, '').replace(/\s+/g, ' ');
+  if (cleanSubTitle && cleanExTitle && cleanSubTitle === cleanExTitle) {
+    const subSubj = (sub.subject || sub.exam?.subject || '').trim().toLowerCase();
+    const exSubj = (ex.subject || '').trim().toLowerCase();
+    if (!subSubj || !exSubj || subSubj === exSubj) {
       return true;
     }
   }
@@ -697,6 +813,11 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
   const lastViolationTimeRef = useRef<number>(0);
   const hasLeftWindowRef = useRef<boolean>(false);
 
+  // Submit lock & single-flight submission flags (chống nộp trùng tuyệt đối)
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const isSubmittingRef = useRef<boolean>(false);
+  const hasSubmittedRef = useRef<boolean>(false);
+
   // Alert Modal for time out or warning / restriction
   const [alertModal, setAlertModal] = useState<{
     title: string;
@@ -972,10 +1093,22 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         });
 
         if (!isCancelled) {
-          const mergedList = Array.from(mergedMap.values());
+          const rawMergedList = Array.from(mergedMap.values());
+          const mergedList = deduplicateExamSubmissions(rawMergedList);
           setExamHistory(mergedList);
           try {
             localStorage.setItem(`eduplay_student_exam_subs_${authenticStudentCode}`, JSON.stringify(mergedList));
+            if (currentUserId && currentUserId !== authenticStudentCode) {
+              localStorage.setItem(`eduplay_student_exam_subs_${currentUserId}`, JSON.stringify(mergedList));
+            }
+            const allSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
+            if (allSubsRaw) {
+              const allSubs = JSON.parse(allSubsRaw);
+              if (Array.isArray(allSubs)) {
+                const cleanedAll = deduplicateExamSubmissions(allSubs);
+                localStorage.setItem('eduplay_all_exam_submissions', JSON.stringify(cleanedAll));
+              }
+            }
           } catch {}
         }
       } catch (err) {
@@ -1207,7 +1340,9 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
       if (left <= 0) {
         clearInterval(timer);
         setRemainingSeconds(0);
-        handleAutoSubmitTimeout();
+        if (!hasSubmittedRef.current) {
+          handleAutoSubmitTimeout();
+        }
       } else {
         setRemainingSeconds(left);
       }
@@ -1222,337 +1357,394 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     finalViolationCount: number = 0
   ) => {
     if (!activeExamSession) return;
+    if (hasSubmittedRef.current || isSubmittingRef.current) {
+      console.warn('⚠️ [Timeout Auto-Submit] Bài thi đã được nộp hoặc đang trong quá trình nộp, bỏ qua.');
+      return;
+    }
+    hasSubmittedRef.current = true;
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
+
     const exam = activeExamSession.exam;
     const answers = activeExamSession.answers;
-    
-    // Calculate score
-    const questions = exam.questions || [];
-    let correct = 0;
-    questions.forEach((q, idx) => {
-      const studentChoice = answers[idx];
-      if (isTrueFalseQuestion(q) && q.statements && q.statements.length > 0) {
-        const studentStmts = studentChoice || {};
-        let qCorrectCount = 0;
-        q.statements.forEach((st, sIdx) => {
-          if (studentStmts[sIdx] === st.isCorrect) {
-            qCorrectCount++;
-          }
-        });
-        correct += qCorrectCount / q.statements.length;
-      } else {
-        if (checkQuestionCorrectLocal(q, studentChoice)) {
-          correct++;
-        }
-      }
-    });
-    const totalQ = questions.length || 1;
-    const hasScore = isSubjectWithScore(exam.subject);
-    const qualitativeLvl = getQualitativeLabel(correct, totalQ);
-    const scoreNumber = totalQ > 0 ? Math.round((correct / totalQ) * 10) : 0;
-    const scoreVal = hasScore ? `${scoreNumber} / 10` : qualitativeLvl;
     const nowTimeStr = getCurrentSubmissionTimestamp();
-    const scorePercentage = Math.round((correct / totalQ) * 100);
+    let scoreVal = '0 / 10';
 
-    const rankTier = isViolationLock 
-      ? 'Vi Phạm Quy Chế ⛔'
-      : hasScore
-        ? (scoreNumber >= 9.0 ? 'Xuất Sắc 🏆' : scoreNumber >= 7.0 ? 'Tốt 🥈' : scoreNumber >= 5.0 ? 'Đã Hoàn Thành 👍' : 'Cần Ôn Lại 📚')
-        : (qualitativeLvl === 'Tốt' ? 'Mức Đạt: Tốt 🏆' : qualitativeLvl === 'Hoàn thành' ? 'Mức Đạt: Hoàn Thành 👍' : 'Mức Đạt: Chưa Hoàn Thành 📚');
-
-    const isAssignment = mode === 'assignment' || 
-      (exam.title && (exam.title.toLowerCase().includes('bài tập') || exam.title.toLowerCase().includes('luyện tập') || exam.title.toLowerCase().includes('rèn luyện'))) ||
-      exam.examType === 'Luyện tập' ||
-      exam.examType === 'Bài tập';
-
-    if (!isPreviewMode) {
-      const session = getCurrentStudentSession();
-      const effectiveInfo = getEffectiveStudentClassAndGrade();
-      const effectiveStudentClass = session?.className || effectiveInfo.studentClass || 'Lớp 3C';
-      const effectiveStudentName = session?.name || session?.fullName || effectiveInfo.studentName || currentUserName;
-      const cleanClass = (effectiveStudentClass || '3C').replace(/^Lớp\s*/i, '').trim().toUpperCase();
-      const authenticStudentCode = normalizeStudentCode(formatStandardStudentCode(
-        getAuthenticStudentCode(session, currentUserId, effectiveStudentClass, effectiveStudentName),
-        cleanClass
-      ));
-      const effectiveAcademicYear = session?.academicYear || '2026-2027';
-
-      // ID chính thức của đề kiểm tra hiện hành
-      const officialExamId = exam.id;
-
-      const answersById: Record<string, any> = {};
-      (exam.questions || []).forEach((q: any, idx: number) => {
-        const key = q.id || `q_${idx}`;
-        answersById[key] = answers[idx];
+    try {
+      // Calculate score
+      const questions = exam.questions || [];
+      let correct = 0;
+      questions.forEach((q, idx) => {
+        const studentChoice = answers[idx];
+        if (isTrueFalseQuestion(q) && q.statements && q.statements.length > 0) {
+          const studentStmts = studentChoice || {};
+          let qCorrectCount = 0;
+          q.statements.forEach((st, sIdx) => {
+            if (studentStmts[sIdx] === st.isCorrect) {
+              qCorrectCount++;
+            }
+          });
+          correct += qCorrectCount / q.statements.length;
+        } else {
+          if (checkQuestionCorrectLocal(q, studentChoice)) {
+            correct++;
+          }
+        }
       });
-      const qSnapshot = (exam.questions || []).map((q: any) => ({ ...q }));
+      const totalQ = questions.length || 1;
+      const hasScore = isSubjectWithScore(exam.subject);
+      const qualitativeLvl = getQualitativeLabel(correct, totalQ);
+      const scoreNumber = totalQ > 0 ? Math.round((correct / totalQ) * 10) : 0;
+      scoreVal = hasScore ? `${scoreNumber} / 10` : qualitativeLvl;
+      const scorePercentage = Math.round((correct / totalQ) * 100);
 
-      const examSub: ExamSubmissionItem = {
-        id: 'sub-' + Date.now(),
-        type: 'exam',
-        submissionType: 'exam',
-        examId: officialExamId,
-        studentId: authenticStudentCode,
-        sddcn: session?.sddcn || authenticStudentCode,
-        studentPersistentId: authenticStudentCode,
-        academicYear: effectiveAcademicYear,
-        title: exam.title,
-        subject: exam.subject || 'Môn học',
-        rank: rankTier,
-        score: scoreVal,
-        submittedTime: nowTimeStr,
-        exam,
-        questionSnapshot: qSnapshot,
-        answers,
-        answersById
-      };
-      const updatedSubmissions = [examSub, ...examHistory.filter(s => getSubmissionExamKey(s) !== getSubmissionExamKey(examSub))];
-      setExamHistory(updatedSubmissions);
+      const rankTier = isViolationLock 
+        ? 'Vi Phạm Quy Chế ⛔'
+        : hasScore
+          ? (scoreNumber >= 9.0 ? 'Xuất Sắc 🏆' : scoreNumber >= 7.0 ? 'Tốt 🥈' : scoreNumber >= 5.0 ? 'Đã Hoàn Thành 👍' : 'Cần Ôn Lại 📚')
+          : (qualitativeLvl === 'Tốt' ? 'Mức Đạt: Tốt 🏆' : qualitativeLvl === 'Hoàn thành' ? 'Mức Đạt: Hoàn Thành 👍' : 'Mức Đạt: Chưa Hoàn Thành 📚');
 
-      try {
-        const fullExamRecord = {
-          ...examSub,
+      const isAssignment = mode === 'assignment' || 
+        (exam.title && (exam.title.toLowerCase().includes('bài tập') || exam.title.toLowerCase().includes('luyện tập') || exam.title.toLowerCase().includes('rèn luyện'))) ||
+        exam.examType === 'Luyện tập' ||
+        exam.examType === 'Bài tập';
+
+      if (!isPreviewMode) {
+        const session = getCurrentStudentSession();
+        const effectiveInfo = getEffectiveStudentClassAndGrade();
+        const effectiveStudentClass = session?.className || effectiveInfo.studentClass || 'Lớp 3C';
+        const effectiveStudentName = session?.name || session?.fullName || effectiveInfo.studentName || currentUserName;
+        const cleanClass = (effectiveStudentClass || '3C').replace(/^Lớp\s*/i, '').trim().toUpperCase();
+        const authenticStudentCode = normalizeStudentCode(formatStandardStudentCode(
+          getAuthenticStudentCode(session, currentUserId, effectiveStudentClass, effectiveStudentName),
+          cleanClass
+        ));
+        const effectiveAcademicYear = session?.academicYear || '2026-2027';
+
+        // ID chính thức của đề kiểm tra hiện hành
+        const officialExamId = exam.id;
+
+        // Dùng ID cố định ${studentId}_${examId}_${attemptNumber} để setDoc idempotent tuyệt đối
+        const attemptNumber = 1;
+        const fixedDocId = `${authenticStudentCode}_${officialExamId}_${attemptNumber}`;
+
+        const answersById: Record<string, any> = {};
+        (exam.questions || []).forEach((q: any, idx: number) => {
+          const key = q.id || `q_${idx}`;
+          answersById[key] = answers[idx];
+        });
+        const qSnapshot = (exam.questions || []).map((q: any) => ({ ...q }));
+
+        const examSub: ExamSubmissionItem = {
+          id: fixedDocId,
+          type: 'exam',
+          submissionType: 'exam',
+          examId: officialExamId,
           studentId: authenticStudentCode,
+          attemptNumber,
           sddcn: session?.sddcn || authenticStudentCode,
           studentPersistentId: authenticStudentCode,
           academicYear: effectiveAcademicYear,
-          studentCode: authenticStudentCode,
-          maHs: authenticStudentCode,
-          studentName: effectiveStudentName,
-          studentClass: effectiveStudentClass,
-          totalScore: scoreNumber,
-          submittedAt: nowTimeStr,
-          attempts: 1,
+          title: exam.title,
+          subject: exam.subject || 'Môn học',
+          rank: rankTier,
+          score: scoreVal,
+          submittedTime: nowTimeStr,
+          exam,
           questionSnapshot: qSnapshot,
           answers,
-          answersById,
-          violationCount: finalViolationCount || 3,
-          isViolationLocked: isViolationLock,
-          violationReason: violationReason || '',
-          feedback: isViolationLock 
-            ? 'Bài thi bị khóa & tự động nộp do học sinh vi phạm quy chế rời màn hình/chuyển tab quá 3 lần.' 
-            : (scoreNumber >= 8 ? 'Làm bài xuất sắc, nắm chắc kiến thức.' : (scoreNumber >= 5 ? 'Đã hoàn thành đạt yêu cầu.' : 'Cần ôn tập và rèn luyện thêm.'))
+          answersById
         };
 
-        // 1. Ghi bài nộp vào đúng Firestore sub-collection 'submissions' của đề kiểm tra chính thức
-        if (db && officialExamId) {
-          const subDocRef = doc(db, 'exams', officialExamId, 'submissions', authenticStudentCode);
-          try {
-            await setDoc(subDocRef, {
-              ...fullExamRecord,
-              examId: officialExamId,
-              updatedAt: new Date().toISOString()
-            }, { merge: true });
-            console.log(`💾 [Timeout Auto-Submit] Đã ghi trực tiếp vào Firestore: exams/${officialExamId}/submissions/${authenticStudentCode}`);
-          } catch (errSub) {
-            console.error(`❌ Lỗi ghi trực tiếp subcollection exams/${officialExamId}/submissions:`, errSub);
-          }
+        const updatedSubmissions = deduplicateExamSubmissions([examSub, ...(examHistory || [])]);
+        setExamHistory(updatedSubmissions);
 
-          // Cập nhật mảng submissions trên master document của đề kiểm tra (TUYỆT ĐỐI không tạo document mới nếu document không tồn tại)
-          const examRef = doc(db, 'exams', officialExamId);
-          try {
-            await runTransaction(db, async (transaction) => {
-              const examSnap = await transaction.get(examRef);
-              if (!examSnap.exists()) {
-                console.warn(`[Timeout Auto-Submit] Document exams/${officialExamId} không tồn tại trên Firestore, không tạo bản nháp lỗi.`);
-                return;
-              }
+        try {
+          const rawExamRecord = {
+            ...examSub,
+            id: fixedDocId,
+            studentId: authenticStudentCode,
+            attemptNumber,
+            sddcn: session?.sddcn || authenticStudentCode,
+            studentPersistentId: authenticStudentCode,
+            academicYear: effectiveAcademicYear,
+            studentCode: authenticStudentCode,
+            maHs: authenticStudentCode,
+            studentName: effectiveStudentName,
+            studentClass: effectiveStudentClass,
+            totalScore: scoreNumber,
+            submittedAt: nowTimeStr,
+            attempts: 1,
+            questionSnapshot: qSnapshot,
+            answers,
+            answersById,
+            violationCount: finalViolationCount || 3,
+            isViolationLocked: isViolationLock,
+            violationReason: violationReason || '',
+            feedback: isViolationLock 
+              ? 'Bài thi bị khóa & tự động nộp do học sinh vi phạm quy chế rời màn hình/chuyển tab quá 3 lần.' 
+              : (scoreNumber >= 8 ? 'Làm bài xuất sắc, nắm chắc kiến thức.' : (scoreNumber >= 5 ? 'Đã hoàn thành đạt yêu cầu.' : 'Cần ôn tập và rèn luyện thêm.'))
+          };
+          const fullExamRecord = removeUndefined(rawExamRecord);
 
-              const currentData = examSnap.data();
-              const existingSubs = Array.isArray(currentData.submissions) ? [...currentData.submissions] : [];
-
-              const filtered = existingSubs.filter((s: any) =>
-                (s.studentId || s.studentCode || s.maHs || s.sddcn || '').toLowerCase() !== authenticStudentCode.toLowerCase()
-              );
-              filtered.unshift(fullExamRecord);
-
-              const uniqueStudentKeys = new Set(
-                filtered.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean)
-              );
-              const count = uniqueStudentKeys.size;
-
-              // Sử dụng transaction.update để đảm bảo CHỈ cập nhật tài liệu đã có, KHÔNG tạo bản nháp mới
-              transaction.update(examRef, {
-                submissions: filtered,
-                submissionsCount: count,
-                completedCount: count,
-                updatedAt: new Date().toISOString()
-              });
-            });
-          } catch (tErr) {
-            console.warn(`Transaction update error on ${officialExamId}:`, tErr);
-          }
-
-          // Đồng bộ thêm vào đề gốc nếu có originalExamId khác officialExamId
-          if (exam.originalExamId && exam.originalExamId !== officialExamId) {
+          // 1. Ghi bài nộp vào đúng Firestore sub-collection 'submissions' bằng setDoc với ID cố định ${studentId}_${examId}_${attemptNumber}
+          if (db && officialExamId) {
+            const fixedSubDocRef = doc(db, 'exams', officialExamId, 'submissions', fixedDocId);
             try {
-              const origSubDocRef = doc(db, 'exams', exam.originalExamId, 'submissions', authenticStudentCode);
-              await setDoc(origSubDocRef, {
+              await setDoc(fixedSubDocRef, removeUndefined({
                 ...fullExamRecord,
-                examId: exam.originalExamId,
+                id: fixedDocId,
+                examId: officialExamId,
+                attemptNumber,
                 updatedAt: new Date().toISOString()
-              }, { merge: true });
+              }), { merge: true });
+              console.log(`💾 [Timeout Auto-Submit] Đã ghi trực tiếp vào Firestore: exams/${officialExamId}/submissions/${fixedDocId}`);
+            } catch (errSub) {
+              console.error(`❌ Lỗi ghi trực tiếp subcollection exams/${officialExamId}/submissions:`, errSub);
+            }
 
-              const origExamRef = doc(db, 'exams', exam.originalExamId);
+            // Ghi đồng bộ theo studentCode để các component truy vấn trực tiếp tìm thấy
+            if (fixedDocId !== authenticStudentCode) {
+              try {
+                const scDocRef = doc(db, 'exams', officialExamId, 'submissions', authenticStudentCode);
+                await setDoc(scDocRef, removeUndefined({
+                  ...fullExamRecord,
+                  id: fixedDocId,
+                  examId: officialExamId,
+                  attemptNumber,
+                  updatedAt: new Date().toISOString()
+                }), { merge: true });
+              } catch {}
+            }
+
+            // Cập nhật mảng submissions trên master document của đề kiểm tra (KHÔNG tạo document mới nếu không tồn tại)
+            const examRef = doc(db, 'exams', officialExamId);
+            try {
               await runTransaction(db, async (transaction) => {
-                const origSnap = await transaction.get(origExamRef);
-                if (!origSnap.exists()) return;
-                const origData = origSnap.data();
-                const origExisting = Array.isArray(origData.submissions) ? [...origData.submissions] : [];
-                const origFiltered = origExisting.filter((s: any) =>
-                  (s.studentId || s.studentCode || s.maHs || s.sddcn || '').toLowerCase() !== authenticStudentCode.toLowerCase()
+                const examSnap = await transaction.get(examRef);
+                if (!examSnap.exists()) {
+                  console.warn(`[Timeout Auto-Submit] Document exams/${officialExamId} không tồn tại trên Firestore, không tạo bản nháp lỗi.`);
+                  return;
+                }
+
+                const currentData = examSnap.data();
+                const existingSubs = Array.isArray(currentData.submissions) ? [...currentData.submissions] : [];
+
+                const filtered = existingSubs.filter((s: any) => {
+                  const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
+                  const sId = String(s.id || '').toLowerCase();
+                  return sCode !== authenticStudentCode.toLowerCase() && sId !== fixedDocId.toLowerCase();
+                });
+                filtered.unshift(fullExamRecord);
+                const deduplicatedDocSubs = deduplicateExamSubmissions(filtered);
+
+                const uniqueStudentKeys = new Set(
+                  deduplicatedDocSubs.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean)
                 );
-                origFiltered.unshift(fullExamRecord);
-                const uniqueKeys = new Set(origFiltered.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean));
-                transaction.update(origExamRef, {
-                  submissions: origFiltered,
-                  submissionsCount: uniqueKeys.size,
-                  completedCount: uniqueKeys.size,
+                const count = uniqueStudentKeys.size;
+
+                transaction.update(examRef, {
+                  submissions: deduplicatedDocSubs,
+                  submissionsCount: count,
+                  completedCount: count,
                   updatedAt: new Date().toISOString()
                 });
               });
-            } catch {}
-          }
+            } catch (tErr) {
+              console.warn(`Transaction update error on ${officialExamId}:`, tErr);
+            }
 
-          // Nếu là bài tập hoặc ID có prefix as-, đồng bộ thêm vào collection assignments
-          if (isAssignment || officialExamId.startsWith('as-')) {
-            try {
-              const asSubDocRef = doc(db, 'assignments', officialExamId, 'submissions', authenticStudentCode);
-              await setDoc(asSubDocRef, {
-                ...fullExamRecord,
-                assignmentId: officialExamId,
-                updatedAt: new Date().toISOString()
-              }, { merge: true });
-
-              const asRef = doc(db, 'assignments', officialExamId);
-              await runTransaction(db, async (transaction) => {
-                const asSnap = await transaction.get(asRef);
-                if (!asSnap.exists()) return;
-                const asData = asSnap.data();
-                const asSubs = Array.isArray(asData.submissions) ? [...asData.submissions] : [];
-                const asFiltered = asSubs.filter((s: any) =>
-                  (s.studentId || s.studentCode || s.maHs || s.sddcn || '').toLowerCase() !== authenticStudentCode.toLowerCase()
-                );
-                asFiltered.unshift(fullExamRecord);
-                const uniqueAsKeys = new Set(asFiltered.map((s: any) => (s.studentId || s.studentCode || s.maHs || '').trim().toLowerCase()).filter(Boolean));
-                transaction.update(asRef, {
-                  submissions: asFiltered,
-                  submissionsCount: uniqueAsKeys.size,
-                  completedCount: uniqueAsKeys.size,
+            // Đồng bộ thêm vào đề gốc nếu có originalExamId khác officialExamId
+            if (exam.originalExamId && exam.originalExamId !== officialExamId) {
+              try {
+                const origSubDocRef = doc(db, 'exams', exam.originalExamId, 'submissions', fixedDocId);
+                await setDoc(origSubDocRef, removeUndefined({
+                  ...fullExamRecord,
+                  id: fixedDocId,
+                  examId: exam.originalExamId,
+                  attemptNumber,
                   updatedAt: new Date().toISOString()
-                });
-              });
-            } catch {}
-          }
-        }
+                }), { merge: true });
 
-        // 2. Đồng bộ vào kho student_results
-        await studentResultService.saveFullExamSubmission(authenticStudentCode, officialExamId, fullExamRecord);
-        await studentResultService.saveExamResult(authenticStudentCode, officialExamId, {
-          score: scoreNumber,
-          maxScore: 10,
-          submittedAt: nowTimeStr,
-          type: 'exam'
-        });
-        if (exam.originalExamId && exam.originalExamId !== officialExamId) {
-          await studentResultService.saveFullExamSubmission(authenticStudentCode, exam.originalExamId, fullExamRecord);
-          await studentResultService.saveExamResult(authenticStudentCode, exam.originalExamId, {
+                const origExamRef = doc(db, 'exams', exam.originalExamId);
+                await runTransaction(db, async (transaction) => {
+                  const origSnap = await transaction.get(origExamRef);
+                  if (!origSnap.exists()) return;
+                  const origData = origSnap.data();
+                  const origExisting = Array.isArray(origData.submissions) ? [...origData.submissions] : [];
+                  const origFiltered = origExisting.filter((s: any) => {
+                    const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
+                    const sId = String(s.id || '').toLowerCase();
+                    return sCode !== authenticStudentCode.toLowerCase() && sId !== fixedDocId.toLowerCase();
+                  });
+                  origFiltered.unshift(fullExamRecord);
+                  const deduplicatedOrigSubs = deduplicateExamSubmissions(origFiltered);
+                  const uniqueKeys = new Set(deduplicatedOrigSubs.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean));
+                  transaction.update(origExamRef, {
+                    submissions: deduplicatedOrigSubs,
+                    submissionsCount: uniqueKeys.size,
+                    completedCount: uniqueKeys.size,
+                    updatedAt: new Date().toISOString()
+                  });
+                });
+              } catch {}
+            }
+
+            // Nếu là bài tập hoặc ID có prefix as-, đồng bộ thêm vào collection assignments
+            if (isAssignment || officialExamId.startsWith('as-')) {
+              try {
+                const asSubDocRef = doc(db, 'assignments', officialExamId, 'submissions', fixedDocId);
+                await setDoc(asSubDocRef, removeUndefined({
+                  ...fullExamRecord,
+                  id: fixedDocId,
+                  assignmentId: officialExamId,
+                  attemptNumber,
+                  updatedAt: new Date().toISOString()
+                }), { merge: true });
+
+                const asRef = doc(db, 'assignments', officialExamId);
+                await runTransaction(db, async (transaction) => {
+                  const asSnap = await transaction.get(asRef);
+                  if (!asSnap.exists()) return;
+                  const asData = asSnap.data();
+                  const asSubs = Array.isArray(asData.submissions) ? [...asData.submissions] : [];
+                  const asFiltered = asSubs.filter((s: any) => {
+                    const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
+                    const sId = String(s.id || '').toLowerCase();
+                    return sCode !== authenticStudentCode.toLowerCase() && sId !== fixedDocId.toLowerCase();
+                  });
+                  asFiltered.unshift(fullExamRecord);
+                  const deduplicatedAsSubs = deduplicateExamSubmissions(asFiltered);
+                  const uniqueAsKeys = new Set(deduplicatedAsSubs.map((s: any) => (s.studentId || s.studentCode || s.maHs || '').trim().toLowerCase()).filter(Boolean));
+                  transaction.update(asRef, {
+                    submissions: deduplicatedAsSubs,
+                    submissionsCount: uniqueAsKeys.size,
+                    completedCount: uniqueAsKeys.size,
+                    updatedAt: new Date().toISOString()
+                  });
+                });
+              } catch {}
+            }
+          }
+
+          // 2. Đồng bộ vào kho student_results
+          await studentResultService.saveFullExamSubmission(authenticStudentCode, officialExamId, fullExamRecord);
+          await studentResultService.saveExamResult(authenticStudentCode, officialExamId, {
             score: scoreNumber,
             maxScore: 10,
             submittedAt: nowTimeStr,
             type: 'exam'
           });
-        }
-        if (isAssignment) {
-          await studentResultService.saveFullAssignmentSubmission(authenticStudentCode, officialExamId, fullExamRecord);
-          await studentResultService.saveAssignmentResult(authenticStudentCode, {
-            assignmentId: officialExamId,
-            score: scoreNumber,
-            maxScore: 10,
-            submittedAt: nowTimeStr,
-            answers
-          });
-        }
+          if (exam.originalExamId && exam.originalExamId !== officialExamId) {
+            await studentResultService.saveFullExamSubmission(authenticStudentCode, exam.originalExamId, fullExamRecord);
+            await studentResultService.saveExamResult(authenticStudentCode, exam.originalExamId, {
+              score: scoreNumber,
+              maxScore: 10,
+              submittedAt: nowTimeStr,
+              type: 'exam'
+            });
+          }
+          if (isAssignment) {
+            await studentResultService.saveFullAssignmentSubmission(authenticStudentCode, officialExamId, fullExamRecord);
+            await studentResultService.saveAssignmentResult(authenticStudentCode, {
+              assignmentId: officialExamId,
+              score: scoreNumber,
+              maxScore: 10,
+              submittedAt: nowTimeStr,
+              answers
+            });
+          }
 
-        // 3. Global cache & local storage
-        const allSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
-        const allSubs = allSubsRaw ? JSON.parse(allSubsRaw) : [];
-        const filteredAll = Array.isArray(allSubs) ? allSubs.filter((s: any) => !(s.examId === examSub.examId && (s.studentId === authenticStudentCode || s.studentCode === authenticStudentCode || s.maHs === authenticStudentCode || s.sddcn === authenticStudentCode))) : [];
-        filteredAll.unshift(fullExamRecord);
-        localStorage.setItem('eduplay_all_exam_submissions', JSON.stringify(filteredAll));
-        localStorage.setItem(`eduplay_student_exam_subs_${authenticStudentCode}`, JSON.stringify(updatedSubmissions));
-        if (currentUserId && currentUserId !== authenticStudentCode) {
-          localStorage.setItem(`eduplay_student_exam_subs_${currentUserId}`, JSON.stringify(updatedSubmissions));
-        }
+          // 3. Global cache & local storage
+          const allSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
+          const allSubs = allSubsRaw ? JSON.parse(allSubsRaw) : [];
+          const filteredAll = Array.isArray(allSubs) ? allSubs.filter((s: any) => {
+            const sKey = getSubmissionExamKey(s);
+            const curKey = getSubmissionExamKey(examSub);
+            const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
+            return !(sKey === curKey && sCode === authenticStudentCode.toLowerCase());
+          }) : [];
+          filteredAll.unshift(fullExamRecord);
+          const deduplicatedAll = deduplicateExamSubmissions(filteredAll);
+          localStorage.setItem('eduplay_all_exam_submissions', JSON.stringify(deduplicatedAll));
+          localStorage.setItem(`eduplay_student_exam_subs_${authenticStudentCode}`, JSON.stringify(updatedSubmissions));
+          if (currentUserId && currentUserId !== authenticStudentCode) {
+            localStorage.setItem(`eduplay_student_exam_subs_${currentUserId}`, JSON.stringify(updatedSubmissions));
+          }
 
-        if (isAssignment) {
-          const hwSub = {
-            id: examSub.id,
-            type: 'assignment' as const,
-            submissionType: 'assignment' as const,
-            studentId: authenticStudentCode,
-            title: exam.title,
-            subject: exam.subject || 'Môn học',
-            rank: rankTier,
-            score: scoreVal,
-            submittedTime: nowTimeStr,
-            assignment: {
-              id: exam.id,
+          if (isAssignment) {
+            const hwSub = {
+              id: examSub.id,
+              type: 'assignment' as const,
+              submissionType: 'assignment' as const,
+              studentId: authenticStudentCode,
               title: exam.title,
-              subject: exam.subject,
-              grade: exam.grade,
-              questions: exam.questions
-            },
-            questionSnapshot: qSnapshot,
-            answers,
-            answersById
-          };
-          try {
-            const savedHw = localStorage.getItem(`eduplay_student_submissions_${authenticStudentCode}`);
-            const parsedHw = savedHw ? JSON.parse(savedHw) : [];
-            localStorage.setItem(`eduplay_student_submissions_${authenticStudentCode}`, JSON.stringify([hwSub, ...parsedHw.filter((s: any) => s.id !== hwSub.id)]));
-            if (currentUserId && currentUserId !== authenticStudentCode) {
-              localStorage.setItem(`eduplay_student_submissions_${currentUserId}`, JSON.stringify([hwSub, ...parsedHw.filter((s: any) => s.id !== hwSub.id)]));
-            }
-          } catch {}
-        }
+              subject: exam.subject || 'Môn học',
+              rank: rankTier,
+              score: scoreVal,
+              submittedTime: nowTimeStr,
+              assignment: {
+                id: exam.id,
+                title: exam.title,
+                subject: exam.subject,
+                grade: exam.grade,
+                questions: exam.questions
+              },
+              questionSnapshot: qSnapshot,
+              answers,
+              answersById
+            };
+            try {
+              const savedHw = localStorage.getItem(`eduplay_student_submissions_${authenticStudentCode}`);
+              const parsedHw = savedHw ? JSON.parse(savedHw) : [];
+              localStorage.setItem(`eduplay_student_submissions_${authenticStudentCode}`, JSON.stringify([hwSub, ...parsedHw.filter((s: any) => s.id !== hwSub.id)]));
+              if (currentUserId && currentUserId !== authenticStudentCode) {
+                localStorage.setItem(`eduplay_student_submissions_${currentUserId}`, JSON.stringify([hwSub, ...parsedHw.filter((s: any) => s.id !== hwSub.id)]));
+              }
+            } catch {}
+          }
 
-        window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
-        window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
-        window.dispatchEvent(new Event('storage'));
-      } catch (err) {
-        console.error('Error saving exam submission to Firestore:', err);
-      }
-
-      // Thưởng đề kiểm tra / bài tập
-      if (isAssignment) {
-        awardAssignmentReward(currentUserId, exam.id || 'as-timeout', exam.title, correct, questions.length || 1, scoreNumber);
-      } else {
-        awardExamReward(currentUserId, exam.id || 'ex-auto', exam.title, scoreNumber);
-      }
-
-      // Sync completion to live quiz sessions (Chỉ áp dụng cho Bài tập / mode === 'assignment' khi bật Real-time)
-      if (mode === 'assignment' && activeExamSession?.exam?.enableRealtimeLeaderboard) {
-        try {
-          const effectiveInfo = getEffectiveStudentClassAndGrade();
-          const gameProfile = getStudentGameProfile(currentUserId, currentUserName);
-          const avatarEmoji = gameProfile.equippedAvatar || gameProfile.avatar || '🌟';
-          completeQuizLiveSession({
-            targetId: exam.id || 'ex-auto',
-            studentId: currentUserId,
-            studentName: currentUserName,
-            studentClass: effectiveInfo.studentClass,
-            studentAvatar: avatarEmoji,
-            score: scoreNumber,
-            scoreStr: scoreVal,
-            percentage: scorePercentage,
-            totalQuestions: totalQ,
-            answeredCount: totalQ,
-            timeSpentSeconds: (activeExamSession.durationMinutes || 15) * 60
-          });
+          window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
+          window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
+          window.dispatchEvent(new Event('storage'));
         } catch (err) {
-          console.error('Error completing live quiz session on timeout:', err);
+          console.error('Error saving exam submission to Firestore on timeout:', err);
+        }
+
+        // Thưởng đề kiểm tra / bài tập
+        if (isAssignment) {
+          awardAssignmentReward(currentUserId, exam.id || 'as-timeout', exam.title, correct, questions.length || 1, scoreNumber);
+        } else {
+          awardExamReward(currentUserId, exam.id || 'ex-auto', exam.title, scoreNumber);
+        }
+
+        // Sync completion to live quiz sessions
+        if (mode === 'assignment' && activeExamSession?.exam?.enableRealtimeLeaderboard) {
+          try {
+            const effectiveInfo = getEffectiveStudentClassAndGrade();
+            const gameProfile = getStudentGameProfile(currentUserId, currentUserName);
+            const avatarEmoji = gameProfile.equippedAvatar || gameProfile.avatar || '🌟';
+            completeQuizLiveSession({
+              targetId: exam.id || 'ex-auto',
+              studentId: currentUserId,
+              studentName: currentUserName,
+              studentClass: effectiveInfo.studentClass,
+              studentAvatar: avatarEmoji,
+              score: scoreNumber,
+              scoreStr: scoreVal,
+              percentage: scorePercentage,
+              totalQuestions: totalQ,
+              answeredCount: totalQ,
+              timeSpentSeconds: (activeExamSession.durationMinutes || 15) * 60
+            });
+          } catch (err) {
+            console.error('Error completing live quiz session on timeout:', err);
+          }
         }
       }
+    } finally {
+      setIsSubmitting(false);
+      isSubmittingRef.current = false;
     }
 
     setActiveExamSession(null);
@@ -1615,7 +1807,9 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         const nextCount = prev + 1;
         if (nextCount >= 3) {
           // Violation 3: Trigger auto-submit with violation lock
-          handleAutoSubmitTimeout(reasonStr, true, 3);
+          if (!hasSubmittedRef.current) {
+            handleAutoSubmitTimeout(reasonStr, true, 3);
+          }
           return 3;
         } else {
           // Violation 1 & 2: Show Warning Modal immediately upon return
@@ -1706,31 +1900,8 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
 
   // Lọc riêng biệt chỉ các bài làm thuộc loại đề kiểm tra (type === 'exam'), đảm bảo tuyệt đối không trùng lặp (1 examId = 1 dòng duy nhất)
   const filteredExamHistory = useMemo(() => {
-    const map = new Map<string, ExamSubmissionItem>();
-    (examHistory || []).forEach(sub => {
-      if (!sub || sub.type !== 'exam') return;
-      const key = getSubmissionExamKey(sub);
-      if (!key) return;
-
-      if (!map.has(key)) {
-        map.set(key, sub);
-      } else {
-        const existing = map.get(key)!;
-        const subHasAnswers = Boolean(sub.answers && Object.keys(sub.answers).length > 0);
-        const existingHasAnswers = Boolean(existing.answers && Object.keys(existing.answers).length > 0);
-        if (subHasAnswers && !existingHasAnswers) {
-          map.set(key, sub);
-        } else if (subHasAnswers === existingHasAnswers) {
-          map.set(key, {
-            ...existing,
-            ...sub,
-            exam: sub.exam || existing.exam,
-            answers: subHasAnswers ? sub.answers : existing.answers
-          });
-        }
-      }
-    });
-    return Array.from(map.values());
+    const rawExamSubs = (examHistory || []).filter(isExamSubmission);
+    return deduplicateExamSubmissions(rawExamSubs);
   }, [examHistory]);
 
   // Diagnostic Audit Log for storage & real-time exams
@@ -1966,11 +2137,14 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
       }
     }
 
-    // Reset Proctoring Violation State
+    // Reset Proctoring Violation State & Submission flags
     setViolationCount(0);
     setAntiCheatModal(null);
     hasLeftWindowRef.current = false;
     lastViolationTimeRef.current = 0;
+    hasSubmittedRef.current = false;
+    isSubmittingRef.current = false;
+    setIsSubmitting(false);
 
     // Check time constraints
     const startTime = Date.now();
@@ -1989,6 +2163,10 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
 
   const handleManualSubmitConfirm = () => {
     if (!activeExamSession) return;
+    if (isSubmitting || isSubmittingRef.current || hasSubmittedRef.current) {
+      console.warn('⚠️ Đang trong quá trình nộp bài hoặc đã nộp, chặn mở popup xác nhận.');
+      return;
+    }
     const exam = activeExamSession.exam;
     const answers = activeExamSession.answers;
     const questions = exam.questions || [];
@@ -2028,6 +2206,14 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
 
   const executeSubmitExam = async () => {
     if (!activeExamSession) return;
+    if (isSubmitting || isSubmittingRef.current || hasSubmittedRef.current) {
+      console.warn('⚠️ Đang trong quá trình nộp bài hoặc đã nộp trước đó, chặn gọi hàm trùng lặp.');
+      return;
+    }
+    isSubmittingRef.current = true;
+    hasSubmittedRef.current = true;
+    setIsSubmitting(true);
+
     try {
       const exam = activeExamSession.exam;
       const answers = { ...(activeExamSession.answers || {}) };
@@ -2088,6 +2274,10 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         // ID chính thức của đề kiểm tra hiện hành
         const officialExamId = exam.id;
 
+        // Dùng ID cố định ${studentId}_${examId}_${attemptNumber} thay vì random timestamp để ghi đè chuẩn xác
+        const attemptNumber = 1;
+        const fixedDocId = `${authenticStudentCode}_${officialExamId}_${attemptNumber}`;
+
         const answersById: Record<string, any> = {};
         (exam.questions || []).forEach((q: any, idx: number) => {
           const key = q.id || `q_${idx}`;
@@ -2096,11 +2286,12 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         const qSnapshot = (exam.questions || []).map((q: any) => ({ ...q }));
 
         const examSub: ExamSubmissionItem = {
-          id: 'sub-' + Date.now(),
+          id: fixedDocId,
           type: 'exam',
           submissionType: isAssignment ? ('assignment' as const) : ('exam' as const),
           examId: officialExamId,
           studentId: authenticStudentCode,
+          attemptNumber,
           sddcn: session?.sddcn || authenticStudentCode,
           studentPersistentId: authenticStudentCode,
           academicYear: effectiveAcademicYear,
@@ -2115,13 +2306,16 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           answers,
           answersById
         };
-        const updatedSubmissions = [examSub, ...examHistory.filter(s => getSubmissionExamKey(s) !== getSubmissionExamKey(examSub))];
+
+        const updatedSubmissions = deduplicateExamSubmissions([examSub, ...(examHistory || [])]);
         setExamHistory(updatedSubmissions);
 
         try {
           const rawExamRecord = {
             ...examSub,
+            id: fixedDocId,
             studentId: authenticStudentCode,
+            attemptNumber,
             sddcn: session?.sddcn || authenticStudentCode,
             studentPersistentId: authenticStudentCode,
             academicYear: effectiveAcademicYear,
@@ -2139,21 +2333,37 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           };
           const fullExamRecord = removeUndefined(rawExamRecord);
 
-          // 1. Ghi bài nộp vào đúng Firestore sub-collection 'submissions' của đề kiểm tra chính thức
+          // 1. Ghi bài nộp vào đúng Firestore sub-collection 'submissions' bằng setDoc với ID cố định ${studentId}_${examId}_${attemptNumber}
           if (db && officialExamId) {
-            const subDocRef = doc(db, 'exams', officialExamId, 'submissions', authenticStudentCode);
+            const fixedSubDocRef = doc(db, 'exams', officialExamId, 'submissions', fixedDocId);
             try {
-              await setDoc(subDocRef, removeUndefined({
+              await setDoc(fixedSubDocRef, removeUndefined({
                 ...fullExamRecord,
+                id: fixedDocId,
                 examId: officialExamId,
+                attemptNumber,
                 updatedAt: new Date().toISOString()
               }), { merge: true });
-              console.log(`💾 [Nộp bài] Đã ghi trực tiếp vào Firestore: exams/${officialExamId}/submissions/${authenticStudentCode}`);
+              console.log(`💾 [Nộp bài] Đã ghi trực tiếp vào Firestore: exams/${officialExamId}/submissions/${fixedDocId}`);
             } catch (subErr) {
               console.error(`❌ Lỗi ghi trực tiếp Firestore subcollection exams/${officialExamId}/submissions:`, subErr);
             }
 
-            // 2. Cập nhật mảng submissions trên master document của đề thi (TUYỆT ĐỐI không tạo document mới nếu document không tồn tại)
+            // Ghi đồng bộ theo authenticStudentCode để tương thích hoàn toàn
+            if (fixedDocId !== authenticStudentCode) {
+              try {
+                const scDocRef = doc(db, 'exams', officialExamId, 'submissions', authenticStudentCode);
+                await setDoc(scDocRef, removeUndefined({
+                  ...fullExamRecord,
+                  id: fixedDocId,
+                  examId: officialExamId,
+                  attemptNumber,
+                  updatedAt: new Date().toISOString()
+                }), { merge: true });
+              } catch {}
+            }
+
+            // 2. Cập nhật mảng submissions trên master document của đề thi (KHÔNG tạo document mới nếu không tồn tại)
             const examRef = doc(db, 'exams', officialExamId);
             try {
               await runTransaction(db, async (transaction) => {
@@ -2166,19 +2376,21 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                 const currentData = examSnap.data();
                 const existingSubs = Array.isArray(currentData.submissions) ? [...currentData.submissions] : [];
 
-                const filtered = existingSubs.filter((s: any) =>
-                  (s.studentId || s.studentCode || s.maHs || s.sddcn || '').toLowerCase() !== authenticStudentCode.toLowerCase()
-                );
+                const filtered = existingSubs.filter((s: any) => {
+                  const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
+                  const sId = String(s.id || '').toLowerCase();
+                  return sCode !== authenticStudentCode.toLowerCase() && sId !== fixedDocId.toLowerCase();
+                });
                 filtered.unshift(fullExamRecord);
+                const deduplicatedDocSubs = deduplicateExamSubmissions(filtered);
 
                 const uniqueStudentKeys = new Set(
-                  filtered.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean)
+                  deduplicatedDocSubs.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean)
                 );
                 const count = uniqueStudentKeys.size;
 
-                // Sử dụng transaction.update để đảm bảo CHỈ cập nhật tài liệu đã có, KHÔNG tạo bản nháp mới
                 transaction.update(examRef, {
-                  submissions: filtered,
+                  submissions: deduplicatedDocSubs,
                   submissionsCount: count,
                   completedCount: count,
                   updatedAt: new Date().toISOString()
@@ -2191,10 +2403,12 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             // Đồng bộ thêm vào đề gốc nếu có originalExamId khác officialExamId
             if (exam.originalExamId && exam.originalExamId !== officialExamId) {
               try {
-                const origSubDocRef = doc(db, 'exams', exam.originalExamId, 'submissions', authenticStudentCode);
+                const origSubDocRef = doc(db, 'exams', exam.originalExamId, 'submissions', fixedDocId);
                 await setDoc(origSubDocRef, removeUndefined({
                   ...fullExamRecord,
+                  id: fixedDocId,
                   examId: exam.originalExamId,
+                  attemptNumber,
                   updatedAt: new Date().toISOString()
                 }), { merge: true });
 
@@ -2204,13 +2418,16 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                   if (!origSnap.exists()) return;
                   const origData = origSnap.data();
                   const origExisting = Array.isArray(origData.submissions) ? [...origData.submissions] : [];
-                  const origFiltered = origExisting.filter((s: any) =>
-                    (s.studentId || s.studentCode || s.maHs || s.sddcn || '').toLowerCase() !== authenticStudentCode.toLowerCase()
-                  );
+                  const origFiltered = origExisting.filter((s: any) => {
+                    const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
+                    const sId = String(s.id || '').toLowerCase();
+                    return sCode !== authenticStudentCode.toLowerCase() && sId !== fixedDocId.toLowerCase();
+                  });
                   origFiltered.unshift(fullExamRecord);
-                  const uniqueKeys = new Set(origFiltered.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean));
+                  const deduplicatedOrigSubs = deduplicateExamSubmissions(origFiltered);
+                  const uniqueKeys = new Set(deduplicatedOrigSubs.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean));
                   transaction.update(origExamRef, {
-                    submissions: origFiltered,
+                    submissions: deduplicatedOrigSubs,
                     submissionsCount: uniqueKeys.size,
                     completedCount: uniqueKeys.size,
                     updatedAt: new Date().toISOString()
@@ -2222,10 +2439,12 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             // Nếu là bài tập hoặc ID có prefix as-, ghi đồng bộ cả vào assignments
             if (isAssignment || officialExamId.startsWith('as-')) {
               try {
-                const asSubDocRef = doc(db, 'assignments', officialExamId, 'submissions', authenticStudentCode);
+                const asSubDocRef = doc(db, 'assignments', officialExamId, 'submissions', fixedDocId);
                 await setDoc(asSubDocRef, removeUndefined({
                   ...fullExamRecord,
+                  id: fixedDocId,
                   assignmentId: officialExamId,
+                  attemptNumber,
                   updatedAt: new Date().toISOString()
                 }), { merge: true });
 
@@ -2235,13 +2454,16 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                   if (!asSnap.exists()) return;
                   const asData = asSnap.data();
                   const asSubs = Array.isArray(asData.submissions) ? [...asData.submissions] : [];
-                  const asFiltered = asSubs.filter((s: any) =>
-                    (s.studentId || s.studentCode || s.maHs || s.sddcn || '').toLowerCase() !== authenticStudentCode.toLowerCase()
-                  );
+                  const asFiltered = asSubs.filter((s: any) => {
+                    const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
+                    const sId = String(s.id || '').toLowerCase();
+                    return sCode !== authenticStudentCode.toLowerCase() && sId !== fixedDocId.toLowerCase();
+                  });
                   asFiltered.unshift(fullExamRecord);
-                  const uniqueAsKeys = new Set(asFiltered.map((s: any) => (s.studentId || s.studentCode || s.maHs || '').trim().toLowerCase()).filter(Boolean));
+                  const deduplicatedAsSubs = deduplicateExamSubmissions(asFiltered);
+                  const uniqueAsKeys = new Set(deduplicatedAsSubs.map((s: any) => (s.studentId || s.studentCode || s.maHs || '').trim().toLowerCase()).filter(Boolean));
                   transaction.update(asRef, {
-                    submissions: asFiltered,
+                    submissions: deduplicatedAsSubs,
                     submissionsCount: uniqueAsKeys.size,
                     completedCount: uniqueAsKeys.size,
                     updatedAt: new Date().toISOString()
@@ -2279,7 +2501,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             });
           }
 
-          // 4. Global cache & local storage
+          // 4. Global cache & local storage (đã khử trùng 100%)
           localStorage.setItem(`eduplay_student_exam_subs_${authenticStudentCode}`, JSON.stringify(updatedSubmissions));
           if (currentUserId && currentUserId !== authenticStudentCode) {
             localStorage.setItem(`eduplay_student_exam_subs_${currentUserId}`, JSON.stringify(updatedSubmissions));
@@ -2287,16 +2509,26 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
 
           const allSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
           const allSubs = allSubsRaw ? JSON.parse(allSubsRaw) : [];
-          const filteredAll = Array.isArray(allSubs) ? allSubs.filter((s: any) => !(s.examId === examSub.examId && (s.studentId === authenticStudentCode || s.studentCode === authenticStudentCode || s.maHs === authenticStudentCode || s.sddcn === authenticStudentCode))) : [];
+          const filteredAll = Array.isArray(allSubs) ? allSubs.filter((s: any) => {
+            const sKey = getSubmissionExamKey(s);
+            const curKey = getSubmissionExamKey(examSub);
+            const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
+            return !(sKey === curKey && sCode === authenticStudentCode.toLowerCase());
+          }) : [];
           filteredAll.unshift(fullExamRecord);
-          localStorage.setItem('eduplay_all_exam_submissions', JSON.stringify(filteredAll));
+          const deduplicatedAll = deduplicateExamSubmissions(filteredAll);
+          localStorage.setItem('eduplay_all_exam_submissions', JSON.stringify(deduplicatedAll));
 
           if (officialExamId) {
             const examSubsRaw = localStorage.getItem(`eduplay_exam_subs_${officialExamId}`);
             const examSubs = examSubsRaw ? JSON.parse(examSubsRaw) : [];
-            const filteredExamSubs = Array.isArray(examSubs) ? examSubs.filter((s: any) => !(s.studentId === authenticStudentCode || s.studentCode === authenticStudentCode || s.maHs === authenticStudentCode || s.sddcn === authenticStudentCode)) : [];
+            const filteredExamSubs = Array.isArray(examSubs) ? examSubs.filter((s: any) => {
+              const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
+              return sCode !== authenticStudentCode.toLowerCase();
+            }) : [];
             filteredExamSubs.unshift(fullExamRecord);
-            localStorage.setItem(`eduplay_exam_subs_${officialExamId}`, JSON.stringify(filteredExamSubs));
+            const deduplicatedExamSubs = deduplicateExamSubmissions(filteredExamSubs);
+            localStorage.setItem(`eduplay_exam_subs_${officialExamId}`, JSON.stringify(deduplicatedExamSubs));
           }
 
           // Lưu vào kho Bài tập nếu đang là bài tập
@@ -2401,6 +2633,9 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
       console.error('Fatal error during executeSubmitExam:', err);
       setActiveExamSession(null);
       if (onCloseExam) onCloseExam();
+    } finally {
+      setIsSubmitting(false);
+      isSubmittingRef.current = false;
     }
   };
 
@@ -2410,6 +2645,483 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     const mm = m < 10 ? '0' + m : m;
     const ss = s < 10 ? '0' + s : s;
     return `${mm}:${ss}`;
+  };
+
+  const renderDetailModal = () => {
+    if (!detailSubmission) return null;
+    const questionsList = detailSubmission.exam.questions || [];
+    const totalQ = Math.max(1, questionsList.length);
+    
+    let correctCount = 0;
+    questionsList.forEach((q: QuestionItem, idx: number) => {
+      try {
+        const studentChoice = detailSubmission.answers[idx];
+        if (isTrueFalseQuestion(q) && q.statements && q.statements.length > 0) {
+          const studentStmts = (typeof studentChoice === 'object' && studentChoice !== null) ? studentChoice : {};
+          let qCorrectCount = 0;
+          q.statements.forEach((st, sIdx) => {
+            if (studentStmts[sIdx] === st.isCorrect) {
+              qCorrectCount++;
+            }
+          });
+          correctCount += (q.statements.length > 0 ? (qCorrectCount / q.statements.length) : 0);
+        } else {
+          if (checkQuestionCorrectLocal(q, studentChoice)) {
+            correctCount++;
+          }
+        }
+      } catch (err) {
+        console.error(`Error checking question ${idx} in detail modal:`, err);
+      }
+    });
+
+    const scoreParts = detailSubmission.score.split('/');
+    const numericScore = parseFloat(scoreParts[0]) || ((correctCount / totalQ) * 10);
+    const maxScore = parseFloat(scoreParts[1]) || 10;
+    const ratio = numericScore / maxScore;
+    const isHighRatio = ratio >= 0.8;
+
+    const isScored = isSubjectWithScore(detailSubmission.subject || detailSubmission.exam?.subject);
+    const qualitativeLvl = getQualitativeLabel(correctCount, totalQ);
+
+    const correctQuestionNums: number[] = [];
+    const incorrectQuestionIndices: number[] = [];
+    questionsList.forEach((q: QuestionItem, idx: number) => {
+      const studentChoice = detailSubmission.answers[idx];
+      const isCorrect = checkQuestionCorrectLocal(q, studentChoice);
+      if (isCorrect) {
+        correctQuestionNums.push(idx + 1);
+      } else {
+        incorrectQuestionIndices.push(idx);
+      }
+    });
+
+    const mcqScore = String(Math.round(correctCount * (10 / totalQ)));
+
+    const getIncorrectFeedback = (q: QuestionItem, studentChoice?: any) => {
+      if (isMatchingQuestion(q)) {
+        const pairs = q.matchingPairs || [];
+        const studentPairs = (typeof studentChoice === 'object' && studentChoice !== null) ? studentChoice : {};
+        const wrongIndices: number[] = [];
+        pairs.forEach((pair, pIdx) => {
+          const studentSelected = studentPairs[pIdx] !== undefined ? studentPairs[pIdx] : studentPairs[pair.left];
+          const correctRightStr = String(pair.right || '').trim().toLowerCase();
+          let matchOk = false;
+          if (studentSelected !== undefined && studentSelected !== null && studentSelected !== '') {
+            if (String(studentSelected).trim().toLowerCase() === correctRightStr) {
+              matchOk = true;
+            } else if (typeof studentSelected === 'number') {
+              if (studentSelected === pIdx || (pairs[studentSelected] && String(pairs[studentSelected].right || '').trim().toLowerCase() === correctRightStr)) {
+                matchOk = true;
+              }
+            } else {
+              const rightPrefixMatch = correctRightStr.match(/^([a-z0-9])[\.\:\)\-]/i);
+              if (rightPrefixMatch && String(studentSelected).trim().toLowerCase() === rightPrefixMatch[1].toLowerCase()) {
+                matchOk = true;
+              }
+            }
+          }
+          if (!matchOk) wrongIndices.push(pIdx + 1);
+        });
+        if (wrongIndices.length > 0 && wrongIndices.length < pairs.length) {
+          return `Chưa chính xác. Em chưa nối đúng ở cặp: ${wrongIndices.map(i => `(${i})`).join(', ')}. Hãy quan sát kỹ bảng đáp án chuẩn để sửa lại nhé!`;
+        }
+        return 'Chưa chính xác. Em chưa nối đúng tất cả các cặp theo bảng đáp án chuẩn.';
+      }
+      if (isOrderingQuestion(q)) {
+        return 'Chưa chính xác. Thứ tự các bước sắp xếp chưa đúng với đáp án chuẩn.';
+      }
+      if (isClassificationQuestion(q)) {
+        return 'Chưa chính xác. Một số vật phẩm chưa được xếp vào đúng nhóm phân loại.';
+      }
+      if (isTrueFalseQuestion(q)) {
+        if (q.statements && q.statements.length > 0) {
+          return 'Chưa chính xác. Em chưa nhận định đúng tất cả các câu phát biểu.';
+        }
+        return 'Chưa chính xác. Đáp án nhận định chưa đúng.';
+      }
+      if (isMultipleResponseQuestion(q)) {
+        return 'Chưa chính xác. Em chưa chọn đúng và đủ tất cả các đáp án chính xác.';
+      }
+      if (isEssayQuestion(q)) {
+        return 'Chưa hoàn thành hoặc chưa đạt yêu cầu nội dung trình bày.';
+      }
+      if (q.correctAnswer && q.options && q.correctAnswer.length === 1) {
+        const code = q.correctAnswer.charCodeAt(0);
+        if (code >= 65 && code <= 90) {
+          const optIdx = code - 65;
+          if (q.options[optIdx]) {
+            return `Chưa chính xác. Đáp án chuẩn xác là ${q.correctAnswer} (${q.options[optIdx]}).`;
+          }
+        }
+      }
+      return `Chưa chính xác. Đáp án chuẩn xác là ${q.correctAnswer || 'theo hệ thống'}.`;
+    };
+
+    const getCorrectAnswerFull = (q: QuestionItem) => {
+      if (isMatchingQuestion(q)) {
+        const pairs = q.matchingPairs || [];
+        return pairs.map((pair, pIdx) => {
+          return `(${pIdx + 1}) ${pair.left} ➔ ${pair.right}`;
+        }).join('\n');
+      }
+
+      if (isOrderingQuestion(q)) {
+        const opts = getCorrectOrderingSequence(q);
+        return opts.map((opt, oIdx) => `${oIdx + 1}. ${opt}`).join('\n');
+      }
+
+      if (isClassificationQuestion(q)) {
+        const groups = q.classificationGroups || [];
+        const items = q.classificationItems || [];
+        if (groups.length === 0 || items.length === 0) return q.correctAnswer || 'Chưa xác định';
+        return groups.map(grp => {
+          const matchedItems = items.filter(item => item.group === grp).map(item => item.name);
+          return `${grp}: ${matchedItems.length > 0 ? matchedItems.join(', ') : '(Không có)'}`;
+        }).join('\n');
+      }
+
+      if (isTrueFalseQuestion(q)) {
+        if (q.statements && q.statements.length > 0) {
+          return q.statements.map((st, sIdx) => `${sIdx + 1}. ${st.statement}: ${st.isCorrect ? 'Đúng' : 'Sai'}`).join('\n');
+        }
+        return q.correctAnswer === 'A' || q.correctAnswer?.toLowerCase().includes('đúng') ? 'Đúng' : 'Sai';
+      }
+
+      if (!q.correctAnswer) return 'Chưa xác định';
+      if (q.options && q.correctAnswer.length === 1) {
+        const code = q.correctAnswer.charCodeAt(0);
+        if (code >= 65 && code <= 90) {
+          const optIdx = code - 65;
+          if (q.options[optIdx]) {
+            return `${q.correctAnswer}. ${q.options[optIdx]}`;
+          }
+        }
+      }
+      return q.correctAnswer;
+    };
+
+    const getStudentAnswerFull = (q: QuestionItem, idx: number) => {
+      const studentChoice = detailSubmission.answers[idx];
+      if (studentChoice === undefined) return 'Em chưa làm câu này';
+      
+      if (isMatchingQuestion(q)) {
+        const studentPairs = (typeof studentChoice === 'object' && studentChoice !== null) ? studentChoice : {};
+        const pairs = q.matchingPairs || [];
+        if (Object.keys(studentPairs).length === 0) return 'Em chưa ghép cặp nào';
+        return pairs.map((pair, pIdx) => {
+          const matchedVal = studentPairs[pIdx] !== undefined ? studentPairs[pIdx] : studentPairs[pair.left];
+          let displayVal = matchedVal;
+          if (typeof matchedVal === 'number' && pairs[matchedVal]) {
+            displayVal = pairs[matchedVal].right;
+          }
+          return `(${pIdx + 1}) ${pair.left} ➔ ${displayVal || '(Chưa nối)'}`;
+        }).join('\n');
+      }
+
+      if (isOrderingQuestion(q)) {
+        const studentOrder = studentChoice;
+        if (!Array.isArray(studentOrder) || studentOrder.length === 0) return 'Em chưa sắp xếp thứ tự';
+        return studentOrder.map((opt, oIdx) => `${oIdx + 1}. ${opt}`).join('\n');
+      }
+
+      if (isClassificationQuestion(q)) {
+        const studentAnswers = studentChoice || {};
+        const groups = q.classificationGroups || [];
+        const items = q.classificationItems || [];
+        if (Object.keys(studentAnswers).length === 0) return 'Em chưa phân loại mục nào';
+        return groups.map(grp => {
+          const placedItemNames = items
+            .map((item, iIdx) => ({ item, iIdx }))
+            .filter(({ iIdx }) => studentAnswers[iIdx] === grp)
+            .map(({ item }) => item.name);
+          return `${grp}: ${placedItemNames.length > 0 ? placedItemNames.join(', ') : '(Chưa xếp mục nào)'}`;
+        }).join('\n');
+      }
+
+      if (isTrueFalseQuestion(q)) {
+        if (q.statements && q.statements.length > 0) {
+          const studentStmts = studentChoice || {};
+          return q.statements.map((st, sIdx) => {
+            const ans = studentStmts[sIdx];
+            return `${sIdx + 1}. ${st.statement}: ${ans === true ? 'Đúng' : ans === false ? 'Sai' : '(Chưa chọn)'}`;
+          }).join('\n');
+        }
+        const sChoice = studentChoice as number;
+        if (sChoice === 0 || studentChoice === 'A' || studentChoice === true || String(studentChoice).toLowerCase().includes('đúng')) return 'Đúng';
+        if (sChoice === 1 || studentChoice === 'B' || studentChoice === false || String(studentChoice).toLowerCase().includes('sai')) return 'Sai';
+        return 'Chưa chọn';
+      }
+
+      if (isMultipleResponseQuestion(q) || Array.isArray(studentChoice)) {
+        const studentIndices = Array.isArray(studentChoice) ? studentChoice : (typeof studentChoice === 'number' ? [studentChoice] : []);
+        if (studentIndices.length === 0) return 'Em chưa chọn đáp án nào';
+        return studentIndices.map(i => {
+          const l = String.fromCharCode(65 + i);
+          return q.options && q.options[i] ? `${l}. ${q.options[i]}` : l;
+        }).join(', ');
+      }
+
+      if (isEssayQuestion(q)) {
+        return String(studentChoice);
+      }
+
+      if (typeof studentChoice !== 'number') {
+        return String(studentChoice);
+      }
+
+      const studentLetter = String.fromCharCode(65 + studentChoice);
+      if (q.options && q.options[studentChoice] !== undefined) {
+        return `${studentLetter}. ${q.options[studentChoice]}`;
+      }
+      return studentLetter;
+    };
+
+    return (
+      <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="bg-white rounded-3xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+          
+          {/* Header modal */}
+          <div className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between shrink-0">
+            <div className="space-y-1">
+              {(() => {
+                const isAssignmentResult = mode === 'assignment' || 
+                  (detailSubmission.title && (detailSubmission.title.toLowerCase().includes('bài tập') || detailSubmission.title.toLowerCase().includes('luyện tập') || detailSubmission.title.toLowerCase().includes('rèn luyện'))) ||
+                  detailSubmission.exam?.examType === 'Luyện tập' ||
+                  detailSubmission.exam?.examType === 'Bài tập';
+                return (
+                  <span className={`${isAssignmentResult ? 'bg-teal-600' : 'bg-indigo-600'} text-white text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-wider inline-flex items-center gap-1.5 shadow-sm`}>
+                    {isAssignmentResult ? '📝 KẾT QUẢ BÀI TẬP RÈN LUYỆN' : '⚡ KẾT QUẢ KIỂM TRA CHÍNH THỨC'}
+                  </span>
+                );
+              })()}
+              <h2 className="text-lg sm:text-xl font-black text-slate-900">
+                {detailSubmission.title}
+              </h2>
+            </div>
+            <button
+              id="btn-close-result-modal-x"
+              onClick={() => {
+                hasAutoStartedExamIdRef.current = null;
+                setDetailSubmission(null);
+                setActiveExamSession(null);
+                if (onCloseExam) onCloseExam();
+              }}
+              className="w-10 h-10 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition-all cursor-pointer border border-slate-200 font-bold hover:scale-105 active:scale-95"
+              title="Đóng và quay lại"
+            >
+              ✕
+            </button>
+          </div>
+
+          {/* Modal Body */}
+          <div className="p-6 overflow-y-auto space-y-6 flex-1 bg-slate-50/50">
+            
+            {/* Score Banner matching image_18.png purple/indigo design */}
+            <div className="bg-[#4C1D95] rounded-3xl p-6 md:p-8 text-white shadow-xl flex flex-col md:flex-row items-stretch md:items-center justify-between gap-6 relative overflow-hidden">
+              <div className="space-y-2 z-10">
+                <span className="text-[10px] font-black uppercase tracking-widest text-indigo-200">
+                  {isScored ? 'ĐIỂM SỐ ĐẠT ĐƯỢC' : 'MỨC ĐẠT ĐƯỢC'}
+                </span>
+                <div className="text-4xl sm:text-5xl font-black tracking-tight flex items-center gap-3">
+                  <span>{isScored ? detailSubmission.score : qualitativeLvl}</span>
+                  <span className="text-2xl sm:text-3xl">
+                    {isScored
+                      ? (numericScore >= 9.0 ? '🏆' : numericScore >= 7.0 ? '🥈' : numericScore >= 5.0 ? '👍' : '📚')
+                      : (qualitativeLvl === 'Tốt' ? '🏆' : qualitativeLvl === 'Hoàn thành' ? '👍' : '📚')}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="inline-flex items-center gap-1.5 bg-emerald-500/20 text-emerald-300 px-3 py-1 rounded-full text-xs font-bold border border-emerald-500/30">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    Đã chấm xong hoàn thành
+                  </div>
+                  <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black border shadow-xs ${
+                    isScored
+                      ? (numericScore >= 9.0 
+                          ? 'bg-amber-400 text-amber-950 border-amber-300 shadow-amber-500/20' 
+                          : numericScore >= 7.0 
+                            ? 'bg-cyan-400 text-cyan-950 border-cyan-300' 
+                            : numericScore >= 5.0 
+                              ? 'bg-emerald-400 text-emerald-950 border-emerald-300' 
+                              : 'bg-rose-400 text-rose-950 border-rose-300')
+                      : (qualitativeLvl === 'Tốt'
+                          ? 'bg-amber-400 text-amber-950 border-amber-300 shadow-amber-500/20'
+                          : qualitativeLvl === 'Hoàn thành'
+                            ? 'bg-emerald-400 text-emerald-950 border-emerald-300'
+                            : 'bg-rose-400 text-rose-950 border-rose-300')
+                  }`}>
+                    <span>
+                      {isScored 
+                        ? (detailSubmission.rank || (numericScore >= 9.0 ? 'Xuất Sắc 🏆' : numericScore >= 7.0 ? 'Tốt 🥈' : numericScore >= 5.0 ? 'Đã Hoàn Thành 👍' : 'Cần Ôn Lại 📚'))
+                        : `Mức Đạt: ${qualitativeLvl}`}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Score Allocation boxes on the right */}
+              <div className="bg-white/10 backdrop-blur-md px-6 py-4 rounded-2xl border border-white/15 space-y-3 md:w-64 z-10 flex items-center justify-between gap-4">
+                <div className="flex-1 text-center">
+                  <span className="block text-[10px] font-black text-indigo-200 uppercase tracking-wider">
+                    {isScored ? 'TRẮC NGHIỆM' : 'LÀM ĐÚNG'}
+                  </span>
+                  <strong className="block text-2xl sm:text-3xl font-black text-white mt-1">
+                    {isScored ? mcqScore : `${Math.round(correctCount)}/${totalQ} câu`}
+                  </strong>
+                </div>
+                <div className="w-px h-8 bg-white/20"></div>
+                <div className="flex-1 text-center">
+                  <span className="block text-[10px] font-black text-indigo-200 uppercase tracking-wider">
+                    {isScored ? 'TỰ LUẬN' : 'LÀM SAI'}
+                  </span>
+                  <strong className="block text-2xl sm:text-3xl font-black text-white mt-1">
+                    {isScored ? '0' : `${totalQ - Math.round(correctCount)}/${totalQ} câu`}
+                  </strong>
+                </div>
+              </div>
+
+              {/* Decorative faint background element */}
+              <div className="absolute -right-10 -bottom-10 w-40 h-40 bg-white/5 rounded-full blur-2xl"></div>
+            </div>
+
+            {/* Nhận xét chung Box style matching image_18.png exactly */}
+            <div className="bg-[#F0FDFA] border border-teal-200 rounded-2xl p-5 space-y-2">
+              <h4 className="text-xs sm:text-sm font-extrabold text-teal-950 flex items-center gap-2 uppercase tracking-wider">
+                <span>💬</span> Nhận xét chung:
+              </h4>
+              <div className="text-xs sm:text-sm text-teal-900 leading-relaxed font-semibold space-y-2">
+                <p className="flex items-start gap-2">
+                  <span>👏</span>
+                  <span>Khen ngợi em đã hoàn thành đúng {correctCount}/{totalQ} câu. {correctQuestionNums.length > 0 && <>Em làm rất tốt các câu: <strong className="text-teal-950 font-black">Câu {correctQuestionNums.join(', ')}</strong>.</>}</span>
+                </p>
+                {incorrectQuestionIndices.length > 0 && (
+                  <p className="flex items-start gap-2 text-amber-800 font-semibold border-t border-teal-200/50 pt-2">
+                    <span>⚠️</span>
+                    <span>Em cần lưu ý xem lại bài và ôn tập kỹ hơn ở các câu chưa chính xác: <strong className="text-amber-950 font-black">Câu {incorrectQuestionIndices.map(i => i + 1).join(', ')}</strong>.</span>
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Detailed Questions Breakdown */}
+            <div className="space-y-4 pt-2 border-t border-slate-200/60">
+              <h3 className="text-sm font-black text-slate-800 uppercase tracking-wide flex items-center gap-2">
+                <span>📋</span> CHI TIẾT TỪNG CÂU HỎI
+              </h3>
+              
+              <div className="space-y-5">
+                {questionsList.map((q: QuestionItem, idx: number) => {
+                  const studentChoice = detailSubmission.answers[idx];
+                  const isCorrect = checkQuestionCorrectLocal(q, studentChoice);
+
+                  return (
+                    <div key={idx} className="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm space-y-4 transition-all hover:shadow-md">
+                      
+                      {/* Question header card with Points */}
+                      <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                        <span className="px-3 py-1 rounded-lg text-xs font-black bg-indigo-50 text-indigo-700 uppercase tracking-wider">
+                          Câu {idx + 1}
+                        </span>
+                        <span className={`px-3 py-1 rounded-full text-xs font-black flex items-center gap-1 border ${
+                          isCorrect 
+                            ? 'bg-emerald-50 border-emerald-200 text-emerald-800' 
+                            : 'bg-red-50 border-red-200 text-red-700'
+                        }`}>
+                          {isCorrect ? '✓ Đúng' : '✗ Chưa đúng'}
+                          {isScored && (
+                            <>
+                              <span className="mx-1 text-slate-300">•</span>
+                              Điểm: {isCorrect ? formatScore(10 / totalQ) : '0'}
+                            </>
+                          )}
+                        </span>
+                      </div>
+
+                      {/* Question content */}
+                      <h4 className="text-sm sm:text-base font-extrabold text-slate-900 leading-relaxed">
+                        {q.content}
+                      </h4>
+
+                      {/* Side-by-side or stacked grid layout matching image_18.png and image_19.png */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs sm:text-sm">
+                        
+                        {/* Student's Choice box */}
+                        <div className={`p-4 rounded-xl border flex flex-col justify-between min-h-[75px] ${
+                          isCorrect 
+                            ? 'bg-emerald-50/30 border-emerald-100' 
+                            : 'bg-red-50/30 border-red-100'
+                        }`}>
+                          <span className="text-slate-400 font-extrabold text-[10px] uppercase tracking-wider block mb-1">BÀI LÀM CỦA EM:</span>
+                          <span className={`font-extrabold block text-slate-900 ${isCorrect ? 'text-emerald-800' : 'text-red-700'} whitespace-pre-line`}>
+                            {getStudentAnswerFull(q, idx)}
+                          </span>
+                        </div>
+
+                        {/* Correct Answer box */}
+                        <div className="p-4 rounded-xl border border-indigo-100 bg-indigo-50/20 flex flex-col justify-between min-h-[75px]">
+                          <span className="text-indigo-400 font-extrabold text-[10px] uppercase tracking-wider block mb-1">ĐÁP ÁN CHUẨN:</span>
+                          <span className="font-extrabold block text-indigo-950 whitespace-pre-line">
+                            {getCorrectAnswerFull(q)}
+                          </span>
+                        </div>
+
+                      </div>
+
+                      {/* Nhận xét / gợi ý giải box at bottom of each question card */}
+                      <div className={`p-4 rounded-xl border text-xs sm:text-sm space-y-1 ${
+                        isCorrect 
+                          ? 'bg-emerald-50/20 border-emerald-100/60 text-emerald-900' 
+                          : 'bg-amber-50/30 border-amber-100 text-amber-900'
+                      }`}>
+                        <span className="font-black flex items-center gap-1.5 uppercase text-[10px] tracking-wider text-slate-500">
+                          <span>📝</span> NHẬN XÉT / GỢI Ý GIẢI:
+                        </span>
+                        <p className="font-semibold leading-relaxed">
+                          {isCorrect ? (
+                            <span className="text-emerald-800 flex items-center gap-1 font-bold">
+                              <span>✨</span> Đáp án hoàn toàn chính xác!
+                            </span>
+                          ) : (
+                            <span className="text-amber-800 font-bold block">
+                              {getIncorrectFeedback(q, studentChoice)}
+                            </span>
+                          )}
+                          {q.explanation && (
+                            <span className="block mt-1.5 text-slate-600 font-medium bg-white/60 p-2.5 rounded-lg border border-slate-100">
+                              {q.explanation}
+                            </span>
+                          )}
+                        </p>
+                      </div>
+
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+          </div>
+
+          {/* Footer modal matching layout with closing action */}
+          <div className="p-4 bg-white border-t border-slate-200 flex items-center justify-end gap-4 shrink-0">
+            <button
+              id="btn-close-result-modal-footer"
+              onClick={() => {
+                hasAutoStartedExamIdRef.current = null;
+                setDetailSubmission(null);
+                setActiveExamSession(null);
+                if (onCloseExam) onCloseExam();
+              }}
+              className="py-3 px-6 rounded-2xl bg-[#4C1D95] hover:bg-[#3B1275] text-white text-xs sm:text-sm font-black transition-all cursor-pointer shadow-md shadow-indigo-950/20 active:scale-98"
+            >
+              Đóng và quay lại
+            </button>
+          </div>
+
+        </div>
+      </div>
+    );
   };
 
   const renderAntiCheatModal = () => {
@@ -3533,6 +4245,8 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     return null;
   };
 
+
+
   return (
     <div className="space-y-6 pb-12 w-full">
       {renderAntiCheatModal()}
@@ -4034,481 +4748,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
       )}
 
       {/* DETAIL SUBMISSION MODAL */}
-      {detailSubmission && (() => {
-        const questionsList = detailSubmission.exam.questions || [];
-        const totalQ = Math.max(1, questionsList.length);
-        
-        let correctCount = 0;
-        questionsList.forEach((q: QuestionItem, idx: number) => {
-          try {
-            const studentChoice = detailSubmission.answers[idx];
-            if (isTrueFalseQuestion(q) && q.statements && q.statements.length > 0) {
-              const studentStmts = (typeof studentChoice === 'object' && studentChoice !== null) ? studentChoice : {};
-              let qCorrectCount = 0;
-              q.statements.forEach((st, sIdx) => {
-                if (studentStmts[sIdx] === st.isCorrect) {
-                  qCorrectCount++;
-                }
-              });
-              correctCount += (q.statements.length > 0 ? (qCorrectCount / q.statements.length) : 0);
-            } else {
-              if (checkQuestionCorrectLocal(q, studentChoice)) {
-                correctCount++;
-              }
-            }
-          } catch (err) {
-            console.error(`Error checking question ${idx} in detail modal:`, err);
-          }
-        });
-
-        const scoreParts = detailSubmission.score.split('/');
-        const numericScore = parseFloat(scoreParts[0]) || ((correctCount / totalQ) * 10);
-        const maxScore = parseFloat(scoreParts[1]) || 10;
-        const ratio = numericScore / maxScore;
-        const isHighRatio = ratio >= 0.8;
-
-        const isScored = isSubjectWithScore(detailSubmission.subject || detailSubmission.exam?.subject);
-        const qualitativeLvl = getQualitativeLabel(correctCount, totalQ);
-
-        const correctQuestionNums: number[] = [];
-        const incorrectQuestionIndices: number[] = [];
-        questionsList.forEach((q: QuestionItem, idx: number) => {
-          const studentChoice = detailSubmission.answers[idx];
-          const isCorrect = checkQuestionCorrectLocal(q, studentChoice);
-          if (isCorrect) {
-            correctQuestionNums.push(idx + 1);
-          } else {
-            incorrectQuestionIndices.push(idx);
-          }
-        });
-
-        const mcqScore = String(Math.round(correctCount * (10 / totalQ)));
-
-        const getIncorrectFeedback = (q: QuestionItem, studentChoice?: any) => {
-          if (isMatchingQuestion(q)) {
-            const pairs = q.matchingPairs || [];
-            const studentPairs = (typeof studentChoice === 'object' && studentChoice !== null) ? studentChoice : {};
-            const wrongIndices: number[] = [];
-            pairs.forEach((pair, pIdx) => {
-              const studentSelected = studentPairs[pIdx] !== undefined ? studentPairs[pIdx] : studentPairs[pair.left];
-              const correctRightStr = String(pair.right || '').trim().toLowerCase();
-              let matchOk = false;
-              if (studentSelected !== undefined && studentSelected !== null && studentSelected !== '') {
-                if (String(studentSelected).trim().toLowerCase() === correctRightStr) {
-                  matchOk = true;
-                } else if (typeof studentSelected === 'number') {
-                  if (studentSelected === pIdx || (pairs[studentSelected] && String(pairs[studentSelected].right || '').trim().toLowerCase() === correctRightStr)) {
-                    matchOk = true;
-                  }
-                } else {
-                  const rightPrefixMatch = correctRightStr.match(/^([a-z0-9])[\.\:\)\-]/i);
-                  if (rightPrefixMatch && String(studentSelected).trim().toLowerCase() === rightPrefixMatch[1].toLowerCase()) {
-                    matchOk = true;
-                  }
-                }
-              }
-              if (!matchOk) wrongIndices.push(pIdx + 1);
-            });
-            if (wrongIndices.length > 0 && wrongIndices.length < pairs.length) {
-              return `Chưa chính xác. Em chưa nối đúng ở cặp: ${wrongIndices.map(i => `(${i})`).join(', ')}. Hãy quan sát kỹ bảng đáp án chuẩn để sửa lại nhé!`;
-            }
-            return 'Chưa chính xác. Em chưa nối đúng tất cả các cặp theo bảng đáp án chuẩn.';
-          }
-          if (isOrderingQuestion(q)) {
-            return 'Chưa chính xác. Thứ tự các bước sắp xếp chưa đúng với đáp án chuẩn.';
-          }
-          if (isClassificationQuestion(q)) {
-            return 'Chưa chính xác. Một số vật phẩm chưa được xếp vào đúng nhóm phân loại.';
-          }
-          if (isTrueFalseQuestion(q)) {
-            if (q.statements && q.statements.length > 0) {
-              return 'Chưa chính xác. Em chưa nhận định đúng tất cả các câu phát biểu.';
-            }
-            return 'Chưa chính xác. Đáp án nhận định chưa đúng.';
-          }
-          if (isMultipleResponseQuestion(q)) {
-            return 'Chưa chính xác. Em chưa chọn đúng và đủ tất cả các đáp án chính xác.';
-          }
-          if (isEssayQuestion(q)) {
-            return 'Chưa hoàn thành hoặc chưa đạt yêu cầu nội dung trình bày.';
-          }
-          if (q.correctAnswer && q.options && q.correctAnswer.length === 1) {
-            const code = q.correctAnswer.charCodeAt(0);
-            if (code >= 65 && code <= 90) {
-              const optIdx = code - 65;
-              if (q.options[optIdx]) {
-                return `Chưa chính xác. Đáp án chuẩn xác là ${q.correctAnswer} (${q.options[optIdx]}).`;
-              }
-            }
-          }
-          return `Chưa chính xác. Đáp án chuẩn xác là ${q.correctAnswer || 'theo hệ thống'}.`;
-        };
-
-        const getCorrectAnswerFull = (q: QuestionItem) => {
-          if (isMatchingQuestion(q)) {
-            const pairs = q.matchingPairs || [];
-            return pairs.map((pair, pIdx) => {
-              return `(${pIdx + 1}) ${pair.left} ➔ ${pair.right}`;
-            }).join('\n');
-          }
-
-          if (isOrderingQuestion(q)) {
-            const opts = getCorrectOrderingSequence(q);
-            return opts.map((opt, oIdx) => `${oIdx + 1}. ${opt}`).join('\n');
-          }
-
-          if (isClassificationQuestion(q)) {
-            const groups = q.classificationGroups || [];
-            const items = q.classificationItems || [];
-            if (groups.length === 0 || items.length === 0) return q.correctAnswer || 'Chưa xác định';
-            return groups.map(grp => {
-              const matchedItems = items.filter(item => item.group === grp).map(item => item.name);
-              return `${grp}: ${matchedItems.length > 0 ? matchedItems.join(', ') : '(Không có)'}`;
-            }).join('\n');
-          }
-
-          if (isTrueFalseQuestion(q)) {
-            if (q.statements && q.statements.length > 0) {
-              return q.statements.map((st, sIdx) => `${sIdx + 1}. ${st.statement}: ${st.isCorrect ? 'Đúng' : 'Sai'}`).join('\n');
-            }
-            return q.correctAnswer === 'A' || q.correctAnswer?.toLowerCase().includes('đúng') ? 'Đúng' : 'Sai';
-          }
-
-          if (!q.correctAnswer) return 'Chưa xác định';
-          if (q.options && q.correctAnswer.length === 1) {
-            const code = q.correctAnswer.charCodeAt(0);
-            if (code >= 65 && code <= 90) {
-              const optIdx = code - 65;
-              if (q.options[optIdx]) {
-                return `${q.correctAnswer}. ${q.options[optIdx]}`;
-              }
-            }
-          }
-          return q.correctAnswer;
-        };
-
-        const getStudentAnswerFull = (q: QuestionItem, idx: number) => {
-          const studentChoice = detailSubmission.answers[idx];
-          if (studentChoice === undefined) return 'Em chưa làm câu này';
-          
-          if (isMatchingQuestion(q)) {
-            const studentPairs = (typeof studentChoice === 'object' && studentChoice !== null) ? studentChoice : {};
-            const pairs = q.matchingPairs || [];
-            if (Object.keys(studentPairs).length === 0) return 'Em chưa ghép cặp nào';
-            return pairs.map((pair, pIdx) => {
-              const matchedVal = studentPairs[pIdx] !== undefined ? studentPairs[pIdx] : studentPairs[pair.left];
-              let displayVal = matchedVal;
-              if (typeof matchedVal === 'number' && pairs[matchedVal]) {
-                displayVal = pairs[matchedVal].right;
-              }
-              return `(${pIdx + 1}) ${pair.left} ➔ ${displayVal || '(Chưa nối)'}`;
-            }).join('\n');
-          }
-
-          if (isOrderingQuestion(q)) {
-            const studentOrder = studentChoice;
-            if (!Array.isArray(studentOrder) || studentOrder.length === 0) return 'Em chưa sắp xếp thứ tự';
-            return studentOrder.map((opt, oIdx) => `${oIdx + 1}. ${opt}`).join('\n');
-          }
-
-          if (isClassificationQuestion(q)) {
-            const studentAnswers = studentChoice || {};
-            const groups = q.classificationGroups || [];
-            const items = q.classificationItems || [];
-            if (Object.keys(studentAnswers).length === 0) return 'Em chưa phân loại mục nào';
-            return groups.map(grp => {
-              const placedItemNames = items
-                .map((item, iIdx) => ({ item, iIdx }))
-                .filter(({ iIdx }) => studentAnswers[iIdx] === grp)
-                .map(({ item }) => item.name);
-              return `${grp}: ${placedItemNames.length > 0 ? placedItemNames.join(', ') : '(Chưa xếp mục nào)'}`;
-            }).join('\n');
-          }
-
-          if (isTrueFalseQuestion(q)) {
-            if (q.statements && q.statements.length > 0) {
-              const studentStmts = studentChoice || {};
-              return q.statements.map((st, sIdx) => {
-                const ans = studentStmts[sIdx];
-                return `${sIdx + 1}. ${st.statement}: ${ans === true ? 'Đúng' : ans === false ? 'Sai' : '(Chưa chọn)'}`;
-              }).join('\n');
-            }
-            const sChoice = studentChoice as number;
-            if (sChoice === 0 || studentChoice === 'A' || studentChoice === true || String(studentChoice).toLowerCase().includes('đúng')) return 'Đúng';
-            if (sChoice === 1 || studentChoice === 'B' || studentChoice === false || String(studentChoice).toLowerCase().includes('sai')) return 'Sai';
-            return 'Chưa chọn';
-          }
-
-          if (isMultipleResponseQuestion(q) || Array.isArray(studentChoice)) {
-            const studentIndices = Array.isArray(studentChoice) ? studentChoice : (typeof studentChoice === 'number' ? [studentChoice] : []);
-            if (studentIndices.length === 0) return 'Em chưa chọn đáp án nào';
-            return studentIndices.map(i => {
-              const l = String.fromCharCode(65 + i);
-              return q.options && q.options[i] ? `${l}. ${q.options[i]}` : l;
-            }).join(', ');
-          }
-
-          if (isEssayQuestion(q)) {
-            return String(studentChoice);
-          }
-
-          if (typeof studentChoice !== 'number') {
-            return String(studentChoice);
-          }
-
-          const studentLetter = String.fromCharCode(65 + studentChoice);
-          if (q.options && q.options[studentChoice] !== undefined) {
-            return `${studentLetter}. ${q.options[studentChoice]}`;
-          }
-          return studentLetter;
-        };
-
-        return (
-          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-            <div className="bg-white rounded-3xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-              
-              {/* Header modal */}
-              <div className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between shrink-0">
-                <div className="space-y-1">
-                  {(() => {
-                    const isAssignmentResult = mode === 'assignment' || 
-                      (detailSubmission.title && (detailSubmission.title.toLowerCase().includes('bài tập') || detailSubmission.title.toLowerCase().includes('luyện tập') || detailSubmission.title.toLowerCase().includes('rèn luyện'))) ||
-                      detailSubmission.exam?.examType === 'Luyện tập' ||
-                      detailSubmission.exam?.examType === 'Bài tập';
-                    return (
-                      <span className={`${isAssignmentResult ? 'bg-teal-600' : 'bg-indigo-600'} text-white text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-wider inline-flex items-center gap-1.5 shadow-sm`}>
-                        {isAssignmentResult ? '📝 KẾT QUẢ BÀI TẬP RÈN LUYỆN' : '⚡ KẾT QUẢ KIỂM TRA CHÍNH THỨC'}
-                      </span>
-                    );
-                  })()}
-                  <h2 className="text-lg sm:text-xl font-black text-slate-900">
-                    {detailSubmission.title}
-                  </h2>
-                </div>
-                <button
-                  id="btn-close-result-modal-x"
-                  onClick={() => {
-                    hasAutoStartedExamIdRef.current = null;
-                    setDetailSubmission(null);
-                    setActiveExamSession(null);
-                    if (onCloseExam) onCloseExam();
-                  }}
-                  className="w-10 h-10 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition-all cursor-pointer border border-slate-200 font-bold hover:scale-105 active:scale-95"
-                  title="Đóng và quay lại"
-                >
-                  ✕
-                </button>
-              </div>
-
-              {/* Modal Body */}
-              <div className="p-6 overflow-y-auto space-y-6 flex-1 bg-slate-50/50">
-                
-                {/* Score Banner matching image_18.png purple/indigo design */}
-                <div className="bg-[#4C1D95] rounded-3xl p-6 md:p-8 text-white shadow-xl flex flex-col md:flex-row items-stretch md:items-center justify-between gap-6 relative overflow-hidden">
-                  <div className="space-y-2 z-10">
-                    <span className="text-[10px] font-black uppercase tracking-widest text-indigo-200">
-                      {isScored ? 'ĐIỂM SỐ ĐẠT ĐƯỢC' : 'MỨC ĐẠT ĐƯỢC'}
-                    </span>
-                    <div className="text-4xl sm:text-5xl font-black tracking-tight flex items-center gap-3">
-                      <span>{isScored ? detailSubmission.score : qualitativeLvl}</span>
-                      <span className="text-2xl sm:text-3xl">
-                        {isScored
-                          ? (numericScore >= 9.0 ? '🏆' : numericScore >= 7.0 ? '🥈' : numericScore >= 5.0 ? '👍' : '📚')
-                          : (qualitativeLvl === 'Tốt' ? '🏆' : qualitativeLvl === 'Hoàn thành' ? '👍' : '📚')}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <div className="inline-flex items-center gap-1.5 bg-emerald-500/20 text-emerald-300 px-3 py-1 rounded-full text-xs font-bold border border-emerald-500/30">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                        Đã chấm xong hoàn thành
-                      </div>
-                      <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black border shadow-xs ${
-                        isScored
-                          ? (numericScore >= 9.0 
-                              ? 'bg-amber-400 text-amber-950 border-amber-300 shadow-amber-500/20' 
-                              : numericScore >= 7.0 
-                                ? 'bg-cyan-400 text-cyan-950 border-cyan-300' 
-                                : numericScore >= 5.0 
-                                  ? 'bg-emerald-400 text-emerald-950 border-emerald-300' 
-                                  : 'bg-rose-400 text-rose-950 border-rose-300')
-                          : (qualitativeLvl === 'Tốt'
-                              ? 'bg-amber-400 text-amber-950 border-amber-300 shadow-amber-500/20'
-                              : qualitativeLvl === 'Hoàn thành'
-                                ? 'bg-emerald-400 text-emerald-950 border-emerald-300'
-                                : 'bg-rose-400 text-rose-950 border-rose-300')
-                      }`}>
-                        <span>
-                          {isScored 
-                            ? (detailSubmission.rank || (numericScore >= 9.0 ? 'Xuất Sắc 🏆' : numericScore >= 7.0 ? 'Tốt 🥈' : numericScore >= 5.0 ? 'Đã Hoàn Thành 👍' : 'Cần Ôn Lại 📚'))
-                            : `Mức Đạt: ${qualitativeLvl}`}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Score Allocation boxes on the right */}
-                  <div className="bg-white/10 backdrop-blur-md px-6 py-4 rounded-2xl border border-white/15 space-y-3 md:w-64 z-10 flex items-center justify-between gap-4">
-                    <div className="flex-1 text-center">
-                      <span className="block text-[10px] font-black text-indigo-200 uppercase tracking-wider">
-                        {isScored ? 'TRẮC NGHIỆM' : 'LÀM ĐÚNG'}
-                      </span>
-                      <strong className="block text-2xl sm:text-3xl font-black text-white mt-1">
-                        {isScored ? mcqScore : `${Math.round(correctCount)}/${totalQ} câu`}
-                      </strong>
-                    </div>
-                    <div className="w-px h-8 bg-white/20"></div>
-                    <div className="flex-1 text-center">
-                      <span className="block text-[10px] font-black text-indigo-200 uppercase tracking-wider">
-                        {isScored ? 'TỰ LUẬN' : 'LÀM SAI'}
-                      </span>
-                      <strong className="block text-2xl sm:text-3xl font-black text-white mt-1">
-                        {isScored ? '0' : `${totalQ - Math.round(correctCount)}/${totalQ} câu`}
-                      </strong>
-                    </div>
-                  </div>
-
-                  {/* Decorative faint background element */}
-                  <div className="absolute -right-10 -bottom-10 w-40 h-40 bg-white/5 rounded-full blur-2xl"></div>
-                </div>
-
-                {/* Nhận xét chung Box style matching image_18.png exactly */}
-                <div className="bg-[#F0FDFA] border border-teal-200 rounded-2xl p-5 space-y-2">
-                  <h4 className="text-xs sm:text-sm font-extrabold text-teal-950 flex items-center gap-2 uppercase tracking-wider">
-                    <span>💬</span> Nhận xét chung:
-                  </h4>
-                  <div className="text-xs sm:text-sm text-teal-900 leading-relaxed font-semibold space-y-2">
-                    <p className="flex items-start gap-2">
-                      <span>👏</span>
-                      <span>Khen ngợi em đã hoàn thành đúng {correctCount}/{totalQ} câu. {correctQuestionNums.length > 0 && <>Em làm rất tốt các câu: <strong className="text-teal-950 font-black">Câu {correctQuestionNums.join(', ')}</strong>.</>}</span>
-                    </p>
-                    {incorrectQuestionIndices.length > 0 && (
-                      <p className="flex items-start gap-2 text-amber-800 font-semibold border-t border-teal-200/50 pt-2">
-                        <span>⚠️</span>
-                        <span>Em cần lưu ý xem lại bài và ôn tập kỹ hơn ở các câu chưa chính xác: <strong className="text-amber-950 font-black">Câu {incorrectQuestionIndices.map(i => i + 1).join(', ')}</strong>.</span>
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                {/* Detailed Questions Breakdown */}
-                <div className="space-y-4 pt-2 border-t border-slate-200/60">
-                  <h3 className="text-sm font-black text-slate-800 uppercase tracking-wide flex items-center gap-2">
-                    <span>📋</span> CHI TIẾT TỪNG CÂU HỎI
-                  </h3>
-                  
-                  <div className="space-y-5">
-                    {questionsList.map((q: QuestionItem, idx: number) => {
-                      const studentChoice = detailSubmission.answers[idx];
-                      const isCorrect = checkQuestionCorrectLocal(q, studentChoice);
-
-                      return (
-                        <div key={idx} className="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm space-y-4 transition-all hover:shadow-md">
-                          
-                          {/* Question header card with Points */}
-                          <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                            <span className="px-3 py-1 rounded-lg text-xs font-black bg-indigo-50 text-indigo-700 uppercase tracking-wider">
-                              Câu {idx + 1}
-                            </span>
-                            <span className={`px-3 py-1 rounded-full text-xs font-black flex items-center gap-1 border ${
-                              isCorrect 
-                                ? 'bg-emerald-50 border-emerald-200 text-emerald-800' 
-                                : 'bg-red-50 border-red-200 text-red-700'
-                            }`}>
-                              {isCorrect ? '✓ Đúng' : '✗ Chưa đúng'}
-                              {isScored && (
-                                <>
-                                  <span className="mx-1 text-slate-300">•</span>
-                                  Điểm: {isCorrect ? formatScore(10 / totalQ) : '0'}
-                                </>
-                              )}
-                            </span>
-                          </div>
-
-                          {/* Question content */}
-                          <h4 className="text-sm sm:text-base font-extrabold text-slate-900 leading-relaxed">
-                            {q.content}
-                          </h4>
-
-                          {/* Side-by-side or stacked grid layout matching image_18.png and image_19.png */}
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs sm:text-sm">
-                            
-                            {/* Student's Choice box */}
-                            <div className={`p-4 rounded-xl border flex flex-col justify-between min-h-[75px] ${
-                              isCorrect 
-                                ? 'bg-emerald-50/30 border-emerald-100' 
-                                : 'bg-red-50/30 border-red-100'
-                            }`}>
-                              <span className="text-slate-400 font-extrabold text-[10px] uppercase tracking-wider block mb-1">BÀI LÀM CỦA EM:</span>
-                              <span className={`font-extrabold block text-slate-900 ${isCorrect ? 'text-emerald-800' : 'text-red-700'} whitespace-pre-line`}>
-                                {getStudentAnswerFull(q, idx)}
-                              </span>
-                            </div>
-
-                            {/* Correct Answer box */}
-                            <div className="p-4 rounded-xl border border-indigo-100 bg-indigo-50/20 flex flex-col justify-between min-h-[75px]">
-                              <span className="text-indigo-400 font-extrabold text-[10px] uppercase tracking-wider block mb-1">ĐÁP ÁN CHUẨN:</span>
-                              <span className="font-extrabold block text-indigo-950 whitespace-pre-line">
-                                {getCorrectAnswerFull(q)}
-                              </span>
-                            </div>
-
-                          </div>
-
-                          {/* Nhận xét / gợi ý giải box at bottom of each question card */}
-                          <div className={`p-4 rounded-xl border text-xs sm:text-sm space-y-1 ${
-                            isCorrect 
-                              ? 'bg-emerald-50/20 border-emerald-100/60 text-emerald-900' 
-                              : 'bg-amber-50/30 border-amber-100 text-amber-900'
-                          }`}>
-                            <span className="font-black flex items-center gap-1.5 uppercase text-[10px] tracking-wider text-slate-500">
-                              <span>📝</span> NHẬN XÉT / GỢI Ý GIẢI:
-                            </span>
-                            <p className="font-semibold leading-relaxed">
-                              {isCorrect ? (
-                                <span className="text-emerald-800 flex items-center gap-1 font-bold">
-                                  <span>✨</span> Đáp án hoàn toàn chính xác!
-                                </span>
-                              ) : (
-                                <span className="text-amber-800 font-bold block">
-                                  {getIncorrectFeedback(q, studentChoice)}
-                                </span>
-                              )}
-                              {q.explanation && (
-                                <span className="block mt-1.5 text-slate-600 font-medium bg-white/60 p-2.5 rounded-lg border border-slate-100">
-                                  {q.explanation}
-                                </span>
-                              )}
-                            </p>
-                          </div>
-
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-              </div>
-
-              {/* Footer modal matching layout with closing action */}
-              <div className="p-4 bg-white border-t border-slate-200 flex items-center justify-end gap-4 shrink-0">
-                <button
-                  id="btn-close-result-modal-footer"
-                  onClick={() => {
-                    hasAutoStartedExamIdRef.current = null;
-                    setDetailSubmission(null);
-                    setActiveExamSession(null);
-                    if (onCloseExam) onCloseExam();
-                  }}
-                  className="py-3 px-6 rounded-2xl bg-[#4C1D95] hover:bg-[#3B1275] text-white text-xs sm:text-sm font-black transition-all cursor-pointer shadow-md shadow-indigo-950/20 active:scale-98"
-                >
-                  Đóng và quay lại
-                </button>
-              </div>
-
-            </div>
-          </div>
-        );
-      })()}
+      {renderDetailModal()}
     </div>
   );
 };
