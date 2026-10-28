@@ -52,7 +52,8 @@ import {
 } from './StudentReviewView';
 import {
   getEffectiveStudentClassAndGrade,
-  isTargetingStudent
+  isTargetingStudent,
+  getAuthenticStudentCode
 } from '../../services/studentSessionService';
 import {
   LessonStepKey,
@@ -73,7 +74,8 @@ import {
   getNextStepLabel,
   saveStudentLessonProgress,
   getStudentLessonProgress,
-  subscribeStudentLessonProgress
+  subscribeStudentLessonProgress,
+  getUnifiedStudentLessonProgress
 } from './LessonFlowController';
 import {
   subscribeAssignedELearningLessons,
@@ -103,9 +105,9 @@ export const StudentELearning: React.FC<StudentELearningProps> = ({
     return getEffectiveStudentClassAndGrade(currentClass);
   }, [currentClass]);
 
-  const effectiveUserId = currentUserId || resolvedId || 'u-4';
-  const effectiveUserName = currentUserName || resolvedName || 'Học sinh';
   const effectiveClass = currentClass || resolvedClass;
+  const effectiveUserName = currentUserName || resolvedName || 'Học sinh';
+  const effectiveUserId = getAuthenticStudentCode(undefined, currentUserId || resolvedId, effectiveClass, effectiveUserName);
   const effectiveGrade = resolvedGrade;
 
   const [selectedLesson, setSelectedLesson] = useState<Lesson5EPlan | null>(null);
@@ -276,18 +278,32 @@ export const StudentELearning: React.FC<StudentELearningProps> = ({
       stepEvaluate: { ...defaultStep, title: '4. Đánh giá (Evaluate)', subtitle: 'Củng cố kiến thức và kiểm tra nhanh' }
     };
 
-    const progress = lessonProgress[assigned.id] || lessonProgress[matchedLesson.id] || {
-      status: 'not_started' as const,
-      progressPct: 0,
-      timeSpentMinutes: 0
-    };
+    const unified = getUnifiedStudentLessonProgress(effectiveUserId, assigned.lessonId || matchedLesson.id, {
+      id: effectiveUserId,
+      name: effectiveUserName,
+      className: effectiveClass
+    });
+    const progData = unified.data;
+    const dataSource = unified.dataSource;
+
+    const engageDone = Boolean(progData?.engageViewed);
+    const exploreDone = Boolean(progData?.exploreCompleted || (typeof progData?.exploreAccuracy === 'number'));
+    const elaborateDone = Boolean(progData?.elaborate?.isCompleted || progData?.elaborate?.score);
+    const applyDone = Boolean(progData?.apply?.isCompleted || progData?.apply?.isSubmitted);
+    const assessmentDone = Boolean(progData?.assessment?.isCompleted || progData?.assessment?.testScore || progData?.assessment?.score);
+
+    const completedSteps = [engageDone, exploreDone, elaborateDone, applyDone, assessmentDone].filter(Boolean).length;
+    const progressPct = Math.round((completedSteps / 5) * 100);
+    const status = progressPct >= 100 ? 'completed' : (progressPct > 0 ? 'in_progress' : 'not_started');
+    const timeSpentMinutes = progData?.totalTimeSpent ? Math.floor(progData.totalTimeSpent / 60) : (status === 'completed' ? 45 : (status === 'in_progress' ? 15 : 0));
 
     return {
       assignment: assigned,
       lesson: matchedLesson,
-      status: progress.status,
-      progressPct: progress.progressPct,
-      timeSpentMinutes: progress.timeSpentMinutes
+      status,
+      progressPct,
+      timeSpentMinutes,
+      dataSource
     };
   });
 
@@ -888,6 +904,11 @@ export const StudentELearning: React.FC<StudentELearningProps> = ({
                       <span className="bg-slate-100 text-slate-600 font-bold text-[10px] px-2 py-0.5 rounded-full">
                         {item.assignment.targetClass}
                       </span>
+                      {typeof window !== 'undefined' && window.location.search.includes('debug=1') && (
+                        <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300">
+                          [Nguồn: {item.dataSource === 'standard' ? 'Chuẩn' : item.dataSource === 'legacy' ? 'Dự phòng cũ' : 'Chưa có'}]
+                        </span>
+                      )}
                     </div>
 
                     {/* Status badge */}

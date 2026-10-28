@@ -3,6 +3,7 @@ import { checkHasEngageVideo, checkHasEngageGame } from './StudentEngageView';
 import { db } from '../../firebaseConfig';
 import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { trackedSetDoc } from '../../services/firestoreWriteTracker';
+import { getAuthenticStudentCode } from '../../services/studentSessionService';
 
 export const ELEARNING_STUDENT_PROGRESS_COLLECTION = 'elearning_student_progress';
 
@@ -280,21 +281,23 @@ const lastSyncedPayloadMap = new Map<string, string>();
 export const saveStudentLessonProgress = (
   studentId: string,
   lessonId: string,
-  progressData: any
+  progressData: any,
+  studentRecord?: any
 ) => {
   try {
-    const key = `${STORAGE_PREFIX}${studentId}_${lessonId}`;
-    const existing = getStudentLessonProgress(studentId, lessonId) || {};
+    const authenticId = getAuthenticStudentCode(studentRecord, studentId);
+    const key = `${STORAGE_PREFIX}${authenticId}_${lessonId}`;
+    const existing = getStudentLessonProgress(authenticId, lessonId, studentRecord) || {};
     const updated = {
       ...existing,
       ...progressData,
-      studentId,
+      studentId: authenticId,
       lessonId,
       updatedAt: new Date().toISOString()
     };
     localStorage.setItem(key, JSON.stringify(updated));
 
-    if (!db || !studentId || !lessonId) return;
+    if (!db || !authenticId || !lessonId) return;
 
     // Compare progress signature (exclude raw timestamp to avoid false diffs)
     const progressSignature = JSON.stringify({
@@ -319,7 +322,7 @@ export const saveStudentLessonProgress = (
       pendingDebounceTimers.delete(key);
       lastSyncedPayloadMap.set(key, progressSignature);
 
-      const docId = getCleanProgressDocId(studentId, lessonId);
+      const docId = getCleanProgressDocId(authenticId, lessonId);
       const docRef = doc(db, ELEARNING_STUDENT_PROGRESS_COLLECTION, docId);
       trackedSetDoc(
         docRef,
@@ -344,10 +347,12 @@ export const saveStudentLessonProgress = (
 
 export const getStudentLessonProgress = (
   studentId: string,
-  lessonId: string
+  lessonId: string,
+  studentRecord?: any
 ): any | null => {
   try {
-    const key = `${STORAGE_PREFIX}${studentId}_${lessonId}`;
+    const authenticId = getAuthenticStudentCode(studentRecord, studentId);
+    const key = `${STORAGE_PREFIX}${authenticId}_${lessonId}`;
     const raw = localStorage.getItem(key);
     if (!raw) return null;
     return JSON.parse(raw);
@@ -432,3 +437,105 @@ export const clearStudentLessonProgress = (
     console.warn('Failed to clear student lesson progress from localStorage', err);
   }
 };
+
+export function getUnifiedStudentLessonProgress(
+  studentId: string,
+  lessonId: string,
+  studentRecord?: any
+): { data: any | null; dataSource: 'standard' | 'legacy' | 'none' } {
+  if (!lessonId) return { data: null, dataSource: 'none' };
+  const authenticId = getAuthenticStudentCode(studentRecord, studentId);
+
+  const lessonVariants = Array.from(new Set([
+    lessonId,
+    lessonId.toLowerCase(),
+    lessonId.replace(/^les-/i, ''),
+    lessonId.replace(/[^a-zA-Z0-9_-]/g, '_')
+  ].filter(Boolean)));
+
+  // 1. Try exact standard authentic ID + lesson variant
+  for (const lVar of lessonVariants) {
+    const prog = getStudentLessonProgress(authenticId, lVar, studentRecord);
+    if (prog) {
+      return { data: prog, dataSource: 'standard' };
+    }
+  }
+
+  // 2. Try other candidate IDs
+  const activeIds = [
+    authenticId,
+    studentId,
+    studentRecord?.sddcn,
+    studentRecord?.studentPersistentId,
+    studentRecord?.id,
+    studentRecord?.code,
+    studentRecord?.username,
+    'u-4'
+  ].filter(Boolean) as string[];
+
+  for (const id of activeIds) {
+    for (const lVar of lessonVariants) {
+      const prog = getStudentLessonProgress(id, lVar, studentRecord);
+      if (prog) {
+        return { data: prog, dataSource: id === authenticId ? 'standard' : 'legacy' };
+      }
+    }
+  }
+
+  // 3. Scan localStorage for any matching prefix and lesson
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(STORAGE_PREFIX)) {
+        for (const lVar of lessonVariants) {
+          if (key.includes(lVar)) {
+            const raw = localStorage.getItem(key);
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              if (parsed) {
+                return { data: parsed, dataSource: 'legacy' };
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch {}
+
+  return { data: null, dataSource: 'none' };
+}
+
+export interface MigrationPreviewItem {
+  oldKey: string;
+  newKey: string;
+  studentId: string;
+  lessonId: string;
+  previewData: any;
+}
+
+export function getLegacyMigrationPreview(targetStandardStudentId: string, targetLessonId: string): MigrationPreviewItem[] {
+  const previews: MigrationPreviewItem[] = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(STORAGE_PREFIX)) {
+        const standardNewKey = `${STORAGE_PREFIX}${targetStandardStudentId}_${targetLessonId}`;
+        if (key !== standardNewKey) {
+          const raw = localStorage.getItem(key);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            previews.push({
+              oldKey: key,
+              newKey: standardNewKey,
+              studentId: targetStandardStudentId,
+              lessonId: targetLessonId,
+              previewData: parsed
+            });
+          }
+        }
+      }
+    }
+  } catch {}
+  return previews;
+}
+

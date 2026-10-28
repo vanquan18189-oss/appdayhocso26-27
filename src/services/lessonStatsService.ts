@@ -1,7 +1,7 @@
 import { StudentRecord } from '../types';
 import { getAllStudentsFromLocalStorage, getStudentsFromLocalStorage, getCurrentActiveAcademicYear, getStudentClassInfo } from './studentStorageService';
 import { getLocalCachedAssignedELearning } from './elearningAssignmentService';
-import { getStudentLessonProgress, ELEARNING_STUDENT_PROGRESS_COLLECTION } from '../components/modules/LessonFlowController';
+import { getStudentLessonProgress, ELEARNING_STUDENT_PROGRESS_COLLECTION, getUnifiedStudentLessonProgress } from '../components/modules/LessonFlowController';
 import { Student5EProgress, StatsOverview, Activity5EStats, ActivityDetail, ActivityStatus } from '../components/modules/stats/types';
 import { db } from '../firebaseConfig';
 import { collection, getDocs } from 'firebase/firestore';
@@ -123,6 +123,13 @@ function formatActiveDate(isoString?: string): string {
 function getRealStudentLessonProgress(student: StudentRecord, lessonId: string, academicYear?: string): any | null {
   if (!student || !lessonId) return null;
   const activeYear = academicYear || getCurrentActiveAcademicYear();
+  const primaryId = student.sddcn || student.id || student.code || 'u-4';
+  const unified = getUnifiedStudentLessonProgress(primaryId, lessonId, student);
+  if (unified.data) {
+    if (!unified.data.academicYear || unified.data.academicYear === activeYear) {
+      return unified.data;
+    }
+  }
 
   const identifiers = [
     student.sddcn,
@@ -149,40 +156,7 @@ function getRealStudentLessonProgress(student: StudentRecord, lessonId: string, 
         }
         return prog;
       }
-
-      try {
-        const raw = localStorage.getItem(`viet_elearning_student_progress_${id}_${lVar}`);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (parsed.academicYear && parsed.academicYear !== activeYear) {
-            continue;
-          }
-          return parsed;
-        }
-      } catch {}
     }
-
-    // Comprehensive fallback: scan localStorage keys for any progress entry matching this student ID
-    try {
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && key.startsWith(`viet_elearning_student_progress_${id}_`)) {
-          const raw = localStorage.getItem(key);
-          if (raw) {
-            const parsed = JSON.parse(raw);
-            if (parsed) {
-              const pLessonId = String(parsed.lessonId || '').toLowerCase();
-              if (!pLessonId || lessonVariants.some(v => pLessonId.includes(v.toLowerCase()) || v.toLowerCase().includes(pLessonId))) {
-                if (parsed.academicYear && parsed.academicYear !== activeYear) {
-                  continue;
-                }
-                return parsed;
-              }
-            }
-          }
-        }
-      }
-    } catch {}
   }
 
   return null;

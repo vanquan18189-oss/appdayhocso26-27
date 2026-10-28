@@ -6,6 +6,7 @@ import { INITIAL_ASSIGNMENTS } from './mockData';
 import { removeUndefined, getCurrentTeacherProfile, resolveCurrentTeacherProfile } from './teacherStorageService';
 import { waitForWriteConfirmation, updateCollectionCacheStatus } from './firestoreWriteVerificationService';
 import { normalizeClassKey } from './studentStorageService';
+import { normalizeStudentCode } from './studentCode';
 import './orderingMigrationService';
 
 const ASSIGNMENTS_CACHE_KEY = 'eduplay_cached_assignments';
@@ -433,6 +434,130 @@ export async function deleteAllAssignmentsFromFirestore(): Promise<void> {
   } catch (error) {
     console.error("Lỗi khi xóa toàn bộ bài tập khỏi Firestore:", error);
     saveAssignmentsToLocalStorage([]);
+  }
+}
+
+/**
+ * Quét các bản ghi trong collection `submissions` (và local cache) của một bài tập,
+ * tìm các bài nộp cùng `studentId` và `examId` có thời gian nộp cách nhau dưới 60 giây,
+ * giữ lại bản ghi sớm nhất và xóa các bản trùng lặp còn lại.
+ */
+export async function deduplicateSubmissions(examId?: string): Promise<{ cleanedCount: number; removedIds: string[] }> {
+  const removedIds: string[] = [];
+  try {
+    let allSubs: any[] = [];
+    if (db) {
+      try {
+        const snap = await getDocs(collection(db, 'submissions'));
+        snap.forEach(docSnap => {
+          allSubs.push({ id: docSnap.id, ...docSnap.data() });
+        });
+      } catch (err) {
+        console.warn('Lỗi đọc submissions từ Firestore trong deduplicateSubmissions:', err);
+      }
+    }
+
+    if (typeof window !== 'undefined') {
+      try {
+        const localAll = localStorage.getItem('eduplay_all_exam_submissions');
+        if (localAll) {
+          const parsed = JSON.parse(localAll);
+          if (Array.isArray(parsed)) {
+            parsed.forEach(item => {
+              if (item && !allSubs.some(s => s.id === item.id)) {
+                allSubs.push(item);
+              }
+            });
+          }
+        }
+      } catch {}
+    }
+
+    if (examId) {
+      const cleanTargetExam = String(examId).trim().toLowerCase();
+      const baseTarget = cleanTargetExam.replace(/-class-.*$/, '').replace(/^ex-/, '');
+      allSubs = allSubs.filter(sub => {
+        const sExam = String(sub.examId || sub.exam?.id || sub.id || '').trim().toLowerCase();
+        if (!sExam) return false;
+        if (sExam === cleanTargetExam) return true;
+        const baseSub = sExam.replace(/-class-.*$/, '').replace(/^ex-/, '');
+        return baseTarget && baseSub && baseTarget === baseSub;
+      });
+    }
+
+    const groups = new Map<string, any[]>();
+    allSubs.forEach(sub => {
+      const sId = normalizeStudentCode(String(sub.studentId || sub.maHs || sub.studentCode || sub.code || ''));
+      const eId = String(sub.examId || sub.exam?.id || 'general').trim().toLowerCase();
+      if (!sId) return;
+      const key = `${eId}__${sId}`;
+      if (!groups.has(key)) {
+        groups.set(key, []);
+      }
+      groups.get(key)!.push(sub);
+    });
+
+    const duplicatesToRemove: string[] = [];
+
+    groups.forEach((subs) => {
+      if (subs.length <= 1) return;
+      subs.sort((a, b) => {
+        const tA = new Date(a.submittedAt || a.timestamp || a.createdAt || 0).getTime();
+        const tB = new Date(b.submittedAt || b.timestamp || b.createdAt || 0).getTime();
+        return tA - tB;
+      });
+
+      const kept: any[] = [];
+      subs.forEach(sub => {
+        const tSub = new Date(sub.submittedAt || sub.timestamp || sub.createdAt || 0).getTime();
+        const duplicateMatch = kept.find(k => {
+          const tK = new Date(k.submittedAt || k.timestamp || k.createdAt || 0).getTime();
+          return Math.abs(tSub - tK) < 60000;
+        });
+
+        if (duplicateMatch) {
+          if (sub.id) {
+            duplicatesToRemove.push(sub.id);
+          }
+        } else {
+          kept.push(sub);
+        }
+      });
+    });
+
+    if (duplicatesToRemove.length > 0) {
+      if (db) {
+        const CHUNK_SIZE = 450;
+        for (let i = 0; i < duplicatesToRemove.length; i += CHUNK_SIZE) {
+          const chunk = duplicatesToRemove.slice(i, i + CHUNK_SIZE);
+          const batch = trackedWriteBatch(db, { isUserInitiated: true, actionType: 'admin_batch' });
+          chunk.forEach(id => {
+            batch.delete(doc(db, 'submissions', id));
+          });
+          await batch.commit();
+        }
+      }
+
+      if (typeof window !== 'undefined') {
+        try {
+          const localAll = localStorage.getItem('eduplay_all_exam_submissions');
+          if (localAll) {
+            const parsed = JSON.parse(localAll);
+            if (Array.isArray(parsed)) {
+              const filtered = parsed.filter(item => !item || !duplicatesToRemove.includes(item.id));
+              localStorage.setItem('eduplay_all_exam_submissions', JSON.stringify(filtered));
+            }
+          }
+        } catch {}
+      }
+      removedIds.push(...duplicatesToRemove);
+      console.log(`🧹 Đã dọn dẹp ${duplicatesToRemove.length} bài nộp trùng lặp trong vòng 60 giây!`);
+    }
+
+    return { cleanedCount: removedIds.length, removedIds };
+  } catch (err) {
+    console.error('Lỗi trong deduplicateSubmissions:', err);
+    return { cleanedCount: 0, removedIds: [] };
   }
 }
 
