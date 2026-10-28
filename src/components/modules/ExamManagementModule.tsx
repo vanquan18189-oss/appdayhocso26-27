@@ -5,7 +5,7 @@ import { getTeachersFromLocalStorage, resolveCurrentTeacherProfile } from '../..
 import { getStudentsFromLocalStorage, getClassStudentCount, deleteStudentFromClass, generateDefaultClassRoster, normalizeClassKey } from '../../services/studentStorageService';
 import { formatStandardStudentCode, normalizeStudentCode } from '../../services/studentCode';
 import { seedInitialExamsManually, deleteAllExamsFromFirestore, isValidOfficialExam } from '../../services/examStorageService';
-import { getExamCompletion } from '../../services/examCompletionService';
+import { getExamCompletion, registerFirestoreExamSubs } from '../../services/examCompletionService';
 import { auth } from '../../services/firebase';
 import { collection, onSnapshot, doc, getDocFromServer } from 'firebase/firestore';
 import { db } from '../../firebaseConfig';
@@ -605,6 +605,8 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       window.removeEventListener('storage', handleSubmissionsUpdated);
     };
   }, []);
+
+
 
   // Listen directly to Firestore subcollection 'submissions' when tracking modal is open
   useEffect(() => {
@@ -1726,6 +1728,43 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
 
     return cleanList;
   }, [exams]);
+
+  // Real-time synchronization for all displayed exams from Cloud Firestore (Source of Truth across Vercel / local)
+  useEffect(() => {
+    if (!db || normalizedExams.length === 0) return;
+    const unsubList: (() => void)[] = [];
+
+    normalizedExams.forEach(exam => {
+      if (!exam?.id) return;
+      const docIds = Array.from(new Set([
+        exam.id,
+        exam.originalExamId,
+        exam.id.replace(/-class-.*$/, '')
+      ].filter(Boolean) as string[]));
+
+      docIds.forEach(docId => {
+        try {
+          const subColRef = collection(db, 'exams', docId, 'submissions');
+          const unsub = onSnapshot(subColRef, (snapshot) => {
+            const subs: any[] = [];
+            snapshot.forEach(docSnap => {
+              subs.push({ ...docSnap.data(), id: docSnap.id, docId: docSnap.id });
+            });
+            registerFirestoreExamSubs(exam.id, subs);
+            if (exam.originalExamId) {
+              registerFirestoreExamSubs(exam.originalExamId, subs);
+            }
+            setSubmissionsVersion(v => v + 1);
+          }, () => {});
+          unsubList.push(unsub);
+        } catch {}
+      });
+    });
+
+    return () => {
+      unsubList.forEach(u => u());
+    };
+  }, [normalizedExams]);
 
   const isMyExam = useCallback((e: ExamPaper): boolean => {
     if (isAdmin) return true;

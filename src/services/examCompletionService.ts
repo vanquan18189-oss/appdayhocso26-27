@@ -18,6 +18,15 @@ const examCompletionCache = new Map<string, ExamCompletionStats>();
  * Định nghĩa chuẩn: "Đã làm" = số học sinh trong danh sách lớp được giao (theo Mã HS dạng [CLASS]26-27-N) 
  * có ít nhất một bài nộp hoàn thành cho đề đó. Không đếm lượt làm, không đếm bài nộp ngoài danh sách.
  */
+// Global cache for real-time Firestore submissions (Source of Truth across Vercel / local)
+const globalFirestoreExamSubs = new Map<string, any[]>();
+
+export function registerFirestoreExamSubs(examId: string, subs: any[]) {
+  if (examId) {
+    globalFirestoreExamSubs.set(String(examId).trim().toLowerCase(), subs);
+  }
+}
+
 export function getExamCompletion(examId: string, targetClassName: string, examSubmissions: any[] = []): ExamCompletionStats {
   if (!examId) {
     return { totalStudents: 38, validCount: 0, unmatchedCount: 0, totalAttempts: 0, unmatchedSubmissions: [], validSubmissions: [] };
@@ -36,7 +45,7 @@ export function getExamCompletion(examId: string, targetClassName: string, examS
 
   const totalStudents = Math.max(classStudentsRoster.length, getClassStudentCount(stdClassName, 38), 1);
 
-  // Gather all submissions from exam prop and localStorage caches
+  // Gather all submissions from exam prop, real-time Firestore cache, and localStorage caches
   const allCandidates: any[] = [...(Array.isArray(examSubmissions) ? examSubmissions : [])];
 
   const targetExamId = String(examId || '').trim().toLowerCase();
@@ -50,6 +59,16 @@ export function getExamCompletion(examId: string, targetClassName: string, examS
     if (targetBaseId && subBaseId && targetBaseId === subBaseId) return true;
     return false;
   };
+
+  if (globalFirestoreExamSubs.size > 0) {
+    globalFirestoreExamSubs.forEach((subs, sExamId) => {
+      if (isExamMatch(sExamId) && Array.isArray(subs)) {
+        subs.forEach(item => {
+          if (item) allCandidates.push(item);
+        });
+      }
+    });
+  }
 
   if (typeof window !== 'undefined') {
     try {
