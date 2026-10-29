@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { GoogleGenAI } from '@google/genai';
@@ -19,6 +20,21 @@ const firebaseConfig = {
 const appFb = initializeApp(firebaseConfig);
 const dbId = "ai-studio-eduplayprohthngq-71ccd90c-504d-46b7-a2bb-043f46702509";
 const db = getFirestore(appFb, dbId);
+
+// Modern supported models (excluding deprecated models)
+const RECOMMENDED_MODELS = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.1-flash-lite'];
+const DEFAULT_MODEL = 'gemini-3.8-flash';
+const LIVE_MODEL = 'gemini-3.8-live';
+
+function sanitizeModelName(model?: string): string {
+  if (!model || typeof model !== 'string') return DEFAULT_MODEL;
+  const m = model.trim().toLowerCase();
+  // Map deprecated models to standard modern models
+  if (m.includes('1.5') || m.includes('2.0') || m.includes('pro-latest')) {
+    return DEFAULT_MODEL;
+  }
+  return model.trim();
+}
 
 async function startServer() {
   const app = express();
@@ -42,7 +58,7 @@ async function startServer() {
       }
     }
     if (!apiKey) {
-      throw new Error('Chưa cấu hình Gemini API Key cá nhân hoặc Global API Key trên hệ thống.');
+      throw new Error('Chưa cấu hình Gemini API Key trên hệ thống máy chủ.');
     }
     return new GoogleGenAI({
       apiKey,
@@ -65,7 +81,7 @@ async function startServer() {
     const startTime = Date.now();
     try {
       const ai = await getGeminiClient(customKey);
-      const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro-latest'];
+      const candidateModels = RECOMMENDED_MODELS;
       let lastError: any = null;
       for (const modelName of candidateModels) {
         try {
@@ -78,7 +94,7 @@ async function startServer() {
             latencyMs: durationMs,
             status: 'online',
             modelName,
-            message: response?.text ? 'Kết nối thành công!' : 'Không có phản hồi.',
+            message: response?.text ? 'Kết nối máy chủ Gemini thành công!' : 'Không có phản hồi.',
           });
         } catch (err: any) {
           lastError = err;
@@ -90,20 +106,81 @@ async function startServer() {
       const durationMs = Date.now() - startTime;
       let errMsg = error?.message || 'Lỗi kết nối Gemini API';
       if (errMsg.includes('429') || errMsg.includes('Quota') || errMsg.includes('RESOURCE_EXHAUSTED')) {
-        errMsg = 'Hạn mức API Gemini đã hết (Quota Exceeded). Vui lòng nạp thêm hạn mức hoặc dùng API Key cá nhân khác.';
+        errMsg = 'Hạn mức API Gemini đã hết (Quota Exceeded). Vui lòng thử lại sau.';
       }
       res.status(500).json({
         latencyMs: durationMs,
         status: 'error',
-        modelName: 'gemini-2.5-flash',
+        modelName: DEFAULT_MODEL,
         message: errMsg,
       });
     }
   });
 
+  // API Gemini Available Models
+  app.get('/api/gemini/models', async (_req, res) => {
+    try {
+      res.json({ models: RECOMMENDED_MODELS });
+    } catch {
+      res.json({ models: RECOMMENDED_MODELS });
+    }
+  });
+
+  // API Gemini Live API Session/Token Info
+  app.post('/api/gemini/live-token', async (req, res) => {
+    try {
+      const { customKey } = req.body;
+      await getGeminiClient(customKey);
+      res.json({
+        model: LIVE_MODEL,
+        status: 'ready',
+        message: 'Live API session configuration initialized',
+      });
+    } catch (error: any) {
+      res.status(500).json({ error: error?.message || 'Lỗi cấu hình Live API' });
+    }
+  });
+
+  // Helper to build contents for Gemini
+  const buildContents = async (prompt: string, fileData: any) => {
+    let contents: any = prompt;
+    if (fileData && (fileData.base64 || fileData.text)) {
+      const fileName = (fileData.name || '').toLowerCase();
+      const mimeType = (fileData.mimeType || '').toLowerCase();
+      const rawBase64 = fileData.base64 ? fileData.base64.replace(/^data:[^;]+;base64,/, '') : '';
+
+      if (mimeType.includes('pdf') || fileName.endsWith('.pdf')) {
+        contents = [
+          {
+            inlineData: {
+              mimeType: 'application/pdf',
+              data: rawBase64,
+            },
+          },
+          {
+            text: prompt,
+          },
+        ];
+      } else if (mimeType.includes('word') || mimeType.includes('docx') || fileName.endsWith('.docx')) {
+        try {
+          const buffer = Buffer.from(rawBase64, 'base64');
+          const extracted = await mammoth.extractRawText({ buffer });
+          const docxText = extracted.value || '';
+          contents = `[NỘI DUNG TÀI LIỆU WORD GỐC ĐÍNH KÈM]:\n"""\n${docxText}\n"""\n\n${prompt}`;
+        } catch (mErr) {
+          console.warn('Docx parsing error:', mErr);
+          contents = prompt;
+        }
+      } else if (fileData.text) {
+        contents = `[NỘI DUNG TÀI LIỆU VĂN BẢN ĐÍNH KÈM]:\n"""\n${fileData.text}\n"""\n\n${prompt}`;
+      }
+    }
+    return contents;
+  };
+
   // API Gemini General Generation
   app.post('/api/gemini/generate', async (req, res) => {
-    const { prompt, systemInstruction, customKey, responseJson, fileData } = req.body;
+    const { prompt, systemInstruction, customKey, responseJson, fileData, model } = req.body;
     try {
       const ai = await getGeminiClient(customKey);
       const config: any = {};
@@ -114,41 +191,10 @@ async function startServer() {
         config.responseMimeType = 'application/json';
       }
 
-      // Build multimodal contents or text contents
-      let contents: any = prompt;
-      if (fileData && (fileData.base64 || fileData.text)) {
-        const fileName = (fileData.name || '').toLowerCase();
-        const mimeType = (fileData.mimeType || '').toLowerCase();
-        const rawBase64 = fileData.base64 ? fileData.base64.replace(/^data:[^;]+;base64,/, '') : '';
+      const contents = await buildContents(prompt, fileData);
 
-        if (mimeType.includes('pdf') || fileName.endsWith('.pdf')) {
-          contents = [
-            {
-              inlineData: {
-                mimeType: 'application/pdf',
-                data: rawBase64,
-              },
-            },
-            {
-              text: prompt,
-            },
-          ];
-        } else if (mimeType.includes('word') || mimeType.includes('docx') || fileName.endsWith('.docx')) {
-          try {
-            const buffer = Buffer.from(rawBase64, 'base64');
-            const extracted = await mammoth.extractRawText({ buffer });
-            const docxText = extracted.value || '';
-            contents = `[NỘI DUNG TÀI LIỆU WORD GỐC ĐÍNH KÈM]:\n"""\n${docxText}\n"""\n\n${prompt}`;
-          } catch (mErr) {
-            console.warn('Docx parsing error:', mErr);
-            contents = prompt;
-          }
-        } else if (fileData.text) {
-          contents = `[NỘI DUNG TÀI LIỆU VĂN BẢN ĐÍNH KÈM]:\n"""\n${fileData.text}\n"""\n\n${prompt}`;
-        }
-      }
-
-      const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro-latest'];
+      const targetModel = sanitizeModelName(model);
+      const candidateModels = [targetModel, ...RECOMMENDED_MODELS.filter(m => m !== targetModel)];
       let response: any = null;
       let lastError: any = null;
 
@@ -179,11 +225,11 @@ async function startServer() {
       let errMsg = 'Hệ thống AI đang quá tải tạm thời. Thầy/Cô vui lòng bấm "Thử lại ngay" hoặc thử lại sau ít phút nhé!';
       
       if (rawMsg.includes('429') || rawMsg.includes('Quota') || rawMsg.includes('RESOURCE_EXHAUSTED')) {
-        errMsg = 'Hạn mức API Gemini đã hết (Quota Exceeded). Vui lòng kiểm tra lại API Key trong cài đặt.';
+        errMsg = 'Hạn mức API Gemini đã hết (Quota Exceeded). Vui lòng thử lại sau.';
       } else if (rawMsg.includes('503') || rawMsg.includes('UNAVAILABLE') || rawMsg.includes('high demand') || rawMsg.includes('overloaded')) {
         errMsg = 'Hệ thống AI đang quá tải tạm thời. Thầy/Cô vui lòng bấm "Thử lại ngay" hoặc thử lại sau ít phút nhé!';
       } else if (rawMsg.includes('API key not valid') || rawMsg.includes('API_KEY_INVALID')) {
-        errMsg = 'Khóa Gemini API không hợp lệ. Vui lòng kiểm tra lại cấu hình API Key.';
+        errMsg = 'Khóa Gemini API không hợp lệ. Vui lòng kiểm tra lại cấu hình.';
       } else if (rawMsg) {
         try {
           const parsed = JSON.parse(rawMsg);
@@ -193,10 +239,50 @@ async function startServer() {
             errMsg = parsed.error.message;
           }
         } catch {
-          // not JSON format, keep default user-friendly message
+          // not JSON
         }
       }
       res.status(500).json({ error: errMsg });
+    }
+  });
+
+  // API Gemini Streaming Generation
+  app.post('/api/gemini/stream', async (req, res) => {
+    const { prompt, systemInstruction, customKey, responseJson, fileData, model } = req.body;
+    try {
+      const ai = await getGeminiClient(customKey);
+      const config: any = {};
+      if (systemInstruction) config.systemInstruction = systemInstruction;
+      if (responseJson) config.responseMimeType = 'application/json';
+
+      const contents = await buildContents(prompt, fileData);
+      const targetModel = sanitizeModelName(model);
+
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+
+      const responseStream = await ai.models.generateContentStream({
+        model: targetModel,
+        contents,
+        config,
+      });
+
+      for await (const chunk of responseStream) {
+        if (chunk && chunk.text) {
+          res.write(`data: ${JSON.stringify({ text: chunk.text })}\n\n`);
+        }
+      }
+      res.write('data: [DONE]\n\n');
+      res.end();
+    } catch (error: any) {
+      console.error('Gemini Stream Error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: error?.message || 'Lỗi streaming AI' });
+      } else {
+        res.write(`data: ${JSON.stringify({ error: error?.message || 'Lỗi streaming AI' })}\n\n`);
+        res.end();
+      }
     }
   });
 

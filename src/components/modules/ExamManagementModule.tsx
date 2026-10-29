@@ -4171,22 +4171,22 @@ return (
               </div>
 
               {/* Table */}
-              <div className="flex-1 overflow-auto bg-white border border-slate-200 rounded-2xl shadow-sm">
-                <table className="w-full text-left border-collapse text-xs whitespace-nowrap">
+              <div className="flex-1 overflow-x-auto overflow-y-auto max-h-[calc(85vh-200px)] bg-white border border-slate-200 rounded-2xl shadow-sm">
+                <table className="w-full text-left border-separate border-spacing-0 text-xs whitespace-nowrap">
                   <thead>
-                    <tr className="bg-slate-50/80 text-[10px] uppercase font-black text-slate-500 tracking-wider">
-                      <th className="p-4 border-b border-slate-100 w-12 text-center">STT</th>
-                      <th className="p-4 border-b border-slate-100">Mã HS</th>
-                      <th className="p-4 border-b border-slate-100">Tên học sinh</th>
+                    <tr className="bg-slate-100 text-[10px] uppercase font-black text-slate-500 tracking-wider">
+                      <th className="sticky top-0 left-0 z-30 w-[56px] min-w-[56px] max-w-[56px] bg-slate-100 p-4 border-b border-slate-200 text-center">STT</th>
+                      <th className="sticky top-0 left-[56px] z-30 w-[120px] min-w-[120px] max-w-[120px] bg-slate-100 p-4 border-b border-slate-200">Mã HS</th>
+                      <th className="sticky top-0 left-[176px] z-30 w-[220px] min-w-[220px] max-w-[220px] bg-slate-100 p-4 border-b border-slate-200 shadow-[2px_0_4px_rgba(0,0,0,0.08)]">Tên học sinh</th>
                       {Array.from({ length: trackingExam?.questions?.length || 5 }).map((_, qIdx) => (
-                        <th key={qIdx} className="p-4 border-b border-slate-100 text-center text-slate-700 font-black">
+                        <th key={qIdx} className="sticky top-0 z-20 bg-slate-100 p-4 border-b border-slate-200 text-center text-slate-700 font-black">
                           CÂU {qIdx + 1}
                         </th>
                       ))}
                       <th 
                         onClick={handleToggleSortScore}
-                        className={`p-4 border-b border-slate-100 text-center select-none cursor-pointer transition-colors ${
-                          sortScoreDirection ? 'bg-indigo-50/80 hover:bg-indigo-100/70' : 'hover:bg-slate-100/70'
+                        className={`sticky top-0 z-20 p-4 border-b border-slate-200 text-center select-none cursor-pointer transition-colors ${
+                          sortScoreDirection ? 'bg-indigo-100 text-indigo-900 hover:bg-indigo-200/80' : 'bg-slate-100 hover:bg-slate-200/70'
                         }`}
                         title={
                           sortScoreDirection === 'desc'
@@ -4215,130 +4215,146 @@ return (
                           )}
                         </div>
                       </th>
-                      <th className="p-4 border-b border-slate-100 text-center">Số lần làm</th>
-                      <th className="p-4 border-b border-slate-100 text-center">Thời gian nộp</th>
-                      <th className="p-4 border-b border-slate-100">Ghi chú AI / Nhật ký</th>
-                      <th className="p-4 border-b border-slate-100 text-center">Thao tác</th>
+                      <th className="sticky top-0 z-20 bg-slate-100 p-4 border-b border-slate-200 text-center">Số lần làm</th>
+                      <th className="sticky top-0 z-20 bg-slate-100 p-4 border-b border-slate-200 text-center">Thời gian nộp</th>
+                      <th className="sticky top-0 z-20 bg-slate-100 p-4 border-b border-slate-200">Ghi chú AI / Nhật ký</th>
+                      <th className="sticky top-0 z-20 bg-slate-100 p-4 border-b border-slate-200 text-center">Thao tác</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
-                    {sortedTrackingSubmissions.map((st, index) => {
-                      const isWaiting = st.status === 'waiting' || st.totalScore === null;
-                      return (
-                        <tr 
-                          key={st.id} 
-                          className={`hover:bg-slate-50 transition-colors ${st.needManual ? 'bg-amber-50/20' : ''}`}
-                        >
-                          <td className="p-4 font-bold text-slate-500 text-center">{index + 1}</td>
-                          <td className="p-4 font-bold text-fuchsia-700">{st.id}</td>
-                          <td className="p-4">
-                            <div className="flex items-center gap-2">
-                              <span className="font-bold text-slate-800 text-sm">{st.name}</span>
-                              {st.badge && (
-                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-black bg-amber-100 text-amber-700 uppercase">
-                                  <AlertTriangle className="w-3 h-3" /> {st.badge}
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                          {Array.from({ length: trackingExam?.questions?.length || 5 }).map((_, qIdx) => {
-                            const ans = st.answers[qIdx] || 'none';
-                            return (
-                              <td key={qIdx} className="p-4 text-center">
-                                {ans === 'pass' ? (
-                                  <div className="w-6 h-6 mx-auto rounded bg-emerald-50 text-emerald-500 flex items-center justify-center">
-                                    <Check className="w-4 h-4" />
-                                  </div>
-                                ) : ans === 'fail' ? (
-                                  <div className="w-6 h-6 mx-auto rounded bg-rose-50 text-rose-500 flex items-center justify-center">
-                                    <X className="w-4 h-4" />
-                                  </div>
-                                ) : (
-                                  <span className="text-slate-300">-</span>
+                  <tbody className="font-medium text-slate-700">
+                    {sortedTrackingSubmissions.length === 0 ? (
+                      <tr>
+                        <td colSpan={8 + (trackingExam?.questions?.length || 5)} className="p-8 text-center text-slate-400 font-medium bg-white">
+                          {trackingFilter === 'need_manual' ? 'Không có bài nộp nào cần chấm thủ công' : 'Chưa có dữ liệu bài nộp'}
+                        </td>
+                      </tr>
+                    ) : (
+                      sortedTrackingSubmissions.map((st, index) => {
+                        const isWaiting = st.status === 'waiting' || st.totalScore === null;
+                        const isNeedManual = Boolean(st.needManual);
+                        const rowBgClass = isNeedManual ? 'bg-amber-50/40 hover:bg-amber-100/50' : 'bg-white hover:bg-slate-50';
+                        const stickyCellBgClass = isNeedManual ? 'bg-amber-50 group-hover:bg-amber-100/60' : 'bg-white group-hover:bg-slate-50';
+
+                        return (
+                          <tr 
+                            key={st.id} 
+                            className={`group transition-colors ${rowBgClass}`}
+                          >
+                            <td className={`sticky left-0 z-10 w-[56px] min-w-[56px] max-w-[56px] p-4 font-bold text-slate-500 text-center border-b border-slate-100 ${stickyCellBgClass}`}>
+                              {index + 1}
+                            </td>
+                            <td className={`sticky left-[56px] z-10 w-[120px] min-w-[120px] max-w-[120px] p-4 font-bold text-fuchsia-700 truncate border-b border-slate-100 ${stickyCellBgClass}`}>
+                              {st.id}
+                            </td>
+                            <td className={`sticky left-[176px] z-10 w-[220px] min-w-[220px] max-w-[220px] p-4 shadow-[2px_0_4px_rgba(0,0,0,0.08)] border-b border-slate-100 ${stickyCellBgClass}`}>
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold text-slate-800 text-sm">{st.name}</span>
+                                {st.badge && (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-black bg-amber-100 text-amber-700 uppercase">
+                                    <AlertTriangle className="w-3 h-3" /> {st.badge}
+                                  </span>
                                 )}
-                              </td>
-                            );
-                          })}
-                          <td className="p-4 text-center">
-                            {!isWaiting ? (
-                              isSubjectWithScore(trackingExam?.subject) ? (
-                                <span className="inline-flex w-8 h-8 rounded-full border-2 border-indigo-200 bg-white items-center justify-center font-bold text-indigo-700 text-sm shadow-2xs">
-                                  {formatTotalScore(st.totalScore)}
+                              </div>
+                            </td>
+                            {Array.from({ length: trackingExam?.questions?.length || 5 }).map((_, qIdx) => {
+                              const ans = st.answers[qIdx] || 'none';
+                              return (
+                                <td key={qIdx} className="p-4 text-center border-b border-slate-100">
+                                  {ans === 'pass' ? (
+                                    <div className="w-6 h-6 mx-auto rounded bg-emerald-50 text-emerald-500 flex items-center justify-center">
+                                      <Check className="w-4 h-4" />
+                                    </div>
+                                  ) : ans === 'fail' ? (
+                                    <div className="w-6 h-6 mx-auto rounded bg-rose-50 text-rose-500 flex items-center justify-center">
+                                      <X className="w-4 h-4" />
+                                    </div>
+                                  ) : (
+                                    <span className="text-slate-300">-</span>
+                                  )}
+                                </td>
+                              );
+                            })}
+                            <td className="p-4 text-center border-b border-slate-100">
+                              {!isWaiting ? (
+                                isSubjectWithScore(trackingExam?.subject) ? (
+                                  <span className="inline-flex w-8 h-8 rounded-full border-2 border-indigo-200 bg-white items-center justify-center font-bold text-indigo-700 text-sm shadow-2xs">
+                                    {formatTotalScore(st.totalScore)}
+                                  </span>
+                                ) : (
+                                  (() => {
+                                    const correctCount = Array.isArray(st.answers) ? st.answers.filter(a => a === 'pass').length : 0;
+                                    const totalQ = trackingExam?.questions?.length || 5;
+                                    const lvl = getQualitativeLabel(correctCount, totalQ);
+                                    return (
+                                      <span className={`inline-flex px-2.5 py-1 rounded-full font-black text-xs border ${
+                                        lvl === 'Tốt' ? 'bg-emerald-100 text-emerald-800 border-emerald-300' :
+                                        lvl === 'Hoàn thành' ? 'bg-sky-100 text-sky-800 border-sky-300' :
+                                        'bg-rose-100 text-rose-800 border-rose-300'
+                                      }`}>
+                                        {lvl}
+                                      </span>
+                                    );
+                                  })()
+                                )
+                              ) : (
+                                <span className="text-slate-300 font-bold">–</span>
+                              )}
+                            </td>
+                            <td className="p-4 text-center border-b border-slate-100">
+                              {st.attempts !== null ? (
+                                <span className="inline-flex w-6 h-6 rounded-full border-2 border-teal-200 bg-white items-center justify-center font-bold text-teal-700">
+                                  {st.attempts}
                                 </span>
                               ) : (
-                                (() => {
-                                  const correctCount = Array.isArray(st.answers) ? st.answers.filter(a => a === 'pass').length : 0;
-                                  const totalQ = trackingExam?.questions?.length || 5;
-                                  const lvl = getQualitativeLabel(correctCount, totalQ);
-                                  return (
-                                    <span className={`inline-flex px-2.5 py-1 rounded-full font-black text-xs border ${
-                                      lvl === 'Tốt' ? 'bg-emerald-100 text-emerald-800 border-emerald-300' :
-                                      lvl === 'Hoàn thành' ? 'bg-sky-100 text-sky-800 border-sky-300' :
-                                      'bg-rose-100 text-rose-800 border-rose-300'
-                                    }`}>
-                                      {lvl}
-                                    </span>
-                                  );
-                                })()
-                              )
-                            ) : (
-                              <span className="text-slate-300 font-bold">–</span>
-                            )}
-                          </td>
-                          <td className="p-4 text-center">
-                            {st.attempts !== null ? (
-                              <span className="inline-flex w-6 h-6 rounded-full border-2 border-teal-200 bg-white items-center justify-center font-bold text-teal-700">
-                                {st.attempts}
-                              </span>
-                            ) : (
-                              <span className="text-slate-300">-</span>
-                            )}
-                          </td>
-                          <td className="p-4 text-center">
-                            {!isWaiting ? (
-                              <div className="inline-flex items-center gap-1 text-sky-600 font-bold bg-sky-50 px-2 py-1 rounded-lg">
-                                <Clock className="w-3 h-3" /> {st.submittedTime}
-                              </div>
-                            ) : (
-                              <span className="inline-flex px-2 py-1 bg-rose-50 text-rose-600 font-bold rounded-lg text-[10px] uppercase tracking-wider">
-                                Chờ học sinh
-                              </span>
-                            )}
-                          </td>
-                          <td className="p-4">
-                            {st.aiNote ? (
-                              <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-2 max-w-[200px] whitespace-normal text-[10px] font-semibold flex gap-1.5 leading-snug">
-                                <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5 text-amber-600" />
-                                {st.aiNote}
-                              </div>
-                            ) : (
-                              <span className="text-slate-300">-</span>
-                            )}
-                          </td>
-                          <td className="p-4 text-center relative">
-                            <button 
-                              onClick={() => setTrackingActionMenuId(trackingActionMenuId === st.id ? null : st.id)}
-                              className="p-1.5 rounded-lg hover:bg-slate-200 text-slate-400 transition-colors cursor-pointer"
-                            >
-                              <MoreVertical className="w-4 h-4" />
-                            </button>
-                            {trackingActionMenuId === st.id && (
-                              <div className="absolute right-10 top-0 w-36 bg-white rounded-2xl shadow-xl border border-slate-100 p-1.5 z-50 animate-scale-up origin-top-right">
-                                <button onClick={() => { setGradingStudent({ id: st.id, name: st.name }); setTrackingActionMenuId(null); }} className="w-full text-left px-2 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 rounded-xl flex items-center gap-2.5 transition-colors cursor-pointer">
-                                  <div className="w-6 h-6 rounded-lg bg-blue-500 text-white flex items-center justify-center shrink-0 shadow-sm"><Edit3 className="w-3.5 h-3.5" /></div> Chấm bài
-                                </button>
-                                <button onClick={() => { setRetakeStudent({ id: st.id, name: st.name }); setTrackingActionMenuId(null); }} className="w-full text-left px-2 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 rounded-xl flex items-center gap-2.5 transition-colors mt-0.5 cursor-pointer">
-                                  <div className="w-6 h-6 rounded-lg bg-orange-500 text-white flex items-center justify-center shrink-0 shadow-sm"><RotateCcw className="w-3.5 h-3.5" /></div> Cho thi lại
-                                </button>
-                                <button onClick={() => { setDeleteStudent({ id: st.id, name: st.name }); setTrackingActionMenuId(null); }} className="w-full text-left px-2 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 rounded-xl flex items-center gap-2.5 transition-colors mt-0.5 cursor-pointer">
-                                  <div className="w-6 h-6 rounded-lg bg-rose-500 text-white flex items-center justify-center shrink-0 shadow-sm"><Trash2 className="w-3.5 h-3.5" /></div> Xóa bài
-                                </button>
-                              </div>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
+                                <span className="text-slate-300">-</span>
+                              )}
+                            </td>
+                            <td className="p-4 text-center border-b border-slate-100">
+                              {!isWaiting ? (
+                                <div className="inline-flex items-center gap-1 text-sky-600 font-bold bg-sky-50 px-2 py-1 rounded-lg">
+                                  <Clock className="w-3 h-3" /> {st.submittedTime}
+                                </div>
+                              ) : (
+                                <span className="inline-flex px-2 py-1 bg-rose-50 text-rose-600 font-bold rounded-lg text-[10px] uppercase tracking-wider">
+                                  Chờ học sinh
+                                </span>
+                              )}
+                            </td>
+                            <td className="p-4 border-b border-slate-100">
+                              {st.aiNote ? (
+                                <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-2 max-w-[200px] whitespace-normal text-[10px] font-semibold flex gap-1.5 leading-snug">
+                                  <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5 text-amber-600" />
+                                  {st.aiNote}
+                                </div>
+                              ) : (
+                                <span className="text-slate-300">-</span>
+                              )}
+                            </td>
+                            <td className="p-4 text-center relative border-b border-slate-100">
+                              <button 
+                                onClick={() => setTrackingActionMenuId(trackingActionMenuId === st.id ? null : st.id)}
+                                className="p-1.5 rounded-lg hover:bg-slate-200 text-slate-400 transition-colors cursor-pointer"
+                              >
+                                <MoreVertical className="w-4 h-4" />
+                              </button>
+                              {trackingActionMenuId === st.id && (
+                                <div className="absolute right-10 top-0 w-36 bg-white rounded-2xl shadow-xl border border-slate-100 p-1.5 z-50 animate-scale-up origin-top-right">
+                                  <button onClick={() => { setGradingStudent({ id: st.id, name: st.name }); setTrackingActionMenuId(null); }} className="w-full text-left px-2 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 rounded-xl flex items-center gap-2.5 transition-colors cursor-pointer">
+                                    <div className="w-6 h-6 rounded-lg bg-blue-500 text-white flex items-center justify-center shrink-0 shadow-sm"><Edit3 className="w-3.5 h-3.5" /></div> Chấm bài
+                                  </button>
+                                  <button onClick={() => { setRetakeStudent({ id: st.id, name: st.name }); setTrackingActionMenuId(null); }} className="w-full text-left px-2 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 rounded-xl flex items-center gap-2.5 transition-colors mt-0.5 cursor-pointer">
+                                    <div className="w-6 h-6 rounded-lg bg-orange-500 text-white flex items-center justify-center shrink-0 shadow-sm"><RotateCcw className="w-3.5 h-3.5" /></div> Cho thi lại
+                                  </button>
+                                  <button onClick={() => { setDeleteStudent({ id: st.id, name: st.name }); setTrackingActionMenuId(null); }} className="w-full text-left px-2 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50 rounded-xl flex items-center gap-2.5 transition-colors mt-0.5 cursor-pointer">
+                                    <div className="w-6 h-6 rounded-lg bg-rose-500 text-white flex items-center justify-center shrink-0 shadow-sm"><Trash2 className="w-3.5 h-3.5" /></div> Xóa bài
+                                  </button>
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
                   </tbody>
                 </table>
               </div>
