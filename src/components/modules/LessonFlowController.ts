@@ -482,18 +482,21 @@ export function getUnifiedStudentLessonProgress(
     }
   }
 
-  // 3. Scan localStorage for any matching prefix and lesson
+  // 3. Scan localStorage strictly for THIS student's matching records
   try {
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
       if (key && key.startsWith(STORAGE_PREFIX)) {
-        for (const lVar of lessonVariants) {
-          if (key.includes(lVar)) {
-            const raw = localStorage.getItem(key);
-            if (raw) {
-              const parsed = JSON.parse(raw);
-              if (parsed) {
-                return { data: parsed, dataSource: 'legacy' };
+        const belongsToStudent = activeIds.some(id => id && id.length >= 2 && key.includes(id));
+        if (belongsToStudent) {
+          for (const lVar of lessonVariants) {
+            if (key.includes(lVar)) {
+              const raw = localStorage.getItem(key);
+              if (raw) {
+                const parsed = JSON.parse(raw);
+                if (parsed) {
+                  return { data: parsed, dataSource: 'legacy' };
+                }
               }
             }
           }

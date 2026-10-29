@@ -389,7 +389,7 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
               onNavigateToNext={() => {
                 const existing = savedProgress?.elaborate || {};
                 saveStudentLessonProgress(currentUserId, selectedLesson.id, { 
-                  elaborate: { ...existing, isCompleted: true, score: existing.score ?? 10 } 
+                  elaborate: { ...existing, isCompleted: true, score: existing.score ?? existing.practiceScore ?? null } 
                 });
                 setActiveStepTab(getNextStepInLessonFlow('elaborate', selectedLesson));
               }}
@@ -427,7 +427,7 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
               onNavigateToNext={() => {
                 const existing = savedProgress?.assessment || {};
                 saveStudentLessonProgress(currentUserId, selectedLesson.id, { 
-                  assessment: { ...existing, isCompleted: true, testScore: existing.testScore ?? 10 } 
+                  assessment: { ...existing, isCompleted: true, testScore: existing.testScore ?? null } 
                 });
                 setActiveStepTab(getNextStepInLessonFlow('assessment', selectedLesson));
               }}

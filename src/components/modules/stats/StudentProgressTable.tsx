@@ -35,7 +35,7 @@ export const StudentProgressTable: React.FC<StudentProgressTableProps> = ({
   // Search and filter states
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [classFilter, setClassFilter] = useState<string>('all');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'in_progress' | 'not_started' | 'good' | 'pass' | 'need_effort'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'in_progress' | 'not_started' | 'good' | 'pass' | 'need_effort' | 'low_score'>('all');
 
   // Sorting state
   const [sortField, setSortField] = useState<SortField>('stt');
@@ -87,6 +87,8 @@ export const StudentProgressTable: React.FC<StudentProgressTableProps> = ({
       result = result.filter(s => s.rating === 'pass');
     } else if (statusFilter === 'need_effort') {
       result = result.filter(s => s.rating === 'need_effort');
+    } else if (statusFilter === 'low_score') {
+      result = result.filter(s => typeof s.avgQuizScore === 'number' && s.avgQuizScore < 5.0);
     }
 
     // 4. Sorting
@@ -204,12 +206,13 @@ export const StudentProgressTable: React.FC<StudentProgressTableProps> = ({
               className="bg-transparent font-medium text-slate-700 focus:outline-hidden cursor-pointer"
             >
               <option value="all">Tất cả trạng thái</option>
-              <option value="completed">Đã hoàn thành (100%)</option>
-              <option value="in_progress">Đang học</option>
+              <option value="completed">Đã học đủ 5 bước (100%)</option>
+              <option value="in_progress">Chưa hoàn thành (Dở dang)</option>
               <option value="not_started">Chưa vào học (0%)</option>
-              <option value="good">Xếp loại: Tốt (🎯)</option>
-              <option value="pass">Xếp loại: Đạt (👍)</option>
-              <option value="need_effort">Xếp loại: Cần cố gắng (💪)</option>
+              <option value="good">🎯 Hoàn thành tốt (100% & Điểm ≥ 8.0)</option>
+              <option value="pass">👍 Hoàn thành (100% & Điểm 5.0 - 7.9)</option>
+              <option value="need_effort">💪 Cần cố gắng (100% nhưng Điểm &lt; 5.0)</option>
+              <option value="low_score">⚠️ Cần kèm cặp (Hoàn thành nhưng điểm thấp)</option>
             </select>
           </div>
 
@@ -395,22 +398,51 @@ export const StudentProgressTable: React.FC<StudentProgressTableProps> = ({
                     {/* Cột Xếp loại */}
                     <td className="py-2.5 px-3">
                       {st.rating === 'good' ? (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 font-bold text-[11px] shadow-2xs">
-                          <span>🎯</span>
-                          <span>Tốt</span>
-                        </span>
+                        <div className="flex flex-col items-start gap-0.5">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 font-bold text-[11px] shadow-2xs">
+                            <span>🎯</span>
+                            <span>Hoàn thành tốt</span>
+                          </span>
+                          {typeof st.avgQuizScore === 'number' && (
+                            <span className="text-[10px] text-emerald-600 font-semibold pl-1">
+                              {st.avgQuizScore}/10 điểm
+                            </span>
+                          )}
+                        </div>
                       ) : st.rating === 'pass' ? (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-700 font-bold text-[11px] shadow-2xs">
-                          <span>👍</span>
-                          <span>Đạt</span>
-                        </span>
-                      ) : st.rating === 'need_effort' ? (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 font-bold text-[11px] shadow-2xs">
-                          <span>💪</span>
-                          <span>Cần cố gắng</span>
-                        </span>
+                        <div className="flex flex-col items-start gap-0.5">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-blue-50 border border-blue-200 text-blue-700 font-bold text-[11px] shadow-2xs">
+                            <span>👍</span>
+                            <span>Hoàn thành</span>
+                          </span>
+                          {typeof st.avgQuizScore === 'number' && (
+                            <span className="text-[10px] text-blue-600 font-semibold pl-1">
+                              {st.avgQuizScore}/10 điểm
+                            </span>
+                          )}
+                        </div>
+                      ) : st.progressPct === 100 ? (
+                        <div className="flex flex-col items-start gap-0.5">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700 font-bold text-[11px] shadow-2xs">
+                            <span>💪</span>
+                            <span>Cần cố gắng</span>
+                          </span>
+                          <span className="text-[10px] text-amber-700 font-bold pl-1">
+                            {typeof st.avgQuizScore === 'number' ? `${st.avgQuizScore}/10 điểm` : '0/10 điểm'} (Điểm thấp)
+                          </span>
+                        </div>
+                      ) : st.progressPct > 0 ? (
+                        <div className="flex flex-col items-start gap-0.5">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-slate-600 font-bold text-[11px] shadow-2xs">
+                            <span>⏳</span>
+                            <span>Chưa hoàn thành</span>
+                          </span>
+                          <span className="text-[10px] text-slate-500 font-medium pl-1">
+                            {st.progressPct}% (Chưa xong 5 bước)
+                          </span>
+                        </div>
                       ) : (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-slate-500 font-bold text-[11px] shadow-2xs">
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-slate-400 font-bold text-[11px] shadow-2xs">
                           <span>⏳</span>
                           <span>Chưa vào học</span>
                         </span>
@@ -420,12 +452,16 @@ export const StudentProgressTable: React.FC<StudentProgressTableProps> = ({
                     {/* Nhận xét & Hoạt động gần nhất */}
                     <td className="py-2.5 px-3">
                       <div className="flex items-center gap-2">
-                        {isAtRiskRow && (
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 font-bold text-[10px] flex-shrink-0">
-                            <AlertCircle className="w-3 h-3" /> Cần nhắc nhở
+                        {st.progressPct === 100 && st.rating === 'need_effort' ? (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 font-bold text-[10px] flex-shrink-0 animate-pulse">
+                            <AlertCircle className="w-3 h-3 text-amber-600" /> Cần kèm cặp
                           </span>
-                        )}
-                        <span className="text-[11px] text-slate-600 truncate max-w-[240px]" title={st.lastActiveText}>
+                        ) : isAtRiskRow ? (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-bold text-[10px] flex-shrink-0">
+                            <AlertCircle className="w-3 h-3 text-slate-400" /> Chưa vào học
+                          </span>
+                        ) : null}
+                        <span className="text-[11px] text-slate-600 truncate max-w-[260px]" title={st.lastActiveText}>
                           {st.lastActiveText}
                         </span>
                       </div>

@@ -3,6 +3,7 @@ import { getAllStudentsFromLocalStorage, getStudentsFromLocalStorage, getCurrent
 import { getLocalCachedAssignedELearning } from './elearningAssignmentService';
 import { getStudentLessonProgress, ELEARNING_STUDENT_PROGRESS_COLLECTION, getUnifiedStudentLessonProgress } from '../components/modules/LessonFlowController';
 import { Student5EProgress, StatsOverview, Activity5EStats, ActivityDetail, ActivityStatus } from '../components/modules/stats/types';
+import { evaluateStudentLessonRating } from './lessonRatingService';
 import { db } from '../firebaseConfig';
 import { collection, getDocs } from 'firebase/firestore';
 
@@ -305,36 +306,28 @@ export function getLessonStudentsProgressData(
       score: assessmentScoreVal !== null ? `${assessmentScoreVal}/10` : (isAssessmentDone ? 'Hoàn thành' : undefined)
     };
 
-    // Calculate real completed steps count out of 5
-    const completedStepsCount = [
-      isEngageDone,
-      isExploreDone,
-      isElaborateDone,
-      isApplyDone,
-      isAssessmentDone
-    ].filter(Boolean).length;
-
-    // Calculate real progress percentage (0%, 20%, 40%, 60%, 80%, 100%)
-    const progressPct = Math.round((completedStepsCount / 5) * 100);
-
-    // Calculate real rating: Tốt (≥80%), Đạt (50-79%), Cần cố gắng (<50% và có làm ≥1 bước), Chưa vào học (0 bước)
-    let rating: 'good' | 'pass' | 'need_effort' | 'not_started' = 'not_started';
-    if (completedStepsCount === 0 && progressPct === 0) {
-      rating = 'not_started';
-    } else if (progressPct >= 80) {
-      rating = 'good';
-    } else if (progressPct >= 50) {
-      rating = 'pass';
-    } else {
-      rating = 'need_effort';
-    }
+    // Tiêu chuẩn kép đánh giá từ Single Source of Truth (lessonRatingService):
+    // 1. Điều kiện cần (Tiến độ): Hoàn thành đủ 100% cả 5 bước 5E (completedStepsCount === 5).
+    // 2. Điều kiện đủ (Chất lượng): Điểm tổng hợp câu hỏi tương tác đạt từ 8.0 - 10.0 (tỷ lệ đúng ≥ 80%).
+    const evaluation = evaluateStudentLessonRating(prog);
+    const completedStepsCount = evaluation.completedStepsCount;
+    const progressPct = evaluation.progressPct;
+    const avgQuizScore = evaluation.score10;
+    const rating = evaluation.rating;
+    const qualityLabel = evaluation.label;
+    const isQualityPass = evaluation.isQualityPass;
+    const isAtRisk = evaluation.isAtRisk;
 
     // Calculate genuine "Nhận xét & Hoạt động gần nhất"
     const activeDateStr = prog?.updatedAt ? formatActiveDate(prog.updatedAt) : (assignedDateStr || '');
     let lastActiveText = '';
 
     if (completedStepsCount === 5) {
-      lastActiveText = `Hoàn thành 5/5 hoạt động${activeDateStr ? ` • ${activeDateStr}` : ''}`;
+      if (avgQuizScore !== null && avgQuizScore < 5.0) {
+        lastActiveText = `Hoàn thành 5/5 nhưng điểm thấp (${avgQuizScore}/10) • Cần ôn tập${activeDateStr ? ` • ${activeDateStr}` : ''}`;
+      } else {
+        lastActiveText = `Hoàn thành 5/5 hoạt động${avgQuizScore !== null ? ` (${avgQuizScore}đ)` : ''}${activeDateStr ? ` • ${activeDateStr}` : ''}`;
+      }
     } else if (completedStepsCount > 0 || prog) {
       let currentAction = '';
       if (evaluate.status === 'in_progress' || (isAssessmentDone && completedStepsCount < 5)) {
@@ -353,8 +346,6 @@ export function getLessonStudentsProgressData(
       lastActiveText = 'Chưa vào học';
     }
 
-    const isAtRisk = progressPct === 0;
-
     return {
       studentId: st.sddcn || st.id,
       stt: st.stt || idx + 1,
@@ -368,6 +359,9 @@ export function getLessonStudentsProgressData(
       elaborate,
       evaluate,
       progressPct,
+      avgQuizScore,
+      qualityLabel,
+      isQualityPass,
       rating,
       lastActiveText,
       isAtRisk

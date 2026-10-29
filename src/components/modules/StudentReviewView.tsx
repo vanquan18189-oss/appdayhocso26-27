@@ -18,6 +18,7 @@ import { Lesson5EPlan } from '../../types';
 import { getStudentAvatarSource } from '../common/AnimalAvatars';
 import { getCurrentStudentSession } from '../../services/studentSessionService';
 import { getTeachersFromLocalStorage } from '../../services/teacherStorageService';
+import { evaluateStudentLessonRating } from '../../services/lessonRatingService';
 
 /**
  * Checks if a name is a generic placeholder rather than an actual teacher's name.
@@ -222,47 +223,25 @@ export const StudentReviewView: React.FC<StudentReviewViewProps> = ({
   const hasEnoughScoreData = realCalculatedScore !== null;
   const calcScore = realCalculatedScore ?? 0;
   
-  let activeBlockIndex = 0;
-  let tierBadge = 'HOÀN THÀNH XUẤT SẮC 🏆';
-  let isExcellent = false;
+  // Use unified evaluation service (Single Source of Truth)
+  const evaluation = evaluateStudentLessonRating({
+    engageViewed: isEngageCompleted,
+    exploreCompleted: isExploreCompleted,
+    exploreAccuracy: exploreAccuracyVal,
+    elaborate: { isCompleted: isElaborateCompleted, score: elaborateScoreVal },
+    apply: { isCompleted: isApplySubmitted, isSubmitted: isApplySubmitted },
+    assessment: { isCompleted: isAssessmentCompleted, testScore: assessmentScoreVal },
+    overallScore: realCalculatedScore
+  });
 
-  if (completedStepsCount === 5 && hasEnoughScoreData && calcScore >= 85) {
-    activeBlockIndex = 0;
-    tierBadge = 'HOÀN THÀNH XUẤT SẮC 🏆';
-    isExcellent = true;
-  } else if (completedStepsCount >= 3 && hasEnoughScoreData && calcScore >= 60) {
-    activeBlockIndex = blocks.length > 1 ? 1 : 0;
-    tierBadge = 'HOÀN THÀNH TỐT - ĐẠT YÊU CẦU 👍';
-    isExcellent = false;
-  } else if (completedStepsCount > 0) {
-    activeBlockIndex = blocks.length > 2 ? 2 : (blocks.length > 1 ? 1 : 0);
-    tierBadge = `TIẾN TRÌNH: ${completedStepsCount}/5 BƯỚC 🌱`;
-    isExcellent = false;
-  } else {
-    activeBlockIndex = blocks.length > 2 ? 2 : (blocks.length > 1 ? 1 : 0);
-    tierBadge = 'CHƯA BẮT ĐẦU BÀI HỌC 📖';
-    isExcellent = false;
-  }
-
-  const isGood = !isExcellent && completedStepsCount >= 3 && hasEnoughScoreData && calcScore >= 60;
-  const isEffort = !isExcellent && !isGood;
-
-  const defaultSticker = isExcellent ? '🏆' : isGood ? '👍' : (completedStepsCount > 0 ? '🌱' : '📖');
-  const defaultPraiseTitle = isExcellent 
-    ? 'Chúc mừng em đã hoàn thành xuất sắc toàn bộ bài học!' 
-    : isGood
-    ? 'Em đã hoàn thành tốt bài giảng 5E!'
-    : (completedStepsCount > 0 
-        ? 'Cố gắng hơn nữa nhé em! 🌱' 
-        : 'Bắt đầu bài giảng 5E ngay hôm nay!');
-
-  const defaultPraiseContent = isExcellent
-    ? 'Em có tinh thần tự giác rất cao, trả lời chuẩn xác các câu hỏi tương tác trong video, thực hành luyện tập xuất sắc và vận dụng bài học vào thực tế rất tốt. Thầy/Cô rất tự hào về sự cố gắng của em!'
-    : isGood
-    ? 'Em đã tiếp thu tốt kiến thức bài học và hoàn thành các nội dung tương tác. Hãy tiếp tục phát huy tinh thần học tập tích cực này nhé!'
-    : (completedStepsCount > 0 
-        ? 'Em đã có nhiều nỗ lực. Hãy ôn tập kỹ hơn phần lý thuyết và thực hành để đạt kết quả cao hơn ở các bài học tới.'
-        : 'Hãy nhấp vào các bước bài giảng để bắt đầu trải nghiệm nội dung và hoạt động tương tác.');
+  const activeBlockIndex = evaluation.activeBlockIndex;
+  const isExcellent = evaluation.rating === 'good';
+  const isGood = evaluation.rating === 'pass';
+  const isEffort = evaluation.rating === 'need_effort' || evaluation.rating === 'not_started';
+  const tierBadge = evaluation.reviewTitle;
+  const defaultSticker = evaluation.icon;
+  const defaultPraiseTitle = evaluation.praiseTitle;
+  const defaultPraiseContent = evaluation.praiseContent;
 
   // Resolve actual teacher name (eliminating generic placeholder "Thầy/Cô giáo bộ môn")
   const resolvedTeacherName = React.useMemo(() => {

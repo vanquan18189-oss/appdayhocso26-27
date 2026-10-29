@@ -21,9 +21,12 @@ export interface Student5EProgress {
   elaborate: ActivityDetail;
   evaluate: ActivityDetail;
   progressPct: number;
-  rating: 'good' | 'pass' | 'need_effort' | 'not_started'; // 🎯 Tốt (≥80%), 👍 Đạt (50-79%), 💪 Cần cố gắng (<50% có làm), ⏳ Chưa vào học (0%)
+  avgQuizScore?: number | null;
+  qualityLabel?: string;
+  isQualityPass?: boolean;
+  rating: 'good' | 'pass' | 'need_effort' | 'not_started'; // 🎯 Hoàn thành tốt (100% + Điểm ≥ 8.0), 👍 Đạt (100% + Điểm 5.0-7.9), 💪 Cần cố gắng (<100% hoặc Điểm < 5.0), ⏳ Chưa vào học (0%)
   lastActiveText: string;
-  isAtRisk: boolean; // 0% progress and unstarted
+  isAtRisk: boolean; // 0% progress OR 100% progress but low quiz score (< 5.0)
 }
 
 export interface StatsOverview {

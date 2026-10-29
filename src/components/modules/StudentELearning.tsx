@@ -50,6 +50,7 @@ import {
   formatTeacherWithTitle,
   resolveTeacherForClassAndSubject
 } from './StudentReviewView';
+import { evaluateStudentLessonRating } from '../../services/lessonRatingService';
 import {
   getEffectiveStudentClassAndGrade,
   isTargetingStudent,
@@ -306,6 +307,10 @@ export const StudentELearning: React.FC<StudentELearningProps> = ({
     const progressPct = Math.round((completedSteps / 5) * 100);
     const status = progressPct >= 100 ? 'completed' : (progressPct > 0 ? 'in_progress' : 'not_started');
     const timeSpentMinutes = progData?.totalTimeSpent ? Math.floor(progData.totalTimeSpent / 60) : (status === 'completed' ? 45 : (status === 'in_progress' ? 15 : 0));
+    const evaluation = evaluateStudentLessonRating(progData);
+    const qualityRating = evaluation.rating;
+    const qualityBadgeText = evaluation.badgeText;
+    const avgQuizScore = evaluation.score10;
 
     return {
       assignment: assigned,
@@ -313,7 +318,10 @@ export const StudentELearning: React.FC<StudentELearningProps> = ({
       status,
       progressPct,
       timeSpentMinutes,
-      dataSource
+      dataSource,
+      qualityRating,
+      qualityBadgeText,
+      avgQuizScore
     };
   });
 
@@ -936,18 +944,30 @@ export const StudentELearning: React.FC<StudentELearningProps> = ({
 
                     {/* Status badge */}
                     {item.status === 'completed' ? (
-                      <span className="bg-emerald-50 text-[#00875A] border border-emerald-200 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1 shrink-0">
-                        <CheckCircle2 className="w-3 h-3 text-[#00875A]" />
-                        <span>Đã xong</span>
-                      </span>
+                      item.qualityRating === 'good' ? (
+                        <span className="bg-emerald-50 text-emerald-800 border border-emerald-200 text-[10px] font-black px-2.5 py-0.5 rounded-full flex items-center gap-1 shrink-0 shadow-2xs">
+                          <span>🎯</span>
+                          <span>Hoàn thành tốt {item.avgQuizScore !== null ? `(${item.avgQuizScore}đ)` : ''}</span>
+                        </span>
+                      ) : item.qualityRating === 'pass' ? (
+                        <span className="bg-blue-50 text-blue-800 border border-blue-200 text-[10px] font-black px-2.5 py-0.5 rounded-full flex items-center gap-1 shrink-0 shadow-2xs">
+                          <span>👍</span>
+                          <span>Hoàn thành {item.avgQuizScore !== null ? `(${item.avgQuizScore}đ)` : ''}</span>
+                        </span>
+                      ) : (
+                        <span className="bg-amber-50 text-amber-800 border border-amber-200 text-[10px] font-black px-2.5 py-0.5 rounded-full flex items-center gap-1 shrink-0 shadow-2xs">
+                          <span>💪</span>
+                          <span>Cần cố gắng {item.avgQuizScore !== null ? `(${item.avgQuizScore}đ)` : ''}</span>
+                        </span>
+                      )
                     ) : item.status === 'in_progress' ? (
                       <span className="bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1 shrink-0">
                         <Clock className="w-3 h-3 text-amber-600" />
-                        <span>Đang học</span>
+                        <span>Chưa hoàn thành ({item.progressPct}%)</span>
                       </span>
                     ) : (
                       <span className="bg-slate-100 text-slate-600 border border-slate-200 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full flex items-center gap-1 shrink-0">
-                        <span>Chưa học</span>
+                        <span>⏳ Chưa hoàn thành</span>
                       </span>
                     )}
                   </div>
@@ -999,7 +1019,9 @@ export const StudentELearning: React.FC<StudentELearningProps> = ({
                   <div className="space-y-1">
                     <div className="flex items-center justify-between text-[11px] font-bold">
                       <span className="text-slate-500">Tiến độ bài học</span>
-                      <span className="text-slate-700">{item.progressPct}%</span>
+                      <span className="text-slate-700">
+                        {item.progressPct}%{item.status === 'completed' ? ` • ${item.qualityBadgeText}` : ''}
+                      </span>
                     </div>
                     <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
                       <div 

@@ -155,7 +155,8 @@ export const LessonProgressStatsModal: React.FC<LessonProgressStatsModalProps> =
         'Vận dụng': st.elaborate.status === 'completed' ? 'Đã hoàn thành' : st.elaborate.status === 'in_progress' ? 'Đang làm' : 'Chưa bắt đầu',
         'Đánh giá': st.evaluate.status === 'completed' ? `Đã hoàn thành${st.evaluate.score ? ` (${st.evaluate.score})` : ''}` : st.evaluate.status === 'in_progress' ? 'Đang làm' : 'Chưa bắt đầu',
         'Tiến độ (%)': `${st.progressPct}%`,
-        'Xếp loại': st.rating === 'good' ? 'Tốt' : st.rating === 'pass' ? 'Đạt' : st.rating === 'need_effort' ? 'Cần cố gắng' : 'Chưa vào học',
+        'Điểm bài tập': typeof st.avgQuizScore === 'number' ? `${st.avgQuizScore}/10` : 'Chưa có',
+        'Xếp loại': st.qualityLabel || (st.rating === 'good' ? 'Hoàn thành tốt' : st.rating === 'pass' ? 'Hoàn thành' : st.progressPct === 100 ? 'Cần cố gắng' : st.progressPct > 0 ? 'Chưa hoàn thành' : 'Chưa vào học'),
         'Nhận xét & Hoạt động gần nhất': st.lastActiveText
       }));
 
@@ -172,8 +173,9 @@ export const LessonProgressStatsModal: React.FC<LessonProgressStatsModalProps> =
         { wch: 18 }, // Luyện tập
         { wch: 15 }, // Vận dụng
         { wch: 18 }, // Đánh giá
-        { wch: 14 }, // Tiến độ
-        { wch: 14 }, // Xếp loại
+        { wch: 12 }, // Tiến độ
+        { wch: 14 }, // Điểm bài tập
+        { wch: 22 }, // Xếp loại
         { wch: 35 }  // Nhận xét
       ];
 
