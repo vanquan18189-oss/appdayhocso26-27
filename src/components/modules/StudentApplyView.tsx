@@ -51,28 +51,9 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
   const [currentSubStep, setCurrentSubStep] = useState<1 | 2 | 3>(savedData?.subStep || 1);
   const [isCompleted, setIsCompleted] = useState<boolean>(Boolean(savedData?.isCompleted));
 
-  // Step 2: Questions answering state
-  const questions: QuestionItem[] = (evaluateStep?.questions && evaluateStep.questions.length > 0)
-    ? evaluateStep.questions
-    : [
-        {
-          id: 'q-app-default-1',
-          code: 'CH-VD-01',
-          subject: lesson.subject || 'Tin học',
-          grade: lesson.grade || 'Khối 3',
-          level: 'van_dung',
-          type: 'multiple_choice',
-          content: 'Khi đối mặt với tình huống thực tế nêu trên, giải pháp nào dưới đây là tối ưu và an toàn nhất?',
-          options: [
-            'Thực hiện theo đúng quy trình đã được hướng dẫn và ghi nhận kết quả cẩn thận',
-            'Bỏ qua các cảnh báo an toàn để tiết kiệm thời gian',
-            'Nhờ người khác làm thay toàn bộ công việc',
-            'Không cần kiểm tra lại sau khi hoàn thành'
-          ],
-          correctAnswer: 'A',
-          explanation: 'Tuân thủ quy trình và ghi chép cẩn thận giúp đảm bảo an toàn và đạt kết quả chính xác cao nhất.'
-        }
-      ];
+  // Step 2: Questions answering state - Read from evaluateStep or lesson without hardcoded fallbacks
+  const rawQuestions = evaluateStep?.questions || (lesson as any)?.evaluateQuestions || [];
+  const questions: QuestionItem[] = Array.isArray(rawQuestions) ? rawQuestions : [];
 
   const [questionAnswers, setQuestionAnswers] = useState<Record<string, any>>(savedData?.questionAnswers || {});
   const [submittedQuestions, setSubmittedQuestions] = useState<boolean>(Boolean(savedData?.submittedQuestions));
@@ -327,7 +308,18 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
             </button>
           </div>
 
-          <div className="space-y-6">
+          {questions.length === 0 ? (
+            <div className="bg-white p-8 rounded-2xl border border-dashed border-slate-300 text-center space-y-3">
+              <div className="w-12 h-12 mx-auto rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
+                <Target className="w-6 h-6" />
+              </div>
+              <h4 className="text-sm font-bold text-slate-800">Không có câu hỏi tương tác</h4>
+              <p className="text-xs text-slate-500 max-w-md mx-auto">
+                Giáo viên không thiết lập câu hỏi tương tác cho bước Vận dụng này. Em có thể tiếp tục sang Bước 3: Báo cáo thu hoạch.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-6">
             {questions.map((q, qIdx) => {
               const isCorrect = isQuestionCorrect(q);
               const qType = q.type || 'multiple_choice';
@@ -759,24 +751,27 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
               );
             })}
           </div>
+        )}
 
           <div className="flex items-center justify-between pt-2">
-            {!submittedQuestions ? (
-              <button
-                onClick={() => setSubmittedQuestions(true)}
-                className="px-6 py-3 bg-pink-600 hover:bg-pink-700 text-white font-bold text-xs rounded-xl transition-all shadow-md cursor-pointer"
-              >
-                Kiểm tra câu trả lời
-              </button>
-            ) : (
-              <div className="text-xs font-bold text-emerald-700 bg-emerald-50 px-4 py-2 rounded-xl border border-emerald-200">
-                ✓ Đã hoàn thành các câu hỏi giải quyết tình huống
-              </div>
+            {questions.length > 0 && (
+              !submittedQuestions ? (
+                <button
+                  onClick={() => setSubmittedQuestions(true)}
+                  className="px-6 py-3 bg-pink-600 hover:bg-pink-700 text-white font-bold text-xs rounded-xl transition-all shadow-md cursor-pointer"
+                >
+                  Kiểm tra câu trả lời
+                </button>
+              ) : (
+                <div className="text-xs font-bold text-emerald-700 bg-emerald-50 px-4 py-2 rounded-xl border border-emerald-200">
+                  ✓ Đã hoàn thành các câu hỏi giải quyết tình huống
+                </div>
+              )
             )}
 
             <button
               onClick={() => setCurrentSubStep(3)}
-              className="px-8 py-3.5 bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-700 hover:to-rose-700 text-white font-extrabold text-xs sm:text-sm rounded-2xl transition-all shadow-md shadow-pink-600/30 flex items-center gap-2 cursor-pointer active:scale-98"
+              className="px-8 py-3.5 bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-700 hover:to-rose-700 text-white font-extrabold text-xs sm:text-sm rounded-2xl transition-all shadow-md shadow-pink-600/30 flex items-center gap-2 cursor-pointer active:scale-98 ml-auto"
             >
               <span>Tiếp tục sang Bước 3: Báo cáo thu hoạch</span>
               <ChevronRight className="w-4 h-4" />

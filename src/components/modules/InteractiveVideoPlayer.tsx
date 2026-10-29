@@ -16,7 +16,8 @@ import {
   VolumeX,
   Maximize,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  AlertTriangle
 } from 'lucide-react';
 import { ExploreSummaryModal, ExploreSummaryData } from './ExploreSummaryModal';
 import { QuestionItem, TrueFalseStatement } from '../../types';
@@ -68,6 +69,8 @@ interface InteractiveVideoPlayerProps {
   coreSummary?: string;
   checkpoints?: VideoCheckpoint[];
   isAlreadyCompleted?: boolean;
+  savedAnswers?: Record<string, { selected: any; correct: boolean; question?: VideoCheckpoint }>;
+  onSaveCheckpoint?: (cpId: string, answerData: { selected: any; correct: boolean; question: VideoCheckpoint }, allAnswers: Record<string, any>) => void;
   onComplete?: (summaryData?: ExploreSummaryData) => void;
   onRestart?: () => void;
 }
@@ -78,6 +81,8 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
   coreSummary = 'Học sinh nắm vững các khái niệm trọng tâm, quan sát thí nghiệm mô phỏng và liên hệ thực tế.',
   checkpoints = [],
   isAlreadyCompleted = false,
+  savedAnswers = {},
+  onSaveCheckpoint,
   onComplete,
   onRestart
 }) => {
@@ -87,10 +92,21 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
   
   const [currentTime, setCurrentTime] = useState<number>(0);
   const maxCpTime = checkpoints.length > 0 ? Math.max(...checkpoints.map(cp => cp.timestamp)) : 0;
-  // NGUYÊN NHÂN 1: Use a robust full-length video duration (at least 21 mins / 1293s or maxCpTime + 300s) so timeline doesn't finish prematurely
+  // Use a robust full-length video duration so timeline doesn't finish prematurely
   const [duration, setDuration] = useState<number>(Math.max(1293, maxCpTime + 300));
   const [isPlaying, setIsPlaying] = useState<boolean>(true);
   const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [incompleteWarning, setIncompleteWarning] = useState<string | null>(null);
+
+  // Auto clear incomplete warning after 4.5s
+  useEffect(() => {
+    if (incompleteWarning) {
+      const timer = setTimeout(() => {
+        setIncompleteWarning(null);
+      }, 4500);
+      return () => clearTimeout(timer);
+    }
+  }, [incompleteWarning]);
 
   // Active question state
   const [activeCheckpoint, setActiveCheckpoint] = useState<VideoCheckpoint | null>(null);
@@ -104,9 +120,18 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
   const [essayText, setEssayText] = useState<string>('');
   const [isAnswerCorrect, setIsAnswerCorrect] = useState<boolean | null>(null);
 
-  // Tracking answers for summary
-  const [answeredCheckpoints, setAnsweredCheckpoints] = useState<Record<string, { selected: any; correct: boolean; question: VideoCheckpoint }>>({});
+  // Tracking answers for summary - initialized with savedAnswers from Firestore
+  const [answeredCheckpoints, setAnsweredCheckpoints] = useState<Record<string, { selected: any; correct: boolean; question: VideoCheckpoint }>>(() => {
+    return (savedAnswers as any) || {};
+  });
   const [attemptedTimestamps, setAttemptedTimestamps] = useState<number[]>([]);
+
+  // Synchronize answeredCheckpoints if savedAnswers is loaded/updated
+  useEffect(() => {
+    if (savedAnswers && Object.keys(savedAnswers).length > 0) {
+      setAnsweredCheckpoints(prev => ({ ...(savedAnswers as any), ...prev }));
+    }
+  }, [savedAnswers]);
 
   // Timer effect to increment currentTime and check checkpoints when playing (supports YouTube iframe and general playback)
   useEffect(() => {
@@ -292,15 +317,23 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
     else if (qType === 'classification') selectedData = classificationAnswers;
     else if (qType === 'essay') selectedData = essayText;
 
+    const answerEntry = {
+      selected: selectedData,
+      correct,
+      question: activeCheckpoint
+    };
+
     setIsAnswerCorrect(correct);
-    setAnsweredCheckpoints(prev => ({
-      ...prev,
-      [activeCheckpoint.id]: {
-        selected: selectedData,
-        correct,
-        question: activeCheckpoint
-      }
-    }));
+    const updatedAnswers = {
+      ...answeredCheckpoints,
+      [activeCheckpoint.id]: answerEntry
+    };
+    setAnsweredCheckpoints(updatedAnswers);
+
+    // Explicitly persist student answer to Firestore via callback
+    if (onSaveCheckpoint) {
+      onSaveCheckpoint(activeCheckpoint.id, answerEntry, updatedAnswers);
+    }
 
     setPlayerState('showing-feedback');
   };
@@ -421,6 +454,57 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
   const totalQuestions = checkpoints.length;
   const correctAnswersCount = Object.values(answeredCheckpoints).filter(a => a.correct).length;
   const incorrectAnswers = Object.values(answeredCheckpoints).filter(a => !a.correct);
+
+  // Handle clicking "XEM TỔNG KẾT & GHI NHỚ NGAY"
+  const handleViewSummaryClick = () => {
+    const answeredCount = Object.keys(answeredCheckpoints).length;
+    console.log('[InteractiveVideoPlayer] Bấm nút XEM TỔNG KẾT & GHI NHỚ NGAY', {
+      answeredCount,
+      totalQuestions,
+      isAlreadyCompleted,
+      answeredCheckpoints
+    });
+
+    // Check condition: if not already completed and checkpoints remain unanswered
+    if (!isAlreadyCompleted && totalQuestions > 0 && answeredCount < totalQuestions) {
+      setIncompleteWarning(`Em cần hoàn thành các câu hỏi mốc trước (Đã làm ${answeredCount}/${totalQuestions} câu hỏi). Hãy xem video đến các mốc câu hỏi để trả lời!`);
+      return;
+    }
+
+    setIncompleteWarning(null);
+    setPlayerState('showing-summary');
+    setIsPlaying(false);
+    if (videoRef.current) videoRef.current.pause();
+    if (iframeRef.current && iframeRef.current.contentWindow) {
+      iframeRef.current.contentWindow.postMessage(
+        JSON.stringify({ event: 'command', func: 'pauseVideo', args: '' }),
+        '*'
+      );
+    }
+  };
+
+  // Handle seeking to checkpoint timestamp for video review
+  const handleSeekToTimestamp = (timestamp: number) => {
+    console.log('[InteractiveVideoPlayer] Nhảy về mốc thời gian xem lại video:', timestamp);
+    setPlayerState('playing');
+    setCurrentTime(timestamp);
+    if (videoRef.current) {
+      videoRef.current.currentTime = timestamp;
+      videoRef.current.play().catch(() => {});
+      setIsPlaying(true);
+    }
+    if (iframeRef.current && iframeRef.current.contentWindow) {
+      iframeRef.current.contentWindow.postMessage(
+        JSON.stringify({ event: 'command', func: 'seekTo', args: [timestamp, true] }),
+        '*'
+      );
+      iframeRef.current.contentWindow.postMessage(
+        JSON.stringify({ event: 'command', func: 'playVideo', args: '' }),
+        '*'
+      );
+      setIsPlaying(true);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -569,24 +653,35 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
         </div>
 
         {/* Action Button: Xem tổng kết & Ghi nhớ */}
-        {(isAlreadyCompleted || Object.keys(answeredCheckpoints).length >= totalQuestions) ? (
-          <button
-            type="button"
-            onClick={() => {
-              setPlayerState('showing-summary');
-              setIsPlaying(false);
-            }}
-            className="w-full sm:w-auto px-7 py-4 rounded-2xl bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-700 hover:to-indigo-800 text-white text-sm sm:text-base font-black transition-all shadow-xl shadow-purple-600/30 flex items-center justify-center gap-3 cursor-pointer active:scale-98 transform hover:scale-102"
-          >
-            <Sparkles className="w-5 h-5 text-amber-300 animate-spin" />
-            <span>🎯 XEM TỔNG KẾT & GHI NHỚ NGAY</span>
-          </button>
-        ) : (
-          <div className="px-5 py-3 rounded-2xl bg-slate-200/80 border border-slate-300 text-slate-600 text-xs sm:text-sm font-extrabold flex items-center gap-2 text-center">
-            <span>🔒 Hoàn thành các câu hỏi mốc trong video để mở khóa Tổng kết</span>
-          </div>
-        )}
+        <button
+          type="button"
+          onClick={handleViewSummaryClick}
+          className="w-full sm:w-auto px-7 py-4 rounded-2xl bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-700 hover:to-indigo-800 text-white text-sm sm:text-base font-black transition-all shadow-xl shadow-purple-600/30 flex items-center justify-center gap-3 cursor-pointer active:scale-98 transform hover:scale-102"
+        >
+          <Sparkles className="w-5 h-5 text-amber-300 animate-spin" />
+          <span>🎯 XEM TỔNG KẾT & GHI NHỚ NGAY</span>
+        </button>
       </div>
+
+      {/* FLOATING INCOMPLETE WARNING BANNER */}
+      {incompleteWarning && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[100000] max-w-lg w-full px-4 animate-in slide-in-from-top-4 duration-300">
+          <div className="bg-amber-500 text-slate-950 font-black px-5 py-4 rounded-2xl shadow-2xl border-2 border-amber-300 flex items-center justify-between gap-3 text-xs sm:text-sm">
+            <div className="flex items-center gap-2.5">
+              <AlertTriangle className="w-5 h-5 text-slate-950 shrink-0 animate-pulse" />
+              <span className="leading-relaxed">{incompleteWarning}</span>
+            </div>
+            <button 
+              type="button" 
+              onClick={() => setIncompleteWarning(null)}
+              className="p-1 hover:bg-amber-600/30 rounded-lg cursor-pointer shrink-0"
+              title="Đóng thông báo"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
         {/* OVERLAY 1: PAUSED FOR QUESTION (SUPPORTING ALL 8 QUESTION TYPES) */}
         {playerState === 'paused-for-question' && activeCheckpoint && (
@@ -917,6 +1012,10 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
             onComplete={(summaryData) => {
               if (onComplete) onComplete(summaryData);
             }}
+            onClose={() => {
+              setPlayerState('playing');
+            }}
+            onSeek={handleSeekToTimestamp}
           />
         )}
 

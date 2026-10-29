@@ -119,6 +119,16 @@ export const StudentELearning: React.FC<StudentELearningProps> = ({
     setIsRelearningExplore(false);
   }, [selectedLesson?.id]);
 
+  // Live sync selectedLesson if parent lessons prop updates (real-time teacher edits)
+  useEffect(() => {
+    if (selectedLesson?.id) {
+      const updated = lessons.find(l => l.id === selectedLesson.id);
+      if (updated && updated !== selectedLesson) {
+        setSelectedLesson(updated);
+      }
+    }
+  }, [lessons, selectedLesson?.id]);
+
   // Increment study views count when student opens lesson (once per session)
   useEffect(() => {
     if (selectedLesson?.id && effectiveUserId) {
@@ -537,8 +547,21 @@ export const StudentELearning: React.FC<StudentELearningProps> = ({
                             videoUrl={(selectedLesson.stepExplore as any)?.videoUrl || 'https://www.youtube.com/watch?v=UF8o89k1g8g'}
                             checkpoints={(selectedLesson.stepExplore as any)?.checkpoints || []}
                             title={selectedLesson.title}
-                            coreSummary={selectedLesson.stepExplore?.objectives || 'Học sinh nắm vững các khái niệm trọng tâm, quan sát thí nghiệm mô phỏng và liên hệ thực tế.'}
+                            coreSummary={(selectedLesson.stepExplore as any)?.coreSummary || selectedLesson.stepExplore?.objectives || 'Học sinh nắm vững các khái niệm trọng tâm, quan sát thí nghiệm mô phỏng và liên hệ thực tế.'}
                             isAlreadyCompleted={Boolean(savedProgress?.exploreCompleted)}
+                            savedAnswers={savedProgress?.exploreCheckpointAnswers || {}}
+                            onSaveCheckpoint={(cpId, answerData, allAnswers) => {
+                              const total = ((selectedLesson.stepExplore as any)?.checkpoints || []).length;
+                              const correctCount = Object.values(allAnswers).filter((a: any) => a.correct).length;
+                              const acc = total > 0 ? Math.round((correctCount / total) * 100) : 100;
+                              const isCompleted = total > 0 ? Object.keys(allAnswers).length >= total : true;
+                              saveStudentLessonProgress(effectiveUserId, selectedLesson.id, {
+                                exploreCheckpointAnswers: allAnswers,
+                                exploreAccuracy: acc,
+                                exploreCompleted: isCompleted,
+                                engageViewed: true
+                              });
+                            }}
                             onComplete={(summaryData) => {
                               const accuracy = typeof summaryData?.accuracy === 'number' ? summaryData.accuracy : 100;
                               saveStudentLessonProgress(effectiveUserId, selectedLesson.id, { 

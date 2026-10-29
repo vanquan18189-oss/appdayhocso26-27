@@ -512,11 +512,13 @@ export const Lesson5EModal: React.FC<Lesson5EModalProps> = ({
 
         // Assessment
         assessmentNotes:
-          (targetLesson as any).assessmentNotes || 'Rubric đánh giá năng lực học sinh qua sản phẩm thực hành.',
-        assessmentQuestions: (targetLesson as any).assessmentQuestions || [],
+          (targetLesson as any).assessmentNotes || (targetLesson as any).assessmentConfig?.notes || 'Rubric đánh giá năng lực học sinh qua sản phẩm thực hành.',
+        assessmentQuestions: (targetLesson as any).assessmentQuestions || (targetLesson as any).assessmentConfig?.questions || [],
         assessmentCriteria:
           (targetLesson as any).assessmentCriteria && (targetLesson as any).assessmentCriteria.length > 0
             ? (targetLesson as any).assessmentCriteria
+            : (targetLesson as any).assessmentConfig?.criteria && (targetLesson as any).assessmentConfig.criteria.length > 0
+            ? (targetLesson as any).assessmentConfig.criteria
             : [
                 'Em đã hiểu và ghi nhớ đầy đủ nội dung cốt lõi của bài học',
                 'Em biết cách vận dụng kiến thức vào thực tiễn và giải quyết bài tập',
@@ -912,6 +914,11 @@ export const Lesson5EModal: React.FC<Lesson5EModalProps> = ({
         assessmentNotes,
         assessmentQuestions,
         assessmentCriteria,
+        assessmentConfig: {
+          questions: assessmentQuestions,
+          criteria: assessmentCriteria,
+          notes: assessmentNotes
+        },
         feedbackNotes,
         feedbackConfig: {
           blocks: feedbackBlocks

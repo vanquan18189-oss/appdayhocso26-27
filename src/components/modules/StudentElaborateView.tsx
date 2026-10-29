@@ -46,74 +46,9 @@ export const StudentElaborateView: React.FC<StudentElaborateViewProps> = ({
   const transitionGuidance = elaborateStep?.transitionGuidance || 
     'Vừa rồi các em đã tìm hiểu qua video bài giảng và nắm vững các khái niệm trọng tâm. Bây giờ chúng ta cùng bước vào phần Luyện tập để củng cố và vận dụng kiến thức nhé!';
 
-  // Prepare questions: use configured questions from lesson or structured fallback questions
-  const questions: QuestionItem[] = (elaborateStep?.questions && elaborateStep.questions.length > 0)
-    ? elaborateStep.questions
-    : [
-        {
-          id: 'q-el-frac-1',
-          code: 'CH-EL-01',
-          subject: lesson.subject || 'Toán học',
-          grade: lesson.grade || 'Khối 4',
-          level: 'thong_hieu',
-          type: 'fill_blank',
-          content: 'Quan sát hình dưới đây và trả lời các câu hỏi:',
-          subQuestions: [
-            {
-              id: 'sq-1',
-              label: 'Câu 1: a) Viết phân số chỉ số phần đã tô màu của hình trên.',
-              type: 'fraction',
-              correctNumerator: '5',
-              correctDenominator: '6'
-            },
-            {
-              id: 'sq-2',
-              label: 'Câu 2: b) Đọc phân số trên.',
-              type: 'multiple_choice',
-              options: [
-                'Năm phần sáu.',
-                'Năm mươi lăm phần bốn.',
-                'Sáu phần năm.',
-                'Một phần năm.'
-              ],
-              correctAnswer: 'A'
-            }
-          ],
-          hasFractionIllustration: true,
-          explanation: 'Hình tròn được chia thành 6 phần bằng nhau, trong đó có 5 phần được tô màu tím. Phân số chỉ số phần đã tô màu là 5/6, đọc là "Năm phần sáu".'
-        },
-        {
-          id: 'q-el-default-2',
-          code: 'CH-EL-02',
-          subject: lesson.subject || 'Tin học',
-          grade: lesson.grade || 'Khối 3',
-          level: 'thong_hieu',
-          type: 'multiple_choice',
-          content: 'Đâu là cách áp dụng hợp lý kiến thức vừa khám phá trong bài học vào việc giải quyết tình huống thực tế?',
-          options: [
-            'Phân tích yêu cầu, lựa chọn giải pháp phù hợp và thực hiện từng bước',
-            'Bỏ qua các bước kiểm tra và làm theo cảm tính',
-            'Không cần lập kế hoạch mà làm ngay lập tức',
-            'Chờ đợi sự hỗ trợ mà không tự mình suy nghĩ'
-          ],
-          correctAnswer: 'A',
-          explanation: 'Phân tích kỹ đề bài và thực hiện từng bước là phương pháp khoa học giúp giải quyết vấn đề hiệu quả.'
-        },
-        {
-          id: 'q-el-default-3',
-          code: 'CH-EL-03',
-          subject: lesson.subject || 'Tin học',
-          grade: lesson.grade || 'Khối 3',
-          level: 'thong_hieu',
-          type: 'true_false',
-          content: 'Xác định tính Đúng / Sai của các nhận định sau:',
-          statements: [
-            { statement: 'Thực hành luyện tập thường xuyên giúp củng cố kiến thức sâu hơn', isCorrect: true },
-            { statement: 'Chỉ cần xem video một lần là không cần làm bài tập vận dụng', isCorrect: false }
-          ],
-          explanation: 'Luyện tập và thực hành là bước quan trọng giúp chuyển hóa kiến thức thành kỹ năng thực tế.'
-        }
-      ];
+  // Prepare questions: use configured questions from lesson without hardcoded fallback questions
+  const rawQuestions = elaborateStep?.questions || (lesson as any)?.elaborateQuestions || [];
+  const questions: QuestionItem[] = Array.isArray(rawQuestions) ? rawQuestions : [];
 
   // State
   const [phase, setPhase] = useState<'intro' | 'practice' | 'summary'>(
@@ -558,6 +493,30 @@ export const StudentElaborateView: React.FC<StudentElaborateViewProps> = ({
               </div>
             );
           })}
+        </div>
+      </div>
+    );
+  }
+
+  // Empty state if teacher didn't author any elaborate questions
+  if (questions.length === 0) {
+    return (
+      <div className="bg-white p-8 rounded-3xl border border-dashed border-slate-300 text-center space-y-4 max-w-xl mx-auto my-6 shadow-xs">
+        <div className="w-14 h-14 mx-auto rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
+          <Layers className="w-7 h-7" />
+        </div>
+        <h4 className="text-base font-bold text-slate-800">Chưa có câu hỏi luyện tập</h4>
+        <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
+          Giáo viên chưa thiết lập câu hỏi luyện tập cho bài học này. Em có thể tiếp tục sang bước tiếp theo.
+        </p>
+        <div className="pt-2">
+          <button
+            onClick={onNavigateToNext}
+            className="px-8 py-3.5 bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-600 hover:to-emerald-600 text-white font-extrabold text-xs sm:text-sm rounded-xl transition-all shadow-lg shadow-teal-500/30 flex items-center justify-center gap-2 cursor-pointer mx-auto"
+          >
+            <span>Tiếp tục sang {nextStepLabel}</span>
+            <ChevronRight className="w-4 h-4" />
+          </button>
         </div>
       </div>
     );
