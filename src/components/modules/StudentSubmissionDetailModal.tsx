@@ -10,8 +10,10 @@ import {
   RotateCcw,
   Check,
   FileQuestion,
-  HelpCircle
+  HelpCircle,
+  Download
 } from 'lucide-react';
+import { downloadStudentSubmissionPdf } from '../../services/studentSubmissionPdfService';
 import { QuestionItem } from '../../types';
 import { 
   formatScore, 
@@ -154,6 +156,7 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<boolean>(false);
+  const [isExportingPdf, setIsExportingPdf] = useState<boolean>(false);
 
   // Student identification
   const studentName = studentSubmission?.studentName || 
@@ -519,6 +522,30 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
     }
   };
 
+  // 7. XỬ LÝ TẢI BÀI LÀM (PDF)
+  const handleExportPdf = async () => {
+    if (isExportingPdf) return;
+    try {
+      setIsExportingPdf(true);
+      await downloadStudentSubmissionPdf({
+        targetItem,
+        studentName,
+        studentCode,
+        className: targetItem?.targetClass || studentSubmission?.targetClass,
+        submittedTime,
+        attempts: studentSubmission?.attempts || 1,
+        evaluations,
+        stats,
+        mode
+      });
+    } catch (err: any) {
+      console.error('Lỗi khi tạo file PDF:', err);
+      alert(`Không thể tạo file PDF: ${err?.message || String(err)}`);
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -541,13 +568,35 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
             </div>
           </div>
 
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-xl hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-all cursor-pointer"
-            title="Đóng"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={handleExportPdf}
+              disabled={isExportingPdf}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm whitespace-nowrap disabled:opacity-60"
+              title="Tải toàn bộ bài làm của học sinh này dưới dạng file PDF"
+            >
+              {isExportingPdf ? (
+                <>
+                  <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  <span>Đang tạo file...</span>
+                </>
+              ) : (
+                <>
+                  <Download className="w-4 h-4" />
+                  <span>Tải bài làm (PDF)</span>
+                </>
+              )}
+            </button>
+
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-xl hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-all cursor-pointer"
+              title="Đóng"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* 2. SUB-HEADER NOTE */}

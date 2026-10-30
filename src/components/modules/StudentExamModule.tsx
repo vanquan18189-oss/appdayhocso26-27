@@ -1545,8 +1545,6 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
 
                 transaction.update(examRef, {
                   submissions: deduplicatedDocSubs,
-                  submissionsCount: count,
-                  completedCount: count,
                   updatedAt: new Date().toISOString()
                 });
               });
@@ -1579,11 +1577,8 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                   });
                   origFiltered.unshift(fullExamRecord);
                   const deduplicatedOrigSubs = deduplicateExamSubmissions(origFiltered);
-                  const uniqueKeys = new Set(deduplicatedOrigSubs.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean));
                   transaction.update(origExamRef, {
                     submissions: deduplicatedOrigSubs,
-                    submissionsCount: uniqueKeys.size,
-                    completedCount: uniqueKeys.size,
                     updatedAt: new Date().toISOString()
                   });
                 });
@@ -1615,11 +1610,8 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                   });
                   asFiltered.unshift(fullExamRecord);
                   const deduplicatedAsSubs = deduplicateExamSubmissions(asFiltered);
-                  const uniqueAsKeys = new Set(deduplicatedAsSubs.map((s: any) => (s.studentId || s.studentCode || s.maHs || '').trim().toLowerCase()).filter(Boolean));
                   transaction.update(asRef, {
                     submissions: deduplicatedAsSubs,
-                    submissionsCount: uniqueAsKeys.size,
-                    completedCount: uniqueAsKeys.size,
                     updatedAt: new Date().toISOString()
                   });
                 });
@@ -2391,8 +2383,6 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
 
                 transaction.update(examRef, {
                   submissions: deduplicatedDocSubs,
-                  submissionsCount: count,
-                  completedCount: count,
                   updatedAt: new Date().toISOString()
                 });
               });
@@ -2425,11 +2415,8 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                   });
                   origFiltered.unshift(fullExamRecord);
                   const deduplicatedOrigSubs = deduplicateExamSubmissions(origFiltered);
-                  const uniqueKeys = new Set(deduplicatedOrigSubs.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean));
                   transaction.update(origExamRef, {
                     submissions: deduplicatedOrigSubs,
-                    submissionsCount: uniqueKeys.size,
-                    completedCount: uniqueKeys.size,
                     updatedAt: new Date().toISOString()
                   });
                 });
@@ -2461,11 +2448,8 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                   });
                   asFiltered.unshift(fullExamRecord);
                   const deduplicatedAsSubs = deduplicateExamSubmissions(asFiltered);
-                  const uniqueAsKeys = new Set(deduplicatedAsSubs.map((s: any) => (s.studentId || s.studentCode || s.maHs || '').trim().toLowerCase()).filter(Boolean));
                   transaction.update(asRef, {
                     submissions: deduplicatedAsSubs,
-                    submissionsCount: uniqueAsKeys.size,
-                    completedCount: uniqueAsKeys.size,
                     updatedAt: new Date().toISOString()
                   });
                 });

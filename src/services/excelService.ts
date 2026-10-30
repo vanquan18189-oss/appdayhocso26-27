@@ -1,6 +1,9 @@
 import * as XLSX from 'xlsx';
 import { QuestionItem, ExamPaper, StudentRecord } from '../types';
 import { formatScore, formatTotalScore, roundTotalScore, formatSubmissionDateTime } from '../utils/scoreUtils';
+import { getExamCompletion } from './examCompletionService';
+import { getStudentsFromLocalStorage, generateDefaultClassRoster, getClassStudentCount } from './studentStorageService';
+import { formatStandardStudentCode, normalizeStudentCode } from './studentCode';
 
 /**
  * Utility helper to trigger binary .xlsx file download in the browser
@@ -806,16 +809,17 @@ export function downloadExamMatrixTemplate() {
 export function exportExamToExcel(exam: ExamPaper) {
   const wb = XLSX.utils.book_new();
 
-  const numQuestions = 9; // Fallback to 9
-  
-  const questionHeaders = [];
+  const numQuestions = exam.questions?.length || 5;
+  const questionHeaders: string[] = [];
   for (let i = 1; i <= numQuestions; i++) {
     questionHeaders.push(`Câu ${i}`);
   }
 
   const headers = [
+    'STT',
     'Mã Học Sinh',
     'Tên Học Sinh',
+    'Lớp',
     'Ngày Sinh',
     'Trạng Thái',
     ...questionHeaders,
@@ -824,93 +828,81 @@ export function exportExamToExcel(exam: ExamPaper) {
     'Thời gian nộp'
   ];
 
-  const targetClasses = exam.targetClass ? exam.targetClass.split(',').map(c => c.trim()) : ['Lớp 3A'];
-  
-  // Standard 39 students for Lớp 3A mock
-  const mockStudentsData = [
-    { name: 'Hoàng Bảo An', dob: '21/12/2018', status: 'Đã nộp bài', score: 4, attempts: 1, time: '10:15:00 15/08/2026',
-      answers: ['Đúng', 'Đúng', 'Đúng', 'Sai', 'Sai', 'Sai', 'Sai', 'Đúng', 'Sai'] },
-    { name: 'Trần Bảo An', dob: '05/10/2018', status: 'Chưa nộp bài' },
-    { name: 'Nguyễn Nguyên Anh', dob: '09/09/2018', status: 'Chưa nộp bài' },
-    { name: 'Nguyễn Quốc Bảo', dob: '22/03/2018', status: 'Chưa nộp bài' },
-    { name: 'Tống Thị Quỳnh Chi', dob: '02/06/2018', status: 'Chưa nộp bài' },
-    { name: 'Vũ Ngọc Diệp', dob: '24/07/2018', status: 'Chưa nộp bài' },
-    { name: 'Mai Hải Đăng', dob: '17/07/2018', status: 'Chưa nộp bài' },
-    { name: 'Nguyễn Minh Đức', dob: '17/03/2018', status: 'Chưa nộp bài' },
-    { name: 'Hà Ngọc Hoa', dob: '29/04/2018', status: 'Chưa nộp bài' },
-    { name: 'Hà Việt Hoàng', dob: '30/10/2018', status: 'Chưa nộp bài' },
-    { name: 'Ngô Nhật Hưng', dob: '29/06/2018', status: 'Đã nộp bài', score: 4, attempts: 1, time: '10:17:01 15/08/2026',
-      answers: ['Đúng', 'Sai', 'Sai', 'Sai', 'Đúng', 'Đúng', 'Sai', 'Đúng', 'Sai'] },
-    { name: 'Nguyễn Bảo Khánh', dob: '04/11/2018', status: 'Chưa nộp bài' },
-    { name: 'Hoàng Tuấn Kiệt', dob: '03/03/2018', status: 'Chưa nộp bài' },
-    { name: 'Đỗ Diệu Linh', dob: '15/12/2018', status: 'Chưa nộp bài' },
-    { name: 'Phan Tú Linh', dob: '02/10/2018', status: 'Chưa nộp bài' },
-    { name: 'Hà Bảo Long', dob: '10/07/2018', status: 'Chưa nộp bài' },
-    { name: 'Hà Bảo Nam', dob: '10/01/2018', status: 'Chưa nộp bài' },
-    { name: 'Hà Duy Nam', dob: '11/05/2018', status: 'Chưa nộp bài' },
-    { name: 'Dương Bảo Ngân', dob: '07/07/2018', status: 'Chưa nộp bài' },
-    { name: 'Nguyễn Trung Nghĩa', dob: '17/04/2018', status: 'Chưa nộp bài' },
-    { name: 'Đào Thị Bích Ngọc', dob: '26/06/2018', status: 'Chưa nộp bài' },
-    { name: 'Phan Vũ Khánh Ngọc', dob: '27/06/2018', status: 'Chưa nộp bài' },
-    { name: 'Nguyễn Bình Nguyên', dob: '17/05/2018', status: 'Chưa nộp bài' },
-    { name: 'Đoàn Yến Nhi', dob: '09/02/2018', status: 'Chưa nộp bài' },
-    { name: 'Nguyễn Quỳnh Như', dob: '27/06/2018', status: 'Chưa nộp bài' },
-    { name: 'Lê Hải Phong', dob: '13/02/2018', status: 'Chưa nộp bài' },
-    { name: 'Hà Đại Phú', dob: '24/11/2018', status: 'Chưa nộp bài' },
-    { name: 'Đồng Xuân Phúc', dob: '05/01/2018', status: 'Chưa nộp bài' },
-    { name: 'Lê Quang Quân', dob: '18/08/2018', status: 'Chưa nộp bài' },
-    { name: 'Vũ Huy Thái', dob: '21/09/2018', status: 'Chưa nộp bài' },
-    { name: 'Nguyễn Ngọc Trâm', dob: '12/12/2018', status: 'Chưa nộp bài' },
-    { name: 'Hoàng Mai Trang', dob: '08/04/2018', status: 'Chưa nộp bài' },
-    { name: 'Hà Đình Tiến', dob: '19/11/2018', status: 'Chưa nộp bài' },
-    { name: 'Hoàng Khánh Vân', dob: '25/02/2018', status: 'Chưa nộp bài' },
-    { name: 'Vũ Hà Trang', dob: '03/07/2018', status: 'Chưa nộp bài' },
-    { name: 'Trịnh Bảo Trâm', dob: '14/10/2018', status: 'Chưa nộp bài' },
-    { name: 'Lý Nam Việt', dob: '28/05/2018', status: 'Chưa nộp bài' },
-    { name: 'Đinh Quốc Vượng', dob: '07/08/2018', status: 'Chưa nộp bài' },
-    { name: 'Phạm Xuân Yến', dob: '30/01/2018', status: 'Chưa nộp bài' }
-  ];
+  const targetClasses = exam.targetClass ? exam.targetClass.split(',').map(c => c.trim()).filter(Boolean) : ['Lớp 3C'];
 
   targetClasses.forEach(className => {
+    const cleanClass = className.replace(/^Lớp\s*/i, '').trim().toUpperCase();
+    const stdClassName = className.startsWith('Lớp ') ? className : `Lớp ${cleanClass}`;
+    const rawRoster = getStudentsFromLocalStorage(stdClassName) || generateDefaultClassRoster(stdClassName, 38);
+    const classRoster = rawRoster.map((st, idx) => ({
+      ...st,
+      stt: st.stt || (idx + 1),
+      code: formatStandardStudentCode(st.code, cleanClass, st.stt || (idx + 1)),
+      name: st.name || st.fullName || `Học sinh ${idx + 1}`,
+      fullName: st.fullName || st.name || `Học sinh ${idx + 1}`,
+      dob: st.dob || st.birthday || ''
+    }));
+
+    // Retrieve authentic completion stats using unified getExamCompletion
+    const completionStats = getExamCompletion(exam.id, className);
+    const subMap = new Map<string, any>();
+    completionStats.validSubmissions.forEach(sub => {
+      const codeKey = String(sub.standardizedStudentCode || sub.studentCode || sub.maHs || sub.code || '').toUpperCase();
+      if (codeKey) subMap.set(codeKey, sub);
+    });
+
     const sheetData: any[][] = [headers];
-    
-    mockStudentsData.forEach((student, index) => {
-      const stt = index + 1;
-      let maHsPrefix = className.toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (!maHsPrefix) maHsPrefix = '3a';
-      const maHs = `${maHsPrefix}${stt}`;
-      
+
+    classRoster.forEach((student, index) => {
+      const stt = student.stt || (index + 1);
+      const studentCode = student.code;
+      const sub = subMap.get(studentCode.toUpperCase());
+      const isSubmitted = Boolean(sub);
+
       const rowData: any[] = [
-        maHs,               // Mã Học Sinh
-        student.name,       // Tên Học Sinh
-        student.dob,        // Ngày Sinh
-        student.status      // Trạng Thái
+        stt,
+        studentCode,
+        student.fullName,
+        stdClassName,
+        student.dob || '',
+        isSubmitted ? 'Đã nộp bài' : 'Chưa nộp bài'
       ];
 
       for (let i = 0; i < numQuestions; i++) {
-        if (student.status === 'Đã nộp bài' && student.answers && student.answers[i]) {
-          rowData.push(student.answers[i]);
+        if (isSubmitted && sub?.answers) {
+          const ans = sub.answers[i];
+          if (ans !== undefined && ans !== null) {
+            rowData.push(typeof ans === 'object' ? JSON.stringify(ans) : String(ans));
+          } else {
+            rowData.push('Đã làm');
+          }
         } else {
           rowData.push('Chưa làm');
         }
       }
 
+      const rawScore = isSubmitted ? (sub.score !== undefined ? sub.score : sub.totalScore) : null;
+      let displayScore = 'Chưa thi';
+      if (rawScore !== null && rawScore !== undefined) {
+        displayScore = typeof rawScore === 'number' ? formatTotalScore(rawScore) : String(rawScore);
+      }
+
       rowData.push(
-        student.score !== undefined ? formatTotalScore(student.score) : 'Chưa thi',  // Tổng điểm
-        student.attempts !== undefined ? student.attempts : 0,     // Số lần làm
-        student.time || ''                                         // Thời gian nộp
+        displayScore,
+        isSubmitted ? (sub.attempts || 1) : 0,
+        isSubmitted ? formatSubmissionDateTime(sub.submittedAt || sub.submittedTime || '') : ''
       );
 
       sheetData.push(rowData);
     });
 
     const ws = XLSX.utils.aoa_to_sheet(sheetData);
-    const colWidths = [12, 25, 12, 15, ...Array(numQuestions).fill(10), 10, 10, 20];
+    const colWidths = [6, 14, 25, 10, 12, 15, ...Array(numQuestions).fill(10), 12, 10, 22];
     setWorksheetColWidths(ws, colWidths);
     XLSX.utils.book_append_sheet(wb, ws, className);
   });
 
-  const cleanExamName = exam.title.replace(/[\s\/:*?"<>|]+/g, '_');
+  const cleanExamName = (exam.title || 'De_Kiem_Tra').replace(/[\s\/:*?"<>|]+/g, '_');
   const classNamesCleaned = targetClasses.map(c => c.replace(/[\s\/:*?"<>|]+/g, '_')).join('_');
   saveWorkbookAsExcel(wb, `Bao_cao_thi_kiem_tra_${cleanExamName}_${classNamesCleaned}.xlsx`);
 }

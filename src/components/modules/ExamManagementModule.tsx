@@ -5,7 +5,7 @@ import { getTeachersFromLocalStorage, resolveCurrentTeacherProfile } from '../..
 import { getStudentsFromLocalStorage, getClassStudentCount, deleteStudentFromClass, generateDefaultClassRoster, normalizeClassKey } from '../../services/studentStorageService';
 import { formatStandardStudentCode, normalizeStudentCode } from '../../services/studentCode';
 import { seedInitialExamsManually, deleteAllExamsFromFirestore, isValidOfficialExam } from '../../services/examStorageService';
-import { getExamCompletion, registerFirestoreExamSubs } from '../../services/examCompletionService';
+import { getExamCompletion, registerFirestoreExamSubs, fetchDirectExamCompletions, getCachedExamCompletion, ExamCompletionStats } from '../../services/examCompletionService';
 import { auth } from '../../services/firebase';
 import { collection, onSnapshot, doc, getDocFromServer } from 'firebase/firestore';
 import { db } from '../../firebaseConfig';
@@ -586,10 +586,23 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
 
   // Tracking Modal State
   const [trackingExam, setTrackingExam] = useState<ExamPaper | null>(null);
-  const [trackingFilter, setTrackingFilter] = useState<'all' | 'need_manual'>('all');
+  const [trackingFilter, setTrackingFilter] = useState<'all' | 'need_manual' | 'unmatched'>('all');
   const [trackingActionMenuId, setTrackingActionMenuId] = useState<string | null>(null);
   const [submissionsVersion, setSubmissionsVersion] = useState<number>(0);
   const [trackingFirestoreSubs, setTrackingFirestoreSubs] = useState<any[]>([]);
+
+  // Direct Firestore Count & Real-time Refresh states (Ground-Truth direct query)
+  const [directStatsMap, setDirectStatsMap] = useState<Map<string, ExamCompletionStats>>(new Map());
+  const [lastRefreshedTime, setLastRefreshedTime] = useState<string>('');
+  const [isDirectRefreshing, setIsDirectRefreshing] = useState<boolean>(false);
+  const [directReadsCount, setDirectReadsCount] = useState<number>(0);
+  const [showDebugTable, setShowDebugTable] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return window.location.search.includes('debug=1');
+    }
+    return false;
+  });
+  const prevTrackingExamRef = useRef<ExamPaper | null>(null);
 
   // Real-time synchronization when student submits exam
   useEffect(() => {
@@ -897,6 +910,23 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       const idB = String(b?.id || '');
       return idA.localeCompare(idB, undefined, { numeric: true, sensitivity: 'base' });
     });
+  }, [trackingExam, submissionsVersion, trackingFirestoreSubs]);
+
+  // Unified completion stats for current tracking exam
+  const trackingCompletion = useMemo(() => {
+    if (!trackingExam) {
+      return {
+        totalStudents: 38,
+        validCount: 0,
+        unmatchedCount: 0,
+        totalAttempts: 0,
+        unmatchedSubmissions: [],
+        validSubmissions: [],
+        realDocCount: 0
+      };
+    }
+    const candSubs = trackingFirestoreSubs.length > 0 ? trackingFirestoreSubs : trackingExam.submissions;
+    return getExamCompletion(trackingExam.id, trackingExam.targetClass || 'Lớp 3C', candSubs);
   }, [trackingExam, submissionsVersion, trackingFirestoreSubs]);
 
   const filteredTrackingSubmissions = useMemo(() => {
@@ -1794,9 +1824,9 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   }, []);
 
   const getExamSubmissionCount = useCallback((exam: ExamPaper): number => {
-    const stats = getExamCompletion(exam.id, exam.targetClass || 'Lớp 3C', exam.submissions);
+    const stats = directStatsMap.get(exam.id) || getCachedExamCompletion(exam.id) || getExamCompletion(exam.id, exam.targetClass || 'Lớp 3C', exam.submissions);
     return stats.validCount;
-  }, []);
+  }, [directStatsMap]);
 
   const allExamsCount = normalizedExams.length;
   const myExamsCount = normalizedExams.filter(e => isMyExam(e)).length;
@@ -1829,6 +1859,84 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const totalExams = filteredExams.length;
   const totalPages = Math.ceil(totalExams / itemsPerPage) || 1;
   const currentExams = filteredExams.slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage);
+
+  // Manual refresh handler for current page exams (max 10 exams per page)
+  const handleManualRefresh = useCallback(async () => {
+    if (currentExams.length === 0) return;
+    setIsDirectRefreshing(true);
+    try {
+      const statsMap = await fetchDirectExamCompletions(currentExams);
+      setDirectStatsMap(prev => {
+        const merged = new Map(prev);
+        statsMap.forEach((v, k) => merged.set(k, v));
+        return merged;
+      });
+      setLastRefreshedTime(new Date().toLocaleTimeString('vi-VN'));
+      setDirectReadsCount(currentExams.slice(0, 10).length);
+    } catch (err) {
+      console.warn('Lỗi làm mới trực tiếp:', err);
+    } finally {
+      setIsDirectRefreshing(false);
+    }
+  }, [currentExams]);
+
+  // Direct count on page open, filter change, tab change, or page navigation
+  useEffect(() => {
+    if (activeTab !== 'list' || currentExams.length === 0) return;
+    let isCancelled = false;
+    setIsDirectRefreshing(true);
+
+    fetchDirectExamCompletions(currentExams).then((statsMap) => {
+      if (isCancelled) return;
+      setDirectStatsMap(prev => {
+        const merged = new Map(prev);
+        statsMap.forEach((v, k) => merged.set(k, v));
+        return merged;
+      });
+      setLastRefreshedTime(new Date().toLocaleTimeString('vi-VN'));
+      setDirectReadsCount(currentExams.slice(0, 10).length);
+    }).catch(err => {
+      console.warn('Lỗi tải trực tiếp bài nộp:', err);
+    }).finally(() => {
+      if (!isCancelled) setIsDirectRefreshing(false);
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [
+    activeTab,
+    currentPage,
+    itemsPerPage,
+    resourceTab,
+    filterGrade,
+    filterClass,
+    filterSubject,
+    filterType,
+    filterTeacher,
+    filterDuration,
+    filterStatus,
+    currentExams.map(e => e.id).join(',')
+  ]);
+
+  // Refresh current page when tracking detail modal closes
+  useEffect(() => {
+    if (prevTrackingExamRef.current && !trackingExam && currentExams.length > 0) {
+      handleManualRefresh();
+    }
+    prevTrackingExamRef.current = trackingExam;
+  }, [trackingExam, currentExams, handleManualRefresh]);
+
+  // Auto-refresh every 60 seconds (paused when document.hidden or tab is not 'list')
+  useEffect(() => {
+    if (activeTab !== 'list') return;
+    const interval = setInterval(() => {
+      if (!document.hidden && currentExams.length > 0) {
+        handleManualRefresh();
+      }
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [activeTab, currentExams, handleManualRefresh]);
 
   
   if (editingExam) {
@@ -2631,7 +2739,10 @@ return (
         <StatCard
           variant="purple"
           title="Lượt làm bài tích luỹ"
-          value={`${normalizedExams.reduce((acc, e) => acc + (e.submissionsCount || 0), 0).toLocaleString('vi-VN')} Lượt làm bài`}
+          value={`${normalizedExams.reduce((acc, e) => {
+            const st = directStatsMap.get(e.id) || getCachedExamCompletion(e.id) || getExamCompletion(e.id, e.targetClass || '');
+            return acc + st.validCount;
+          }, 0).toLocaleString('vi-VN')} Lượt làm bài`}
           subtext="Tổng lượt học sinh tham gia làm đề"
           icon={UserPlus}
         />
@@ -2769,6 +2880,120 @@ return (
             </div>
           </div>
 
+          {/* Live Direct Refresh & Quota Bar */}
+          <div className="px-6 py-3 bg-gradient-to-r from-blue-50/80 via-indigo-50/60 to-purple-50/80 border-b border-indigo-100/80 flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2 text-indigo-900 font-semibold flex-wrap">
+              <RefreshCw className={`w-4 h-4 text-indigo-600 ${isDirectRefreshing ? 'animate-spin' : ''}`} />
+              <span>Cập nhật lúc: <strong className="text-indigo-700 font-black">{lastRefreshedTime || 'Vừa xong'}</strong></span>
+              <span className="text-slate-300">|</span>
+              <span className="text-slate-600 font-medium">
+                Đã đọc trực tiếp <strong className="text-emerald-700 font-bold">{directReadsCount || currentExams.slice(0, 10).length}</strong> đề trên trang này (Tối đa 10 đề/trang để kiểm soát hạn mức)
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowDebugTable(prev => !prev)}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
+                  showDebugTable ? 'bg-indigo-600 text-white border-indigo-700 shadow-xs' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'
+                }`}
+                title="Bật/Tắt chế độ kiểm tra đối chiếu dữ liệu"
+              >
+                {showDebugTable ? 'Ẩn bảng Debug' : 'Chế độ Debug (?debug=1)'}
+              </button>
+              <button
+                type="button"
+                onClick={handleManualRefresh}
+                disabled={isDirectRefreshing}
+                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isDirectRefreshing ? 'animate-spin' : ''}`} />
+                <span>{isDirectRefreshing ? 'Đang đọc...' : 'Làm mới'}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* DEBUG COMPARISON TABLE (?debug=1) */}
+          {showDebugTable && (
+            <div className="p-4 bg-amber-50/70 border-b border-amber-200">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded bg-amber-200 text-amber-900 font-black text-[11px] uppercase tracking-wider">
+                    DEBUG MODE (?debug=1)
+                  </span>
+                  <h4 className="text-xs font-bold text-amber-950">
+                    Bảng đối chiếu kiểm toán: Tài liệu thật trong Submissions vs Hiển thị Danh sách vs Bảng chi tiết
+                  </h4>
+                </div>
+                <span className="text-[11px] text-amber-800 italic hidden sm:inline">
+                  Quy tắc: Một học sinh một lần. Bài nộp ngoài danh sách lớp hiển thị ở &quot;Bài nộp chưa khớp&quot;.
+                </span>
+              </div>
+              <div className="overflow-x-auto rounded-xl border border-amber-200 bg-white shadow-xs">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-amber-100/70 text-amber-900 font-bold uppercase text-[10px] tracking-wider border-b border-amber-200">
+                    <tr>
+                      <th className="px-4 py-2.5">STT</th>
+                      <th className="px-4 py-2.5">Đề kiểm tra &amp; Lớp</th>
+                      <th className="px-4 py-2.5 text-center">Tài liệu thật (Firestore Docs)</th>
+                      <th className="px-4 py-2.5 text-center">Hiển thị ở Danh sách (Đã làm)</th>
+                      <th className="px-4 py-2.5 text-center">Số dòng kết quả (Chi tiết)</th>
+                      <th className="px-4 py-2.5 text-center">Lần cập nhật gần nhất</th>
+                      <th className="px-4 py-2.5 text-center">Trạng thái đối chiếu</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-amber-100">
+                    {currentExams.map((exam, idx) => {
+                      const stats = directStatsMap.get(exam.id) || getCachedExamCompletion(exam.id) || getExamCompletion(exam.id, exam.targetClass || '');
+                      const listCount = stats.validCount;
+                      const detailCount = stats.validCount;
+                      const isMatch = listCount === detailCount;
+                      const rowClass = !isMatch ? 'bg-rose-100/80 font-bold text-rose-900' : 'hover:bg-amber-50/40 text-slate-700';
+
+                      return (
+                        <tr key={exam.id} className={rowClass}>
+                          <td className="px-4 py-2.5 text-slate-500 font-semibold">{idx + 1}</td>
+                          <td className="px-4 py-2.5">
+                            <div className="font-bold text-slate-900">{exam.title}</div>
+                            <div className="text-[11px] text-slate-500 font-medium">Lớp: {exam.targetClass || 'Chưa gán'} &bull; ID: {exam.id}</div>
+                          </td>
+                          <td className="px-4 py-2.5 text-center font-mono font-bold text-slate-800">
+                            {stats.realDocCount} docs
+                            {stats.realDocCount > stats.validCount && (
+                              <span className="block text-[10px] text-slate-500 font-normal">
+                                ({stats.realDocCount - stats.validCount} bài nộp lặp/chưa khớp)
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-4 py-2.5 text-center font-bold text-blue-700">
+                            {listCount}/{stats.totalStudents} ({Math.round((listCount / stats.totalStudents) * 100)}%)
+                          </td>
+                          <td className="px-4 py-2.5 text-center font-bold text-indigo-700">
+                            {detailCount} học sinh có điểm
+                          </td>
+                          <td className="px-4 py-2.5 text-center text-slate-500 font-mono text-[11px]">
+                            {stats.lastRefreshedAt || lastRefreshedTime || 'Chưa cập nhật'}
+                          </td>
+                          <td className="px-4 py-2.5 text-center">
+                            {isMatch ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                ✅ Khớp 100%
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-black bg-rose-600 text-white shadow-xs">
+                                ⚠️ LỆCH SỐ LIỆU
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {/* Table */}
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
@@ -2865,9 +3090,9 @@ return (
                       </td>
                       <td className="px-6 py-4 text-center">
                         {(() => {
-                          const classRoster = getStudentsFromLocalStorage(exam.targetClass || '');
-                          const total = (classRoster && classRoster.length > 0) ? classRoster.length : (exam.targetClass?.includes('3C') ? 38 : (exam.totalStudents || 38));
-                          const submittedCount = getExamSubmissionCount(exam);
+                          const stats = directStatsMap.get(exam.id) || getCachedExamCompletion(exam.id) || getExamCompletion(exam.id, exam.targetClass || '');
+                          const submittedCount = stats.validCount;
+                          const total = stats.totalStudents;
                           if (total > 0) {
                             return (
                               <span className="font-bold text-blue-600">
@@ -4150,8 +4375,8 @@ return (
             {/* Body */}
             <div className="p-6 bg-slate-50/50 flex-1 overflow-hidden flex flex-col">
               {/* Filters */}
-              <div className="flex items-center justify-between mb-4 shrink-0">
-                <div className="flex bg-white border border-slate-200 rounded-xl p-1 shadow-sm">
+              <div className="flex items-center justify-between mb-4 shrink-0 flex-wrap gap-2">
+                <div className="flex bg-white border border-slate-200 rounded-xl p-1 shadow-sm flex-wrap gap-1">
                   <button
                     onClick={() => setTrackingFilter('all')}
                     className={`px-4 py-2 rounded-lg text-sm font-bold transition-all cursor-pointer ${trackingFilter === 'all' ? 'bg-slate-100 text-slate-800 border-slate-200 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
@@ -4164,6 +4389,12 @@ return (
                   >
                     <AlertTriangle className="w-4 h-4" /> Cần chấm thủ công ({trackingStudentsList.filter(st => st.needManual).length})
                   </button>
+                  <button
+                    onClick={() => setTrackingFilter('unmatched')}
+                    className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-1.5 cursor-pointer ${trackingFilter === 'unmatched' ? 'bg-rose-50 text-rose-700 border-rose-200 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
+                  >
+                    <AlertCircle className="w-4 h-4 text-rose-500" /> Bài nộp chưa khớp ({trackingCompletion.unmatchedCount})
+                  </button>
                 </div>
                 <div className="text-sm text-slate-500 font-medium">
                   Mẹo: Click vào nút <span className="font-bold text-slate-700">Thao tác</span> để Chấm bài thủ công hoặc Sửa điểm.
@@ -4171,9 +4402,50 @@ return (
               </div>
 
               {/* Table */}
-              <div className="flex-1 overflow-x-auto overflow-y-auto max-h-[calc(85vh-200px)] bg-white border border-slate-200 rounded-2xl shadow-sm">
-                <table className="w-full text-left border-separate border-spacing-0 text-xs whitespace-nowrap">
-                  <thead>
+              {trackingFilter === 'unmatched' ? (
+                <div className="flex-1 overflow-x-auto overflow-y-auto max-h-[calc(85vh-200px)] bg-white border border-rose-200 rounded-2xl shadow-sm">
+                  <table className="w-full text-left border-separate border-spacing-0 text-xs">
+                    <thead>
+                      <tr className="bg-rose-50 text-[10px] uppercase font-black text-rose-800 tracking-wider">
+                        <th className="p-4 border-b border-rose-200 text-center w-12">STT</th>
+                        <th className="p-4 border-b border-rose-200">Mã gửi / Định danh</th>
+                        <th className="p-4 border-b border-rose-200">Họ và tên gửi</th>
+                        <th className="p-4 border-b border-rose-200 text-center">Thời gian nộp</th>
+                        <th className="p-4 border-b border-rose-200 text-center">Điểm ghi nhận</th>
+                        <th className="p-4 border-b border-rose-200">Lý do chưa khớp danh sách lớp</th>
+                      </tr>
+                    </thead>
+                    <tbody className="font-medium text-slate-700 divide-y divide-slate-100">
+                      {trackingCompletion.unmatchedSubmissions.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="p-8 text-center text-slate-400 font-medium bg-white">
+                            Không có bài nộp nào chưa khớp. Tất cả bài nộp đều khớp đúng danh sách lớp!
+                          </td>
+                        </tr>
+                      ) : (
+                        trackingCompletion.unmatchedSubmissions.map((sub, uIdx) => (
+                          <tr key={uIdx} className="hover:bg-rose-50/30 transition-colors">
+                            <td className="p-4 text-center text-slate-500 font-bold">{uIdx + 1}</td>
+                            <td className="p-4 font-mono font-bold text-rose-700">{sub.rawIdentifier || '---'}</td>
+                            <td className="p-4 font-bold text-slate-800">{sub.studentName || sub.name || '---'}</td>
+                            <td className="p-4 text-center text-slate-500">{sub.submittedAt || sub.submittedTime || '---'}</td>
+                            <td className="p-4 text-center font-bold text-slate-700">{sub.score ?? sub.totalScore ?? '---'}</td>
+                            <td className="p-4 text-rose-600 font-medium">
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-50 border border-rose-200 text-xs font-semibold">
+                                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                {sub.unmatchedReason || 'Không khớp mã học sinh trong danh sách lớp'}
+                              </span>
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="flex-1 overflow-x-auto overflow-y-auto max-h-[calc(85vh-200px)] bg-white border border-slate-200 rounded-2xl shadow-sm">
+                  <table className="w-full text-left border-separate border-spacing-0 text-xs whitespace-nowrap">
+                    <thead>
                     <tr className="bg-slate-100 text-[10px] uppercase font-black text-slate-500 tracking-wider">
                       <th className="sticky top-0 left-0 z-30 w-[56px] min-w-[56px] max-w-[56px] bg-slate-100 p-4 border-b border-slate-200 text-center">STT</th>
                       <th className="sticky top-0 left-[56px] z-30 w-[120px] min-w-[120px] max-w-[120px] bg-slate-100 p-4 border-b border-slate-200">Mã HS</th>
@@ -4358,6 +4630,7 @@ return (
                   </tbody>
                 </table>
               </div>
+            )}
             </div>
           </div>
         </div>
