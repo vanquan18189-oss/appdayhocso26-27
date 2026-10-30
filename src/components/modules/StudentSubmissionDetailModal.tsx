@@ -13,7 +13,7 @@ import {
   HelpCircle,
   Download
 } from 'lucide-react';
-import { downloadStudentSubmissionPdf } from '../../services/studentSubmissionPdfService';
+import { downloadStudentSubmissionWord } from '../../services/studentSubmissionWordService';
 import { QuestionItem } from '../../types';
 import { 
   formatScore, 
@@ -522,12 +522,12 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
     }
   };
 
-  // 7. XỬ LÝ TẢI BÀI LÀM (PDF)
-  const handleExportPdf = async () => {
+  // 7. XỬ LÝ TẢI BÀI LÀM (WORD)
+  const handleExportWord = async () => {
     if (isExportingPdf) return;
     try {
       setIsExportingPdf(true);
-      await downloadStudentSubmissionPdf({
+      await downloadStudentSubmissionWord({
         targetItem,
         studentName,
         studentCode,
@@ -539,8 +539,8 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
         mode
       });
     } catch (err: any) {
-      console.error('Lỗi khi tạo file PDF:', err);
-      alert(`Không thể tạo file PDF: ${err?.message || String(err)}`);
+      console.error('Lỗi khi tạo file Word:', err);
+      alert(`Không thể tạo file Word: ${err?.message || String(err)}`);
     } finally {
       setIsExportingPdf(false);
     }
@@ -571,20 +571,20 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
           <div className="flex items-center gap-2.5">
             <button
               type="button"
-              onClick={handleExportPdf}
+              onClick={handleExportWord}
               disabled={isExportingPdf}
               className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm whitespace-nowrap disabled:opacity-60"
-              title="Tải toàn bộ bài làm của học sinh này dưới dạng file PDF"
+              title="Tải toàn bộ bài làm của học sinh này dưới dạng file Word"
             >
               {isExportingPdf ? (
                 <>
                   <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>Đang tạo file...</span>
+                  <span>Đang tạo file Word...</span>
                 </>
               ) : (
                 <>
                   <Download className="w-4 h-4" />
-                  <span>Tải bài làm (PDF)</span>
+                  <span>Tải bài làm (Word)</span>
                 </>
               )}
             </button>

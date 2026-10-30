@@ -6,6 +6,7 @@ import { getStudentsFromLocalStorage, getClassStudentCount, deleteStudentFromCla
 import { formatStandardStudentCode, normalizeStudentCode } from '../../services/studentCode';
 import { seedInitialExamsManually, deleteAllExamsFromFirestore, isValidOfficialExam } from '../../services/examStorageService';
 import { getExamCompletion, registerFirestoreExamSubs, fetchDirectExamCompletions, getCachedExamCompletion, ExamCompletionStats } from '../../services/examCompletionService';
+import { downloadBulkSubmissionsZip } from '../../services/bulkSubmissionZipService';
 import { auth } from '../../services/firebase';
 import { collection, onSnapshot, doc, getDocFromServer } from 'firebase/firestore';
 import { db } from '../../firebaseConfig';
@@ -603,6 +604,46 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     return false;
   });
   const prevTrackingExamRef = useRef<ExamPaper | null>(null);
+
+  // Bulk ZIP Export states
+  const [isZipModalOpen, setIsZipModalOpen] = useState<boolean>(false);
+  const [zipScope, setZipScope] = useState<'all' | 'filtered'>('all');
+  const [zipAttemptMode, setZipAttemptMode] = useState<'highest_score' | 'latest'>('highest_score');
+  const [isZipping, setIsZipping] = useState<boolean>(false);
+  const [zipProgressText, setZipProgressText] = useState<string>('');
+
+  const handleBulkZipDownload = async () => {
+    if (!trackingExam || isZipping) return;
+    try {
+      setIsZipping(true);
+      setZipProgressText('Đang chuẩn bị dữ liệu...');
+
+      const studentsToExport = zipScope === 'filtered' ? filteredTrackingSubmissions : trackingStudentsList;
+
+      const { successCount, errors } = await downloadBulkSubmissionsZip({
+        trackingExam,
+        studentsList: studentsToExport,
+        scope: zipScope,
+        attemptMode: zipAttemptMode,
+        onProgress: (current, total, name) => {
+          setZipProgressText(`Đang tạo file... (${current}/${total}) - ${name}`);
+        }
+      });
+
+      if (errors.length > 0) {
+        alert(`Đã tải thành công ${successCount} bài, có ${errors.length} bài lỗi: ${errors.map(e => e.name).join(', ')}`);
+      } else {
+        alert(`Đã tạo và tải thành công tất cả ${successCount} bài làm vào file ZIP!`);
+      }
+      setIsZipModalOpen(false);
+    } catch (err: any) {
+      console.error('Lỗi tạo file ZIP:', err);
+      alert(`Không thể tạo file ZIP: ${err?.message || String(err)}`);
+    } finally {
+      setIsZipping(false);
+      setZipProgressText('');
+    }
+  };
 
   // Real-time synchronization when student submits exam
   useEffect(() => {
@@ -4358,6 +4399,14 @@ return (
                   </button>
                 )}
                 <button
+                  type="button"
+                  onClick={() => setIsZipModalOpen(true)}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm whitespace-nowrap"
+                  title="Tải tất cả bài làm của học sinh dưới dạng file ZIP (Word + Excel tổng hợp)"
+                >
+                  <Download className="w-4 h-4" /> Tải tất cả bài làm (ZIP)
+                </button>
+                <button
                   onClick={() => handleExportExcel(trackingExam)}
                   className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm whitespace-nowrap"
                 >
@@ -4636,6 +4685,83 @@ return (
         </div>
       )}
 
+      {/* Bulk ZIP Options Modal */}
+      {isZipModalOpen && (
+        <div className="fixed inset-0 z-[80] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col animate-scale-up">
+            <div className="bg-blue-600 p-5 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center">
+                  <Download className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black uppercase tracking-wide">Tải tất cả bài làm (ZIP)</h3>
+                  <p className="text-xs text-blue-100 font-medium">Định dạng Word (.docx) & Excel tổng hợp</p>
+                </div>
+              </div>
+              <button type="button" onClick={() => !isZipping && setIsZipModalOpen(false)} className="p-1 rounded-lg hover:bg-white/10 text-white cursor-pointer">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5 text-xs sm:text-sm">
+              <div className="space-y-2">
+                <label className="block font-bold text-slate-700">1. Lựa chọn phạm vi bài làm:</label>
+                <div className="space-y-2 pl-1">
+                  <label className="flex items-center gap-2 cursor-pointer font-medium text-slate-700">
+                    <input type="radio" name="zipScope" checked={zipScope === 'all'} onChange={() => setZipScope('all')} className="text-blue-600" />
+                    <span>Tải tất cả học sinh đã nộp bài trong lớp ({trackingStudentsList.filter(s => s.status === 'submitted' || s.totalScore !== null).length} bài)</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer font-medium text-slate-700">
+                    <input type="radio" name="zipScope" checked={zipScope === 'filtered'} onChange={() => setZipScope('filtered')} className="text-blue-600" />
+                    <span>Chỉ tải các bài đang hiển thị trong bộ lọc ({filteredTrackingSubmissions.filter(s => s.status === 'submitted' || s.totalScore !== null).length} bài)</span>
+                  </label>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="block font-bold text-slate-700">2. Tùy chọn lần làm bài:</label>
+                <div className="space-y-2 pl-1">
+                  <label className="flex items-center gap-2 cursor-pointer font-medium text-slate-700">
+                    <input type="radio" name="zipAttemptMode" checked={zipAttemptMode === 'highest_score'} onChange={() => setZipAttemptMode('highest_score')} className="text-blue-600" />
+                    <span>Lấy lần làm có điểm cao nhất (Mặc định)</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer font-medium text-slate-700">
+                    <input type="radio" name="zipAttemptMode" checked={zipAttemptMode === 'latest'} onChange={() => setZipAttemptMode('latest')} className="text-blue-600" />
+                    <span>Lấy lần làm gần nhất</span>
+                  </label>
+                </div>
+              </div>
+
+              {isZipping && (
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl flex items-center gap-3 text-blue-800 font-bold">
+                  <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin shrink-0" />
+                  <span>{zipProgressText || 'Đang nén file ZIP...'}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 border-t border-slate-100 bg-slate-50 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setIsZipModalOpen(false)}
+                disabled={isZipping}
+                className="px-4 py-2 border border-slate-200 text-slate-600 hover:bg-slate-100 font-bold text-xs rounded-xl transition-colors bg-white cursor-pointer disabled:opacity-50"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                type="button"
+                onClick={handleBulkZipDownload}
+                disabled={isZipping}
+                className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl transition-colors shadow-sm flex items-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                {isZipping ? 'Đang xử lý...' : 'Tải file ZIP'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Stats Modal */}
       {/* Stats Modal */}
