@@ -497,6 +497,15 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
       }
     }
 
+    // Immediately synchronize answered checkpoints progress so parent state is updated in real time
+    if (onSaveCheckpoint && Object.keys(answeredCheckpoints).length > 0) {
+      const firstCpId = Object.keys(answeredCheckpoints)[0];
+      const entry = answeredCheckpoints[firstCpId];
+      if (entry) {
+        onSaveCheckpoint(firstCpId, entry, answeredCheckpoints);
+      }
+    }
+
     // Safety Fallback: Always open summary modal immediately when button is clicked
     setPlayerState('showing-summary');
   };

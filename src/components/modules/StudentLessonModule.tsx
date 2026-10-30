@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Sparkles, 
   BookOpen, 
@@ -61,6 +61,7 @@ import {
   getNextStepLabel,
   saveStudentLessonProgress,
   getStudentLessonProgress,
+  fetchStudentProgress,
   subscribeStudentLessonProgress
 } from './LessonFlowController';
 
@@ -114,6 +115,15 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
   // Realtime progress subscription for selected lesson
   const [liveProgress, setLiveProgress] = useState<any>(null);
 
+  // Helper to force-refresh student progress into local state immediately
+  const refreshStudentProgress = useCallback((explicitData?: any) => {
+    if (!selectedLesson?.id || !currentUserId) return;
+    const latest = explicitData || fetchStudentProgress(currentUserId, selectedLesson.id);
+    if (latest) {
+      setLiveProgress(latest);
+    }
+  }, [selectedLesson?.id, currentUserId]);
+
   useEffect(() => {
     if (!selectedLesson?.id || !currentUserId) {
       setLiveProgress(null);
@@ -125,12 +135,27 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
     return () => unsub();
   }, [selectedLesson?.id, currentUserId]);
 
+  // Window event listener for instantaneous local cross-component progress changes
+  useEffect(() => {
+    const handleProgressUpdate = (e: any) => {
+      const detail = e.detail;
+      if (detail && selectedLesson?.id && (detail.lessonId === selectedLesson.id || detail.key?.includes(selectedLesson.id))) {
+        setLiveProgress(detail.progress || getStudentLessonProgress(currentUserId, selectedLesson.id));
+      }
+    };
+    window.addEventListener('student_lesson_progress_updated', handleProgressUpdate);
+    return () => {
+      window.removeEventListener('student_lesson_progress_updated', handleProgressUpdate);
+    };
+  }, [selectedLesson?.id, currentUserId]);
+
   // Record that Engage step was genuinely viewed when student opens engage, intro or objectives
   useEffect(() => {
     if (selectedLesson?.id && currentUserId && (activeStepTab === 'engage' || activeStepTab === 'intro' || activeStepTab === 'objectives')) {
       saveStudentLessonProgress(currentUserId, selectedLesson.id, { engageViewed: true });
+      refreshStudentProgress();
     }
-  }, [selectedLesson?.id, activeStepTab, currentUserId]);
+  }, [selectedLesson?.id, activeStepTab, currentUserId, refreshStudentProgress]);
 
   const [completedLessons, setCompletedLessons] = useState<Record<string, boolean>>(() => {
     try {
@@ -363,6 +388,7 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
                           exploreCompleted: isCompleted,
                           engageViewed: true
                         });
+                        refreshStudentProgress();
                       }}
                       onComplete={(summaryData) => {
                         const accuracy = typeof summaryData?.accuracy === 'number' ? summaryData.accuracy : 100;
@@ -372,6 +398,7 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
                           exploreSummaryData: summaryData,
                           engageViewed: true
                         });
+                        refreshStudentProgress();
                         setIsRelearningExplore(false);
                         setActiveStepTab(getNextStepInLessonFlow('explore', selectedLesson));
                       }}
@@ -391,12 +418,14 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
                 saveStudentLessonProgress(currentUserId, selectedLesson.id, { 
                   elaborate: { ...existing, isCompleted: true, score: existing.score ?? existing.practiceScore ?? null } 
                 });
+                refreshStudentProgress();
                 setActiveStepTab(getNextStepInLessonFlow('elaborate', selectedLesson));
               }}
               nextStepLabel={getNextStepLabel('elaborate', selectedLesson)}
               savedData={savedProgress.elaborate}
               onSaveProgress={(data) => {
                 saveStudentLessonProgress(currentUserId, selectedLesson.id, { elaborate: { ...data, isCompleted: true } });
+                refreshStudentProgress();
               }}
             />
           )}
@@ -411,12 +440,14 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
                 saveStudentLessonProgress(currentUserId, selectedLesson.id, { 
                   apply: { ...existing, isCompleted: true, isSubmitted: true } 
                 });
+                refreshStudentProgress();
                 setActiveStepTab(getNextStepInLessonFlow('apply', selectedLesson));
               }}
               nextStepLabel={getNextStepLabel('apply', selectedLesson)}
               savedData={savedProgress.apply}
               onSaveProgress={(data) => {
                 saveStudentLessonProgress(currentUserId, selectedLesson.id, { apply: { ...data, isCompleted: true, isSubmitted: true } });
+                refreshStudentProgress();
               }}
             />
           )}
@@ -429,12 +460,14 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
                 saveStudentLessonProgress(currentUserId, selectedLesson.id, { 
                   assessment: { ...existing, isCompleted: true, testScore: existing.testScore ?? null } 
                 });
+                refreshStudentProgress();
                 setActiveStepTab(getNextStepInLessonFlow('assessment', selectedLesson));
               }}
               nextStepLabel={getNextStepLabel('assessment', selectedLesson)}
               savedData={savedProgress.assessment}
               onSaveProgress={(data) => {
                 saveStudentLessonProgress(currentUserId, selectedLesson.id, { assessment: { ...data, isCompleted: true } });
+                refreshStudentProgress();
               }}
             />
           )}
@@ -489,8 +522,10 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
                     exploreAccuracy,
                     exploreCompleted: Boolean(savedProgress?.exploreCompleted),
                     elaborateScore,
+                    elaborateCompleted: Boolean(savedProgress?.elaborate?.isCompleted || typeof elaborateScore === 'number'),
                     applySubmitted,
                     assessmentScore,
+                    assessmentCompleted: Boolean(savedProgress?.assessment?.isCompleted || typeof assessmentScore === 'number'),
                     overallScore
                   }}
                   onRestartLesson={() => {
@@ -505,6 +540,7 @@ export const StudentLessonModule: React.FC<StudentLessonModuleProps> = ({
                       assessment: null,
                       updatedAt: new Date().toISOString()
                     });
+                    refreshStudentProgress();
                   }}
                   onBackToList={() => {
                     setSelectedLesson(null);

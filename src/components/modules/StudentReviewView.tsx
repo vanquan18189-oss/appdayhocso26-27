@@ -126,8 +126,10 @@ export interface Overall5EResults {
   exploreAccuracy?: number | null;
   exploreCompleted?: boolean;
   elaborateScore?: number | null;
+  elaborateCompleted?: boolean;
   applySubmitted?: boolean;
   assessmentScore?: number | null;
+  assessmentCompleted?: boolean;
   overallScore?: number | null;
 }
 
@@ -187,13 +189,13 @@ export const StudentReviewView: React.FC<StudentReviewViewProps> = ({
   const exploreAccuracyVal = hasExploreScore ? overallResults.exploreAccuracy : null;
 
   const hasElaborateScore = typeof overallResults.elaborateScore === 'number' && !isNaN(overallResults.elaborateScore);
-  const isElaborateCompleted = hasElaborateScore;
+  const isElaborateCompleted = Boolean(hasElaborateScore || overallResults.elaborateCompleted);
   const elaborateScoreVal = hasElaborateScore ? overallResults.elaborateScore : null;
 
   const isApplySubmitted = Boolean(overallResults.applySubmitted);
 
   const hasAssessmentScore = typeof overallResults.assessmentScore === 'number' && !isNaN(overallResults.assessmentScore);
-  const isAssessmentCompleted = hasAssessmentScore;
+  const isAssessmentCompleted = Boolean(hasAssessmentScore || overallResults.assessmentCompleted);
   const assessmentScoreVal = hasAssessmentScore ? overallResults.assessmentScore : null;
 
   // Count steps that were genuinely completed

@@ -278,6 +278,30 @@ const STORAGE_PREFIX = 'viet_elearning_student_progress_';
 const pendingDebounceTimers = new Map<string, any>();
 const lastSyncedPayloadMap = new Map<string, string>();
 
+// Pub-sub for in-memory instantaneous updates across components
+type ProgressCallback = (data: any | null) => void;
+const progressSubscribers = new Map<string, Set<ProgressCallback>>();
+
+export const notifyProgressSubscribers = (key: string, data: any) => {
+  const subs = progressSubscribers.get(key);
+  if (subs) {
+    subs.forEach(cb => {
+      try {
+        cb(data);
+      } catch (err) {
+        console.warn('Error notifying progress subscriber:', err);
+      }
+    });
+  }
+  if (typeof window !== 'undefined') {
+    try {
+      window.dispatchEvent(new CustomEvent('student_lesson_progress_updated', {
+        detail: { key, progress: data, studentId: data?.studentId, lessonId: data?.lessonId }
+      }));
+    } catch (_) {}
+  }
+};
+
 export const saveStudentLessonProgress = (
   studentId: string,
   lessonId: string,
@@ -297,16 +321,27 @@ export const saveStudentLessonProgress = (
     };
     localStorage.setItem(key, JSON.stringify(updated));
 
+    // Instant local notification so React state updates without waiting for network or logout!
+    notifyProgressSubscribers(key, updated);
+
     if (!db || !authenticId || !lessonId) return;
 
-    // Compare progress signature (exclude raw timestamp to avoid false diffs)
+    // Comprehensive progress signature that captures 5E activities and slide changes
     const progressSignature = JSON.stringify({
       currentSlide: updated.currentSlide ?? updated.slideIndex ?? 0,
       completed: !!updated.completed,
       score: updated.score ?? 0,
+      exploreCompleted: !!updated.exploreCompleted,
+      exploreAccuracy: updated.exploreAccuracy ?? null,
+      elaborateCompleted: !!(updated.elaborate?.isCompleted || updated.elaborate?.score !== undefined),
+      elaborateScore: updated.elaborate?.score ?? updated.elaborate?.practiceScore ?? null,
+      applySubmitted: !!(updated.apply?.isCompleted || updated.apply?.isSubmitted),
+      assessmentCompleted: !!(updated.assessment?.isCompleted || updated.assessment?.testScore !== undefined),
+      assessmentScore: updated.assessment?.testScore ?? updated.assessment?.score ?? null,
+      engageViewed: !!updated.engageViewed,
       completedSlides: updated.completedSlides || [],
       completionPercentage: updated.completionPercentage ?? 0,
-      totalTimeSpent: Math.floor((updated.totalTimeSpent || 0) / 10)
+      exploreCheckpointAnswersCount: Object.keys(updated.exploreCheckpointAnswers || {}).length
     });
 
     const lastSyncedSignature = lastSyncedPayloadMap.get(key);
@@ -334,10 +369,18 @@ export const saveStudentLessonProgress = (
       });
     };
 
-    if (updated.completed) {
+    // Fast sync: immediate for completed milestones, or fast 400ms debounce
+    const isMilestoneComplete = updated.completed || 
+      updated.exploreCompleted || 
+      updated.elaborate?.isCompleted || 
+      updated.apply?.isSubmitted || 
+      updated.apply?.isCompleted || 
+      updated.assessment?.isCompleted;
+
+    if (isMilestoneComplete) {
       performFirestoreSync();
     } else {
-      const timer = setTimeout(performFirestoreSync, 8000);
+      const timer = setTimeout(performFirestoreSync, 400);
       pendingDebounceTimers.set(key, timer);
     }
   } catch (err) {
@@ -362,6 +405,18 @@ export const getStudentLessonProgress = (
   }
 };
 
+export const fetchStudentProgress = (
+  studentId: string,
+  lessonId: string,
+  studentRecord?: any
+): any => {
+  const authenticId = getAuthenticStudentCode(studentRecord, studentId);
+  const key = `${STORAGE_PREFIX}${authenticId}_${lessonId}`;
+  const data = getStudentLessonProgress(authenticId, lessonId, studentRecord);
+  notifyProgressSubscribers(key, data);
+  return data;
+};
+
 export const fetchStudentLessonProgressAsync = async (
   studentId: string,
   lessonId: string
@@ -377,38 +432,55 @@ export const fetchStudentLessonProgressAsync = async (
         const local = getStudentLessonProgress(studentId, lessonId) || {};
         const merged = { ...local, ...firestoreData };
         localStorage.setItem(key, JSON.stringify(merged));
+        notifyProgressSubscribers(key, merged);
         return merged;
       }
     }
   } catch (err) {
     console.warn('Failed to fetch student lesson progress from Firestore', err);
   }
-  return getStudentLessonProgress(studentId, lessonId);
+  return fetchStudentProgress(studentId, lessonId);
 };
 
 export const subscribeStudentLessonProgress = (
   studentId: string,
   lessonId: string,
-  callback: (data: any | null) => void
+  callback: (data: any | null) => void,
+  studentRecord?: any
 ): (() => void) => {
-  // Send current local data immediately
-  const local = getStudentLessonProgress(studentId, lessonId);
+  const authenticId = getAuthenticStudentCode(studentRecord, studentId);
+  const key = `${STORAGE_PREFIX}${authenticId}_${lessonId}`;
+
+  // 1. Register callback in in-memory pub-sub
+  if (!progressSubscribers.has(key)) {
+    progressSubscribers.set(key, new Set());
+  }
+  progressSubscribers.get(key)!.add(callback);
+
+  // 2. Send current local data immediately
+  const local = getStudentLessonProgress(authenticId, lessonId, studentRecord);
   callback(local);
 
-  if (!db || !studentId || !lessonId) {
-    return () => {};
+  if (!db || !authenticId || !lessonId) {
+    return () => {
+      const subs = progressSubscribers.get(key);
+      if (subs) {
+        subs.delete(callback);
+        if (subs.size === 0) progressSubscribers.delete(key);
+      }
+    };
   }
 
+  let unsubFirestore = () => {};
   try {
-    const docId = getCleanProgressDocId(studentId, lessonId);
+    const docId = getCleanProgressDocId(authenticId, lessonId);
     const docRef = doc(db, ELEARNING_STUDENT_PROGRESS_COLLECTION, docId);
-    return onSnapshot(
+    unsubFirestore = onSnapshot(
       docRef,
       (snap) => {
         if (snap.exists()) {
           const firestoreData = snap.data();
-          const key = `${STORAGE_PREFIX}${studentId}_${lessonId}`;
-          const currentLocal = getStudentLessonProgress(studentId, lessonId) || {};
+          const currentLocal = getStudentLessonProgress(authenticId, lessonId, studentRecord) || {};
           const merged = { ...currentLocal, ...firestoreData };
           try {
             localStorage.setItem(key, JSON.stringify(merged));
@@ -422,8 +494,16 @@ export const subscribeStudentLessonProgress = (
     );
   } catch (err) {
     console.warn('Failed to attach Firestore snapshot for student progress:', err);
-    return () => {};
   }
+
+  return () => {
+    const subs = progressSubscribers.get(key);
+    if (subs) {
+      subs.delete(callback);
+      if (subs.size === 0) progressSubscribers.delete(key);
+    }
+    unsubFirestore();
+  };
 };
 
 export const clearStudentLessonProgress = (
