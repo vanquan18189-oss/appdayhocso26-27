@@ -458,29 +458,47 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
   // Handle clicking "XEM TỔNG KẾT & GHI NHỚ NGAY"
   const handleViewSummaryClick = () => {
     const answeredCount = Object.keys(answeredCheckpoints).length;
+    const allAnswered = totalQuestions === 0 || 
+      answeredCount >= totalQuestions || 
+      checkpoints.every(cp => answeredCheckpoints[cp.id] !== undefined || answeredCheckpoints[String(cp.id)] !== undefined);
+    const isNearEnd = duration > 0 && currentTime >= Math.max(0, duration - 10);
+
     console.log('[InteractiveVideoPlayer] Bấm nút XEM TỔNG KẾT & GHI NHỚ NGAY', {
       answeredCount,
       totalQuestions,
       isAlreadyCompleted,
+      allAnswered,
+      isNearEnd,
+      currentTime,
+      duration,
       answeredCheckpoints
     });
 
-    // Check condition: if not already completed and checkpoints remain unanswered
-    if (!isAlreadyCompleted && totalQuestions > 0 && answeredCount < totalQuestions) {
-      setIncompleteWarning(`Em cần hoàn thành các câu hỏi mốc trước (Đã làm ${answeredCount}/${totalQuestions} câu hỏi). Hãy xem video đến các mốc câu hỏi để trả lời!`);
-      return;
+    // Clear any temporary warning message
+    setIncompleteWarning(null);
+
+    // Safely pause video & YouTube iframe
+    setIsPlaying(false);
+    if (videoRef.current) {
+      try {
+        videoRef.current.pause();
+      } catch (err) {
+        console.warn('[InteractiveVideoPlayer] Error pausing video:', err);
+      }
+    }
+    if (iframeRef.current && iframeRef.current.contentWindow) {
+      try {
+        iframeRef.current.contentWindow.postMessage(
+          JSON.stringify({ event: 'command', func: 'pauseVideo', args: '' }),
+          '*'
+        );
+      } catch (err) {
+        console.warn('[InteractiveVideoPlayer] Error pausing iframe:', err);
+      }
     }
 
-    setIncompleteWarning(null);
+    // Safety Fallback: Always open summary modal immediately when button is clicked
     setPlayerState('showing-summary');
-    setIsPlaying(false);
-    if (videoRef.current) videoRef.current.pause();
-    if (iframeRef.current && iframeRef.current.contentWindow) {
-      iframeRef.current.contentWindow.postMessage(
-        JSON.stringify({ event: 'command', func: 'pauseVideo', args: '' }),
-        '*'
-      );
-    }
   };
 
   // Handle seeking to checkpoint timestamp for video review
@@ -634,54 +652,6 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
             </div>
           </div>
         </div>
-
-      {/* THANH TIẾN ĐỘ & NÚT XEM TỔNG KẾT & GHI NHỚ TÁCH BIỆT BÊN DƯỚI KHUNG VIDEO (TỐI ƯU TIỂU HỌC) */}
-      <div className="bg-gradient-to-r from-purple-50 via-indigo-50 to-slate-50 rounded-3xl p-5 sm:p-6 border-2 border-purple-200/80 shadow-md flex flex-col sm:flex-row items-center justify-between gap-4 animate-in fade-in">
-        {/* Progress status */}
-        <div className="flex items-center gap-3">
-          <div className="w-12 h-12 rounded-2xl bg-purple-600 text-white flex items-center justify-center font-bold text-xl shadow-md shrink-0">
-            ⭐
-          </div>
-          <div>
-            <div className="text-xs sm:text-sm font-extrabold text-purple-900">
-              Tiến độ câu hỏi mốc Khám phá
-            </div>
-            <div className="text-sm sm:text-base font-black text-slate-900 mt-0.5">
-              Đã hoàn thành <span className="text-purple-700">{Object.keys(answeredCheckpoints).length}</span> / {totalQuestions} câu hỏi
-            </div>
-          </div>
-        </div>
-
-        {/* Action Button: Xem tổng kết & Ghi nhớ */}
-        <button
-          type="button"
-          onClick={handleViewSummaryClick}
-          className="w-full sm:w-auto px-7 py-4 rounded-2xl bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-700 hover:to-indigo-800 text-white text-sm sm:text-base font-black transition-all shadow-xl shadow-purple-600/30 flex items-center justify-center gap-3 cursor-pointer active:scale-98 transform hover:scale-102"
-        >
-          <Sparkles className="w-5 h-5 text-amber-300 animate-spin" />
-          <span>🎯 XEM TỔNG KẾT & GHI NHỚ NGAY</span>
-        </button>
-      </div>
-
-      {/* FLOATING INCOMPLETE WARNING BANNER */}
-      {incompleteWarning && (
-        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[100000] max-w-lg w-full px-4 animate-in slide-in-from-top-4 duration-300">
-          <div className="bg-amber-500 text-slate-950 font-black px-5 py-4 rounded-2xl shadow-2xl border-2 border-amber-300 flex items-center justify-between gap-3 text-xs sm:text-sm">
-            <div className="flex items-center gap-2.5">
-              <AlertTriangle className="w-5 h-5 text-slate-950 shrink-0 animate-pulse" />
-              <span className="leading-relaxed">{incompleteWarning}</span>
-            </div>
-            <button 
-              type="button" 
-              onClick={() => setIncompleteWarning(null)}
-              className="p-1 hover:bg-amber-600/30 rounded-lg cursor-pointer shrink-0"
-              title="Đóng thông báo"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      )}
 
         {/* OVERLAY 1: PAUSED FOR QUESTION (SUPPORTING ALL 8 QUESTION TYPES) */}
         {playerState === 'paused-for-question' && activeCheckpoint && (
@@ -1001,25 +971,78 @@ export const InteractiveVideoPlayer: React.FC<InteractiveVideoPlayerProps> = ({
           </div>
         )}
 
-        {/* OVERLAY 3: SUMMARY MODAL ("CỬA SỔ GHI NHỚ") */}
-        {playerState === 'showing-summary' && (
-          <ExploreSummaryModal
-            title={title}
-            checkpoints={checkpoints}
-            answeredCheckpoints={answeredCheckpoints}
-            coreSummary={coreSummary || 'Nắm vững lý thuyết cốt lõi, quan sát mô hình trực quan và hoàn thành các mốc tương tác bài học.'}
-            onReplay={handleRestartExplore}
-            onComplete={(summaryData) => {
-              if (onComplete) onComplete(summaryData);
-            }}
-            onClose={() => {
-              setPlayerState('playing');
-            }}
-            onSeek={handleSeekToTimestamp}
-          />
-        )}
-
       </div>
+
+      {/* THANH TIẾN ĐỘ & NÚT XEM TỔNG KẾT & GHI NHỚ TÁCH BIỆT BÊN DƯỚI KHUNG VIDEO (TỐI ƯU TIỂU HỌC) */}
+      <div className="relative z-20 bg-gradient-to-r from-purple-50 via-indigo-50 to-slate-50 rounded-3xl p-5 sm:p-6 border-2 border-purple-200/80 shadow-md flex flex-col sm:flex-row items-center justify-between gap-4 animate-in fade-in">
+        {/* Progress status */}
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 rounded-2xl bg-purple-600 text-white flex items-center justify-center font-bold text-xl shadow-md shrink-0">
+            ⭐
+          </div>
+          <div>
+            <div className="text-xs sm:text-sm font-extrabold text-purple-900">
+              Tiến độ câu hỏi mốc Khám phá
+            </div>
+            <div className="text-sm sm:text-base font-black text-slate-900 mt-0.5">
+              Đã hoàn thành <span className="text-purple-700">{Object.keys(answeredCheckpoints).length}</span> / {totalQuestions} câu hỏi
+            </div>
+          </div>
+        </div>
+
+        {/* Action Button: Xem tổng kết & Ghi nhớ */}
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            handleViewSummaryClick();
+          }}
+          className="w-full sm:w-auto px-7 py-4 rounded-2xl bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-700 hover:to-indigo-800 text-white text-sm sm:text-base font-black transition-all shadow-xl shadow-purple-600/30 flex items-center justify-center gap-3 cursor-pointer active:scale-95 select-none transform hover:scale-102"
+        >
+          <Sparkles className="w-5 h-5 text-amber-300 animate-spin" />
+          <span>🎯 XEM TỔNG KẾT & GHI NHỚ NGAY</span>
+        </button>
+      </div>
+
+      {/* FLOATING INCOMPLETE WARNING BANNER */}
+      {incompleteWarning && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[100000] max-w-lg w-full px-4 animate-in slide-in-from-top-4 duration-300">
+          <div className="bg-amber-500 text-slate-950 font-black px-5 py-4 rounded-2xl shadow-2xl border-2 border-amber-300 flex items-center justify-between gap-3 text-xs sm:text-sm">
+            <div className="flex items-center gap-2.5">
+              <AlertTriangle className="w-5 h-5 text-slate-950 shrink-0 animate-pulse" />
+              <span className="leading-relaxed">{incompleteWarning}</span>
+            </div>
+            <button 
+              type="button" 
+              onClick={() => setIncompleteWarning(null)}
+              className="p-1 hover:bg-amber-600/30 rounded-lg cursor-pointer shrink-0"
+              title="Đóng thông báo"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* OVERLAY 3: SUMMARY MODAL ("CỬA SỔ GHI NHỚ") */}
+      {playerState === 'showing-summary' && (
+        <ExploreSummaryModal
+          title={title}
+          checkpoints={checkpoints}
+          answeredCheckpoints={answeredCheckpoints}
+          coreSummary={coreSummary || 'Nắm vững lý thuyết cốt lõi, quan sát mô hình trực quan và hoàn thành các mốc tương tác bài học.'}
+          onReplay={handleRestartExplore}
+          onComplete={(summaryData) => {
+            if (onComplete) onComplete(summaryData);
+          }}
+          onClose={() => {
+            setPlayerState('playing');
+          }}
+          onSeek={handleSeekToTimestamp}
+        />
+      )}
+
     </div>
   );
 };

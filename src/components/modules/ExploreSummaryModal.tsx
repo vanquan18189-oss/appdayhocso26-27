@@ -35,10 +35,10 @@ const formatTime = (seconds: number) => {
   return `${m}:${s.toString().padStart(2, '0')}`;
 };
 
-const renderUserSelection = (item?: { selected: any; question: VideoCheckpoint }) => {
-  if (!item) return '(Chưa trả lời)';
-  const q = item.question;
-  const qType = q.type || q.question?.type || (q as any).questionType || 'multiple_choice';
+const renderUserSelection = (item?: { selected: any; question?: VideoCheckpoint }, fallbackCp?: VideoCheckpoint) => {
+  if (!item || item.selected === undefined || item.selected === null || item.selected === '') return '(Chưa trả lời)';
+  const q = item.question || fallbackCp || ({} as VideoCheckpoint);
+  const qType = q.type || q.question?.type || (q as any)?.questionType || 'multiple_choice';
   
   if (qType === 'multiple_choice') {
     let idx = 0;
@@ -89,8 +89,9 @@ const renderUserSelection = (item?: { selected: any; question: VideoCheckpoint }
   return String(item.selected ?? 'Chưa trả lời');
 };
 
-const renderCorrectAnswer = (q: VideoCheckpoint) => {
-  const qType = q.type || q.question?.type || (q as any).questionType || 'multiple_choice';
+const renderCorrectAnswer = (q?: VideoCheckpoint) => {
+  if (!q) return 'Xem giải thích chi tiết';
+  const qType = q.type || q.question?.type || (q as any)?.questionType || 'multiple_choice';
   if (qType === 'multiple_choice') {
     let idx = q.correctIndex;
     if (idx === undefined && q.correctAnswer) {
@@ -321,7 +322,7 @@ export const ExploreSummaryModal: React.FC<ExploreSummaryModalProps> = ({
                         isCorrect ? 'bg-slate-900/60 border-slate-700/80 text-slate-200' : 'bg-rose-950/40 border-rose-500/40 text-rose-200'
                       }`}>
                         <span className="font-bold text-slate-400 shrink-0">Em đã chọn:</span>
-                        <span className="font-semibold">{renderUserSelection(ansItem)}</span>
+                        <span className="font-semibold">{renderUserSelection(ansItem, cp)}</span>
                       </div>
 
                       <div className="p-2.5 rounded-xl border bg-slate-900/60 border-slate-700/80 text-emerald-300 flex items-start gap-2">
@@ -382,7 +383,11 @@ export const ExploreSummaryModal: React.FC<ExploreSummaryModalProps> = ({
 
             <button
               type="button"
-              onClick={() => onComplete({ accuracy: percentage, correctCount, totalQuestions })}
+              onClick={() => {
+                if (onComplete) {
+                  onComplete({ accuracy: percentage, correctCount, totalQuestions });
+                }
+              }}
               className="w-full sm:w-auto px-7 py-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-xs sm:text-sm rounded-xl transition-all shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 cursor-pointer active:scale-98"
             >
               <CheckCircle2 className="w-4 h-4" />
