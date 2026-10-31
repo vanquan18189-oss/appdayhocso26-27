@@ -12,6 +12,8 @@ import {
   BookMarked
 } from 'lucide-react';
 import { StatsSummaryRow } from '../common/StatsSummaryRow';
+import { StudentRewardBadgeCard } from '../common/StudentRewardBadgeCard';
+import { getStudentGameProfile } from '../../services/studentGameStoreService';
 import { HomeworkAssignment, QuestionItem, ExamPaper } from '../../types';
 import { getSubjectColorStyles } from '../../utils/subjectColors';
 import { QuizTakingView } from './QuizTakingView';
@@ -777,10 +779,26 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
           },
           {
             id: 'avg-score',
-            label: 'Điểm trung bình',
+            label: 'Điểm & Xu thưởng',
             value: assignmentStats.avgScoreStr,
             icon: Award,
             colorScheme: 'purple',
+            customContent: (() => {
+              const profile = getStudentGameProfile(currentUserId || studentId, currentUserName || studentName);
+              const numScore = parseFloat((assignmentStats.avgScoreStr || '0').split('/')[0]?.trim()) || 0;
+              return (
+                <StudentRewardBadgeCard
+                  compact
+                  score={numScore}
+                  maxScore={10}
+                  scoreDisplay={assignmentStats.avgScoreStr}
+                  scoreLabel="Hoa Điểm 10 & EXP"
+                  coins={profile?.coins || 1000}
+                  exp={assignmentStats.completedCount * 30}
+                  level={profile?.level || 1}
+                />
+              );
+            })(),
           },
         ]}
       />

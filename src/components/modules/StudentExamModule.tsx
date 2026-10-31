@@ -22,6 +22,7 @@ import {
   Send
 } from 'lucide-react';
 import { StatsSummaryRow } from '../common/StatsSummaryRow';
+import { StudentRewardBadgeCard } from '../common/StudentRewardBadgeCard';
 import { getSubjectColorStyles } from '../../utils/subjectColors';
 import { ExamPaper, QuestionItem } from '../../types';
 import { awardExamReward, awardAssignmentReward } from '../../config/rewardConfig';
@@ -4318,10 +4319,26 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           },
           {
             id: 'avg-score',
-            label: 'Điểm trung bình',
+            label: 'Điểm & Xu thưởng',
             value: examStats.avgScoreStr,
             icon: Award,
             colorScheme: 'purple',
+            customContent: (() => {
+              const profile = getStudentGameProfile(currentUserId, currentUserName);
+              const numScore = parseFloat((examStats.avgScoreStr || '0').split('/')[0]?.trim()) || 0;
+              return (
+                <StudentRewardBadgeCard
+                  compact
+                  score={numScore}
+                  maxScore={10}
+                  scoreDisplay={examStats.avgScoreStr}
+                  scoreLabel="Hoa Điểm 10 & EXP"
+                  coins={profile?.coins || 1000}
+                  exp={examStats.completedCount * 50}
+                  level={profile?.level || 1}
+                />
+              );
+            })(),
           },
         ]}
       />

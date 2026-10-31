@@ -22,6 +22,8 @@ export interface StatItem {
   customValueColor?: string;
   customBgColor?: string;
   customIconColor?: string;
+  customContent?: React.ReactNode;
+  customCardClassName?: string;
 }
 
 export interface StatsSummaryRowProps {
@@ -94,6 +96,17 @@ export const StatsSummaryRow: React.FC<StatsSummaryRowProps> = ({
   return (
     <div className={`grid ${gridColsClassName} gap-4 ${className}`}>
       {items.map((item, index) => {
+        if (item.customContent) {
+          return (
+            <div
+              key={item.id || `stat-${index}`}
+              className={item.customCardClassName || 'h-full'}
+            >
+              {item.customContent}
+            </div>
+          );
+        }
+
         const scheme = item.colorScheme || 'indigo';
         const styles = colorSchemeMap[scheme] || colorSchemeMap.indigo;
         const Icon = item.icon;
@@ -101,7 +114,7 @@ export const StatsSummaryRow: React.FC<StatsSummaryRowProps> = ({
         return (
           <div
             key={item.id || `stat-${index}`}
-            className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs flex items-center gap-4 hover:shadow-sm transition-shadow"
+            className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs flex items-center gap-4 hover:shadow-sm transition-shadow h-full"
           >
             <div
               className={`w-12 h-12 rounded-2xl ${

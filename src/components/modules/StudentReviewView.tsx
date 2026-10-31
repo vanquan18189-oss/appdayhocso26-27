@@ -19,6 +19,8 @@ import { getStudentAvatarSource } from '../common/AnimalAvatars';
 import { getCurrentStudentSession } from '../../services/studentSessionService';
 import { getTeachersFromLocalStorage } from '../../services/teacherStorageService';
 import { evaluateStudentLessonRating } from '../../services/lessonRatingService';
+import { StudentRewardBadgeCard } from '../common/StudentRewardBadgeCard';
+import { getStudentGameProfile } from '../../services/studentGameStoreService';
 
 /**
  * Checks if a name is a generic placeholder rather than an actual teacher's name.
@@ -500,36 +502,27 @@ export const StudentReviewView: React.FC<StudentReviewViewProps> = ({
           </div>
         </div>
 
-        {/* 1. THANH TIẾN ĐỘ TỔNG THỂ (OVERALL PROGRESS BAR) */}
-        <div className="bg-slate-50/90 rounded-2xl p-4 sm:p-5 border border-slate-200/80 space-y-2.5">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 text-xs">
-            <div className="font-extrabold text-slate-800 flex items-center gap-1.5">
-              <span>Tiến độ hoàn thành:</span>
-              <span className="text-[#00875A] font-black">{completedStepsCount}/5 bước</span>
-              <span className="text-slate-500 font-bold">({Math.round((completedStepsCount / 5) * 100)}%)</span>
-            </div>
-            <div className="font-extrabold text-slate-700 flex items-center gap-1.5">
-              <span>Điểm tích lũy:</span>
-              {hasEnoughScoreData ? (
-                <span className="px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-black border border-amber-300/80 shadow-2xs">
-                  🏆 {calcScore} / 100 điểm
-                </span>
-              ) : (
-                <span className="px-2.5 py-0.5 rounded-full bg-slate-200 text-slate-600 font-bold text-[11px]">
-                  Chưa có điểm
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Progress track */}
-          <div className="w-full h-3.5 bg-slate-200/80 rounded-full overflow-hidden p-0.5 border border-slate-300/60 shadow-inner">
-            <div 
-              className="h-full bg-gradient-to-r from-emerald-400 via-teal-500 to-emerald-600 rounded-full transition-all duration-500 shadow-xs"
-              style={{ width: `${Math.max(completedStepsCount > 0 ? 5 : 0, (completedStepsCount / 5) * 100)}%` }}
+        {/* 1. THẺ HUY HIỆU TÀI NGUYÊN & TIẾN ĐỘ 5E CHUẨN SƯ PHẠM TIỂU HỌC */}
+        {(() => {
+          const studentSession = getCurrentStudentSession();
+          const effectiveStudentId = studentSession?.code || studentSession?.id || 'HS001';
+          const effectiveStudentName = studentSession?.name || currentUserName || 'Học sinh';
+          const profile = getStudentGameProfile(effectiveStudentId, effectiveStudentName);
+          return (
+            <StudentRewardBadgeCard
+              score={calcScore}
+              maxScore={100}
+              scoreDisplay={hasEnoughScoreData ? `${calcScore} / 100 điểm` : 'Chưa có điểm'}
+              scoreLabel="Bông Hoa Điểm 10 & EXP"
+              coins={profile?.coins || 1000}
+              bonusCoins={hasEnoughScoreData ? Math.max(10, Math.round(calcScore * 0.5)) : undefined}
+              exp={calcScore}
+              level={profile?.level || 1}
+              completedSteps={completedStepsCount}
+              totalSteps={5}
             />
-          </div>
-        </div>
+          );
+        })()}
 
         {/* 2. TIMELINE HÀNH TRÌNH 5E - DESKTOP (CHIỀU NGANG) */}
         {(() => {

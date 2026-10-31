@@ -571,47 +571,92 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
     return cleanList;
   }, [liveAssignments, studentClassName]);
 
-  const todoAssignmentsCount = Math.max(0, regularAssignments.length - completedSubmissionsCount);
-  
-  const todoExamsCount = useMemo(() => {
-    const rawClass = (studentClassName || 'Lớp 3A').toLowerCase().replace(/\s+/g, '');
-    const filtered = (liveExams || []).filter((ex) => {
-      if (!ex || !ex.id) return false;
-      if (isExamDeleted(ex.id) || (ex.originalExamId && isExamDeleted(ex.originalExamId))) {
-        return false;
+  // --------------------------------------------------------------------------
+  // SYNCHRONIZED STUDENT TASKS (Single Source of Truth for Stats & Reminders)
+  // --------------------------------------------------------------------------
+  const pendingELearningList = useMemo(() => {
+    const seenIds = new Set<string>();
+    const list: AssignedELearningLesson[] = [];
+    (assignedLessonsList || []).forEach((les) => {
+      if (!les || !les.id || seenIds.has(les.id)) return;
+      if (!isTargetingStudent(les.targetClass, (les as any).grade, studentClassName, studentGrade, {
+        targetClasses: (les as any).targetClasses,
+        classId: (les as any).classId,
+        classes: (les as any).classes
+      })) {
+        return;
       }
-      if (ex.targetClass) {
-        const targetCls = ex.targetClass.trim().toLowerCase().replace(/\s+/g, '');
-        if (
-          targetCls !== '' &&
-          targetCls !== 'all' &&
-          !targetCls.includes('tấtcả') &&
-          targetCls !== rawClass &&
-          !targetCls.includes(rawClass) &&
-          !rawClass.includes(targetCls)
-        ) {
-          return false;
-        }
+      const prog = studentLessonProgressMap[les.id];
+      if (!prog || prog.progressPct < 100) {
+        seenIds.add(les.id);
+        list.push(les);
+      }
+    });
+    return list;
+  }, [assignedLessonsList, studentLessonProgressMap, studentClassName, studentGrade]);
+
+  const pendingExamsList = useMemo(() => {
+    const rawList = (liveExams && liveExams.length > 0 ? liveExams : exams) || [];
+    const seenIds = new Set<string>();
+    const seenTitles = new Set<string>();
+    const list: ExamPaper[] = [];
+
+    rawList.forEach((ex) => {
+      if (!ex || !ex.id || seenIds.has(ex.id)) return;
+      if (isExamDeleted?.(ex.id) || (ex.originalExamId && isExamDeleted?.(ex.originalExamId))) {
+        return;
+      }
+      if (!isTargetingStudent(ex.targetClass, ex.grade, studentClassName, studentGrade, {
+        targetClasses: (ex as any).targetClasses,
+        classId: (ex as any).classId,
+        classes: (ex as any).classes
+      })) {
+        return;
+      }
+      if (completedExamIds.has(ex.id) || (ex.originalExamId && completedExamIds.has(ex.originalExamId))) {
+        return;
       }
       const isOverdue = ex.endTime && ex.endTime.toLowerCase() !== 'hôm nay' && !isNaN(Date.parse(ex.endTime)) && new Date(ex.endTime) < new Date();
-      return !isOverdue;
-    });
+      if (isOverdue) {
+        return;
+      }
 
-    const seenIds = new Set<string>();
-    const seenKeys = new Set<string>();
-    const cleanList: ExamPaper[] = [];
-    filtered.forEach(ex => {
-      if (seenIds.has(ex.id)) return;
+      // Semantic deduplication by clean title + subject + grade
       const cleanTitle = (ex.title || '').trim().toLowerCase().replace(/^đề kiểm tra:\s*/i, '').replace(/\s+/g, ' ');
-      const clsKey = (ex.targetClass || '').trim().toLowerCase().replace(/\s+/g, '');
-      const semanticKey = `${cleanTitle}__${ex.subject || ''}__${ex.grade || ''}__${clsKey}`;
-      if (seenKeys.has(semanticKey)) return;
+      const semanticKey = `${cleanTitle}__${ex.subject || ''}__${ex.grade || ''}`;
+      if (seenTitles.has(semanticKey)) return;
+
       seenIds.add(ex.id);
-      seenKeys.add(semanticKey);
-      cleanList.push(ex);
+      seenTitles.add(semanticKey);
+      list.push(ex);
     });
-    return cleanList.length;
-  }, [exams, studentClassName]);
+    return list;
+  }, [liveExams, exams, completedExamIds, studentClassName, studentGrade]);
+
+  const pendingAssignmentsList = useMemo(() => {
+    return (regularAssignments || []).filter((as) => {
+      if (!as || !as.id) return false;
+      const isDone = completedAssignmentIds.has(as.id) || (as.originalAssignmentId && completedAssignmentIds.has(as.originalAssignmentId));
+      return !isDone;
+    });
+  }, [regularAssignments, completedAssignmentIds]);
+
+  const pendingGamesList = useMemo(() => {
+    const targetFiltered = (quizziGames || []).filter(g => {
+      if (!g || !g.id) return false;
+      if (g.grade && !isTargetingStudent(undefined, g.grade, studentClassName, studentGrade)) {
+        return false;
+      }
+      return true;
+    });
+    const pool = targetFiltered.length > 0 ? targetFiltered : (quizziGames || []);
+    return pool.slice(0, 2);
+  }, [quizziGames, studentClassName, studentGrade]);
+
+  const todoELearningCount = pendingELearningList.length;
+  const todoExamsCount = pendingExamsList.length;
+  const todoAssignmentsCount = pendingAssignmentsList.length;
+  const todoGamesCount = pendingGamesList.length;
 
   // Unified Real Student Học Bạ Summary (Calculated strictly from real graded submissions)
   const hocBaSummary = useMemo(() => {
@@ -645,21 +690,12 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
     {
       id: 'elearning',
       title: 'Bài Giảng Chưa Học',
-      value: `${(assignedLessonsList || []).filter(les => {
-        const prog = studentLessonProgressMap[les.id];
-        return !prog || prog.progressPct < 100;
-      }).length} bài`,
+      value: `${todoELearningCount} bài`,
       subtext: 'E-Learning chuẩn 5E',
       icon: BookOpen,
       iconBg: 'bg-blue-100 text-blue-600',
-      badge: (assignedLessonsList || []).filter(les => {
-        const prog = studentLessonProgressMap[les.id];
-        return !prog || prog.progressPct < 100;
-      }).length > 0 ? 'Khám phá ngay ✨' : 'Đã học hết tất cả 📚',
-      badgeColor: (assignedLessonsList || []).filter(les => {
-        const prog = studentLessonProgressMap[les.id];
-        return !prog || prog.progressPct < 100;
-      }).length > 0 ? 'text-blue-600 bg-blue-50 border-blue-200' : 'text-emerald-600 bg-emerald-50 border-emerald-200',
+      badge: todoELearningCount > 0 ? 'Khám phá ngay ✨' : 'Đã học hết tất cả 📚',
+      badgeColor: todoELearningCount > 0 ? 'text-blue-600 bg-blue-50 border-blue-200' : 'text-emerald-600 bg-emerald-50 border-emerald-200',
       module: 'lesson_5e' as ActiveModule,
       borderHover: 'hover:border-blue-400'
     },
@@ -671,7 +707,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
       icon: FileCheck2,
       iconBg: 'bg-red-100 text-red-600',
       badge: todoExamsCount > 0 ? 'Thời hạn 3 ngày 🎯' : 'Chưa có đề mới 📋',
-      badgeColor: 'text-red-600 bg-red-50 border-red-200',
+      badgeColor: todoExamsCount > 0 ? 'text-red-600 bg-red-50 border-red-200' : 'text-emerald-600 bg-emerald-50 border-emerald-200',
       module: 'exam_management' as ActiveModule,
       borderHover: 'hover:border-red-400'
     },
@@ -690,12 +726,12 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
     {
       id: 'games',
       title: 'Đấu Trường Đang Chờ',
-      value: `${(quizziGames || []).length} trò`,
+      value: `${todoGamesCount} trò`,
       subtext: 'Thử thách trí tuệ',
       icon: Gamepad2,
       iconBg: 'bg-purple-100 text-purple-600',
-      badge: (quizziGames || []).length > 0 ? 'Thử ngay nào 🎮' : 'Đã khám phá hết 🏆',
-      badgeColor: (quizziGames || []).length > 0 ? 'text-purple-600 bg-purple-50 border-purple-200' : 'text-emerald-600 bg-emerald-50 border-emerald-200',
+      badge: todoGamesCount > 0 ? 'Thử ngay nào 🎮' : 'Đã khám phá hết 🏆',
+      badgeColor: todoGamesCount > 0 ? 'text-purple-600 bg-purple-50 border-purple-200' : 'text-emerald-600 bg-emerald-50 border-emerald-200',
       module: 'interactive_games' as ActiveModule,
       borderHover: 'hover:border-purple-400'
     }
@@ -1046,92 +1082,71 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
     const rawClass = (studentClassName || 'Lớp 3A').toLowerCase().replace(/\s+/g, '');
 
     // 1. Pending Exams
-    (exams || []).forEach((ex) => {
-      if (!ex || !ex.id) return;
-      if (!isTargetingStudent(ex.targetClass, ex.grade, studentClassName, studentGrade)) {
-        return;
-      }
-      const isDone = completedExamIds.has(ex.id);
-      const isOverdue = ex.endTime && ex.endTime.toLowerCase() !== 'hôm nay' && !isNaN(Date.parse(ex.endTime)) && new Date(ex.endTime) < new Date();
-      if (!isDone && !isOverdue) {
-        const notifId = `rem-ex-${ex.id}`;
-        list.push({
-          id: notifId,
-          type: 'exam',
-          typeLabel: 'Đề kiểm tra',
-          title: ex.title || 'Bài kiểm tra trực tuyến',
-          subject: ex.subject || 'Môn học',
-          teacherName: ex.createdBy || 'Giáo viên bộ môn',
-          badgeText: 'Mới 🎯',
-          badgeBg: 'bg-[#34D399]/20 text-[#059669] border-[#34D399]',
-          timeText: `${ex.durationMinutes || 15} phút • Hạn: ${ex.endTime || 'Hôm nay'}`,
-          module: 'exam_management',
-          actionText: 'Vào thi ngay ⚡',
-          actionBg: 'bg-rose-600 hover:bg-rose-700 text-white shadow-rose-600/20',
-          isRead: readNotifIds.has(notifId),
-          rawItem: ex
-        });
-      }
+    pendingExamsList.forEach((ex) => {
+      const notifId = `rem-ex-${ex.id}`;
+      list.push({
+        id: notifId,
+        type: 'exam',
+        typeLabel: 'Đề kiểm tra',
+        title: ex.title || 'Bài kiểm tra trực tuyến',
+        subject: ex.subject || 'Môn học',
+        teacherName: ex.createdBy || 'Giáo viên bộ môn',
+        badgeText: 'Mới 🎯',
+        badgeBg: 'bg-[#34D399]/20 text-[#059669] border-[#34D399]',
+        timeText: `${ex.durationMinutes || 15} phút • Hạn: ${ex.endTime || 'Hôm nay'}`,
+        module: 'exam_management',
+        actionText: 'Vào thi ngay ⚡',
+        actionBg: 'bg-rose-600 hover:bg-rose-700 text-white shadow-rose-600/20',
+        isRead: readNotifIds.has(notifId),
+        rawItem: ex
+      });
     });
 
     // 2. Pending Assignments
-    (regularAssignments || []).forEach((as) => {
-      if (!as || !as.id) return;
-      // Note: regularAssignments already filtered by isTargetingStudent in useMemo above
-      const isDone = completedAssignmentIds.has(as.id);
-      const isOverdue = as.dueDate && as.dueDate.toLowerCase() !== 'hôm nay' && !isNaN(Date.parse(as.dueDate)) && new Date(as.dueDate) < new Date();
-      if (!isDone && !isOverdue) {
-        const notifId = `rem-as-${as.id}`;
-        list.push({
-          id: notifId,
-          type: 'assignment',
-          typeLabel: 'Bài tập về nhà',
-          title: as.title || 'Bài tập rèn luyện',
-          subject: as.subject || 'Môn học',
-          teacherName: as.createdBy || 'Cô Trang Anh',
-          badgeText: 'Cần nộp 📝',
-          badgeBg: 'bg-[#FBBF24]/20 text-[#D97706] border-[#FBBF24]',
-          timeText: `Hạn nộp: ${as.dueDate || '23:59 hôm nay'}`,
-          module: 'assignment',
-          actionText: 'Làm bài tập 📝',
-          actionBg: 'bg-amber-600 hover:bg-amber-700 text-white shadow-amber-600/20',
-          isRead: readNotifIds.has(notifId),
-          rawItem: as
-        });
-      }
+    pendingAssignmentsList.forEach((as) => {
+      const notifId = `rem-as-${as.id}`;
+      list.push({
+        id: notifId,
+        type: 'assignment',
+        typeLabel: 'Bài tập về nhà',
+        title: as.title || 'Bài tập rèn luyện',
+        subject: as.subject || 'Môn học',
+        teacherName: as.createdBy || 'Cô Trang Anh',
+        badgeText: 'Cần nộp 📝',
+        badgeBg: 'bg-[#FBBF24]/20 text-[#D97706] border-[#FBBF24]',
+        timeText: `Hạn nộp: ${as.dueDate || '23:59 hôm nay'}`,
+        module: 'assignment',
+        actionText: 'Làm bài tập 📝',
+        actionBg: 'bg-amber-600 hover:bg-amber-700 text-white shadow-amber-600/20',
+        isRead: readNotifIds.has(notifId),
+        rawItem: as
+      });
     });
 
     // 3. E-Learning Assigned Lessons
-    (assignedLessonsList || []).forEach((les) => {
-      if (!les || !les.id) return;
-      if (!isTargetingStudent(les.targetClass, (les as any).grade, studentClassName, studentGrade)) {
-        return;
-      }
+    pendingELearningList.forEach((les) => {
       const prog = studentLessonProgressMap[les.id];
-      if (!prog || prog.progressPct < 100) {
-        const notifId = `rem-el-${les.id}`;
-        list.push({
-          id: notifId,
-          type: 'elearning',
-          typeLabel: 'Bài giảng 5E',
-          title: les.title || 'Bài giảng E-Learning tương tác',
-          subject: les.subject || 'Môn học',
-          teacherName: (les as any).assignedByTeacherName || (les as any).createdBy || 'Giáo viên bộ môn',
-          badgeText: 'Bài học 💡',
-          badgeBg: 'bg-indigo-100 text-indigo-800 border-indigo-200',
-          timeText: `Chuẩn 5E • Tiến độ: ${prog?.progressPct || 0}%`,
-          module: 'lesson_5e',
-          actionText: 'Học bài ngay 🚀',
-          actionBg: 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/20',
-          isRead: readNotifIds.has(notifId),
-          rawItem: les
-        });
-      }
+      const notifId = `rem-el-${les.id}`;
+      list.push({
+        id: notifId,
+        type: 'elearning',
+        typeLabel: 'Bài giảng 5E',
+        title: les.title || 'Bài giảng E-Learning tương tác',
+        subject: les.subject || 'Môn học',
+        teacherName: (les as any).assignedByTeacherName || (les as any).createdBy || 'Giáo viên bộ môn',
+        badgeText: 'Bài học 💡',
+        badgeBg: 'bg-indigo-100 text-indigo-800 border-indigo-200',
+        timeText: `Chuẩn 5E • Tiến độ: ${prog?.progressPct || 0}%`,
+        module: 'lesson_5e',
+        actionText: 'Học bài ngay 🚀',
+        actionBg: 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/20',
+        isRead: readNotifIds.has(notifId),
+        rawItem: les
+      });
     });
 
     // 4. Games / Quizzes
-    (quizziGames || []).slice(0, 2).forEach((g) => {
-      if (!g || !g.id) return;
+    pendingGamesList.forEach((g) => {
       const notifId = `rem-gm-${g.id}`;
       const qCount = (g as any).questions?.length || (g as any).questionsCount || 10;
       list.push({
@@ -1153,7 +1168,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
     });
 
     return list;
-  }, [exams, completedExamIds, regularAssignments, completedAssignmentIds, assignedLessonsList, studentLessonProgressMap, quizziGames, readNotifIds, studentClassName]);
+  }, [pendingExamsList, pendingAssignmentsList, pendingELearningList, pendingGamesList, studentLessonProgressMap, readNotifIds]);
 
   const unreadRemindersCount = useMemo(() => {
     return teacherReminders.filter(r => !r.isRead).length;
