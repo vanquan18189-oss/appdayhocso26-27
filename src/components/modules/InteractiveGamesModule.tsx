@@ -1054,12 +1054,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-3 shrink-0 w-full sm:w-auto justify-between sm:justify-end">
-                            <div className="flex items-center gap-1.5 px-3 py-1 bg-teal-50 text-teal-700 border border-teal-200 rounded-xl text-xs font-bold">
-                              <Users className="w-3.5 h-3.5" />
-                              <span>{room.playersCount || 0} / {room.maxPlayers || 10}</span>
-                            </div>
-
+                          <div className="flex items-center gap-3 shrink-0 w-full sm:w-auto justify-end">
                             {isOpen ? (
                               <button
                                 onClick={() => handleStartGame(room)}
@@ -1420,11 +1415,6 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                             <span className="text-xs font-bold text-slate-600 max-w-[200px] truncate hidden md:inline">
                               {room.subject}
                             </span>
-
-                            <div className="flex items-center gap-1.5 px-2.5 py-1 bg-teal-50 text-teal-700 border border-teal-200 rounded-lg text-xs font-bold">
-                              <Users className="w-3.5 h-3.5" />
-                              <span>{room.playersCount || 0} / {room.maxPlayers || 10}</span>
-                            </div>
 
                             <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase ${room.status === 'closed' ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>
                               {room.status === 'closed' ? '🔴 ĐÓNG' : '🟢 MỞ'}
