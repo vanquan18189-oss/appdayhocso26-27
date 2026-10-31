@@ -509,6 +509,7 @@ export const Lesson5EModal: React.FC<Lesson5EModalProps> = ({
         evaluateStudent: targetLesson.stepEvaluate?.studentActivities || '',
         evaluateMat: targetLesson.stepEvaluate?.materials || '',
         evaluateQuestions: (targetLesson.stepEvaluate as any)?.questions || [],
+        isEvaluateReportEnabled: (targetLesson?.stepEvaluate as any)?.isReportEnabled ?? (targetLesson?.stepEvaluate as any)?.isStep3Enabled ?? true,
 
         // Assessment
         assessmentNotes:
@@ -606,6 +607,7 @@ export const Lesson5EModal: React.FC<Lesson5EModalProps> = ({
       evaluateStudent: '',
       evaluateMat: '',
       evaluateQuestions: [],
+      isEvaluateReportEnabled: true,
 
       assessmentNotes: 'Rubric đánh giá năng lực học sinh qua sản phẩm thực hành.',
       assessmentQuestions: [],
@@ -704,6 +706,7 @@ export const Lesson5EModal: React.FC<Lesson5EModalProps> = ({
   const [evaluateStudent, setEvaluateStudent] = useState(initialValues.evaluateStudent);
   const [evaluateMat, setEvaluateMat] = useState(initialValues.evaluateMat);
   const [evaluateQuestions, setEvaluateQuestions] = useState<QuestionItem[]>(initialValues.evaluateQuestions);
+  const [isEvaluateReportEnabled, setIsEvaluateReportEnabled] = useState(initialValues.isEvaluateReportEnabled ?? true);
 
   const [assessmentNotes, setAssessmentNotes] = useState(initialValues.assessmentNotes);
   const [assessmentQuestions, setAssessmentQuestions] = useState<QuestionItem[]>(initialValues.assessmentQuestions);
@@ -752,6 +755,7 @@ export const Lesson5EModal: React.FC<Lesson5EModalProps> = ({
       setEvaluateStudent(vals.evaluateStudent);
       setEvaluateMat(vals.evaluateMat);
       setEvaluateQuestions(vals.evaluateQuestions);
+      setIsEvaluateReportEnabled(vals.isEvaluateReportEnabled ?? true);
 
       setAssessmentNotes(vals.assessmentNotes);
       setAssessmentQuestions(vals.assessmentQuestions);
@@ -899,7 +903,9 @@ export const Lesson5EModal: React.FC<Lesson5EModalProps> = ({
         teacherActivities: evaluateTeacher || 'Tổ chức kiểm tra ngắn.',
         studentActivities: evaluateStudent || 'Làm bài kiểm tra.',
         materials: evaluateMat ?? '',
-        questions: evaluateQuestions
+        questions: evaluateQuestions,
+        isReportEnabled: isEvaluateReportEnabled,
+        isStep3Enabled: isEvaluateReportEnabled
       } as any,
       ...({
         code: lessonCode,
@@ -1698,6 +1704,7 @@ export const Lesson5EModal: React.FC<Lesson5EModalProps> = ({
                 initialMaterials={evaluateMat}
                 initialQuestions={evaluateQuestions}
                 initialStudentActivities={evaluateStudent}
+                initialIsReportEnabled={isEvaluateReportEnabled}
                 questionsBank={questionsBank}
                 defaultSubject={subject}
                 defaultGrade={grade}
@@ -1706,6 +1713,7 @@ export const Lesson5EModal: React.FC<Lesson5EModalProps> = ({
                 onMaterialsChange={setEvaluateMat}
                 onQuestionsChange={setEvaluateQuestions}
                 onStudentActivitiesChange={setEvaluateStudent}
+                onIsReportEnabledChange={setIsEvaluateReportEnabled}
                 onRequireAttachmentChange={() => {}}
                 onCongratMessageChange={() => {}}
               />

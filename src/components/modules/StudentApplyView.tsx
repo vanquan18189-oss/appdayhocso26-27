@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   Sparkles, 
   Target, 
@@ -55,10 +55,33 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
 }) => {
   const [selectingLeftItem, setSelectingLeftItem] = useState<{ [qId: string]: number | null }>({});
   const evaluateStep = lesson.stepEvaluate as any;
+  const isReportEnabled = evaluateStep?.isReportEnabled ?? evaluateStep?.isStep3Enabled ?? (lesson as any)?.isApplyReportEnabled ?? true;
   
   // 3-step internal workflow state
   const [currentSubStep, setCurrentSubStep] = useState<1 | 2 | 3>(savedData?.subStep || 1);
   const [isCompleted, setIsCompleted] = useState<boolean>(Boolean(savedData?.isCompleted));
+
+  // If Step 3 is closed by teacher, ensure subStep doesn't stay on 3
+  useEffect(() => {
+    if (!isReportEnabled && currentSubStep === 3) {
+      setCurrentSubStep(2);
+    }
+  }, [isReportEnabled, currentSubStep]);
+
+  const handleCompleteTwoStepApply = () => {
+    setIsCompleted(true);
+    setSubmittedQuestions(true);
+    if (onSaveProgress) {
+      onSaveProgress({
+        isCompleted: true,
+        subStep: 2,
+        isSubmitted: true,
+        questionAnswers,
+        submittedQuestions: true,
+        reportSkipped: true
+      });
+    }
+  };
 
   // Step 2: Questions answering state - Read from evaluateStep or lesson without hardcoded fallbacks
   const rawQuestions = evaluateStep?.questions || (lesson as any)?.evaluateQuestions || [];
@@ -185,12 +208,15 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
               {evaluateStep?.title || 'Vận Dụng Kiến Thức Vào Thực Tiễn (Apply)'}
             </h3>
             <p className="text-xs text-slate-500">
-              {evaluateStep?.subtitle || '3 bước: Khám phá tình huống → Hướng giải quyết → Báo cáo thu hoạch'}
+              {evaluateStep?.subtitle || 
+                (isReportEnabled 
+                  ? '3 bước: Khám phá tình huống → Hướng giải quyết → Báo cáo thu hoạch' 
+                  : '2 bước: Khám phá tình huống → Hướng giải quyết')}
             </p>
           </div>
         </div>
 
-        {/* 3 STEPS PROGRESS BAR */}
+        {/* 2 OR 3 STEPS PROGRESS BAR */}
         <div className="flex items-center gap-2 bg-slate-100 p-1.5 rounded-2xl w-full sm:w-auto justify-center">
           <button
             onClick={() => setCurrentSubStep(1)}
@@ -216,17 +242,19 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
             <span>Giải quyết</span>
           </button>
 
-          <button
-            onClick={() => setCurrentSubStep(3)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-              currentSubStep === 3 
-                ? 'bg-pink-600 text-white shadow-xs' 
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <span className="w-4 h-4 rounded-full bg-white/20 flex items-center justify-center text-[10px]">3</span>
-            <span>Thu hoạch</span>
-          </button>
+          {isReportEnabled && (
+            <button
+              onClick={() => setCurrentSubStep(3)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                currentSubStep === 3 
+                  ? 'bg-pink-600 text-white shadow-xs' 
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <span className="w-4 h-4 rounded-full bg-white/20 flex items-center justify-center text-[10px]">3</span>
+              <span>Thu hoạch</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -836,19 +864,62 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
               )
             )}
 
-            <button
-              onClick={() => setCurrentSubStep(3)}
-              className="px-8 py-3.5 bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-700 hover:to-rose-700 text-white font-extrabold text-xs sm:text-sm rounded-2xl transition-all shadow-md shadow-pink-600/30 flex items-center gap-2 cursor-pointer active:scale-98 ml-auto"
-            >
-              <span>Tiếp tục sang Bước 3: Báo cáo thu hoạch</span>
-              <ChevronRight className="w-4 h-4" />
-            </button>
+            {!isReportEnabled ? (
+              !isCompleted ? (
+                <button
+                  onClick={handleCompleteTwoStepApply}
+                  className="px-8 py-3.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs sm:text-sm rounded-2xl transition-all shadow-md shadow-emerald-600/30 flex items-center gap-2 cursor-pointer active:scale-98 ml-auto"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Hoàn thành Vận dụng & Tiếp tục</span>
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              ) : (
+                <button
+                  onClick={onNavigateToNext}
+                  className="px-8 py-3.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs sm:text-sm rounded-2xl transition-all shadow-md shadow-emerald-600/30 flex items-center gap-2 cursor-pointer active:scale-98 ml-auto"
+                >
+                  <span>Tiếp tục sang {nextStepLabel}</span>
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              )
+            ) : (
+              <button
+                onClick={() => setCurrentSubStep(3)}
+                className="px-8 py-3.5 bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-700 hover:to-rose-700 text-white font-extrabold text-xs sm:text-sm rounded-2xl transition-all shadow-md shadow-pink-600/30 flex items-center gap-2 cursor-pointer active:scale-98 ml-auto"
+              >
+                <span>Tiếp tục sang Bước 3: Báo cáo thu hoạch</span>
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            )}
           </div>
+
+          {/* Banner chúc mừng khi đóng Bước 3 và đã hoàn thành */}
+          {!isReportEnabled && isCompleted && (
+            <div className="p-5 bg-gradient-to-r from-emerald-500/10 via-teal-500/10 to-cyan-500/10 rounded-2xl border border-emerald-500/30 text-emerald-900 space-y-3 mt-4 animate-in fade-in duration-200">
+              <div className="flex items-center gap-2.5 font-extrabold text-xs sm:text-sm text-emerald-800">
+                <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                <span>Em đã hoàn thành xuất sắc các nội dung Vận dụng thực tế!</span>
+              </div>
+              <p className="text-xs text-slate-700 leading-relaxed font-medium bg-white/80 p-3.5 rounded-xl border border-emerald-200">
+                {congratMessage}
+              </p>
+              <div className="flex justify-end pt-2">
+                <button
+                  onClick={onNavigateToNext}
+                  className="px-8 py-3.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-extrabold text-xs sm:text-sm rounded-2xl transition-all shadow-lg shadow-emerald-600/30 flex items-center gap-2 cursor-pointer active:scale-98"
+                >
+                  <span>Tiếp tục sang {nextStepLabel}</span>
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
       {/* SUB-STEP 3: BÁO CÁO THU HOẠCH & MINH CHỨNG */}
-      {currentSubStep === 3 && (
+      {isReportEnabled && currentSubStep === 3 && (
         <div className="space-y-6 animate-in fade-in duration-200">
           <div className="bg-slate-50 p-6 sm:p-8 rounded-3xl border border-slate-200 space-y-6">
             <div className="flex items-center justify-between pb-3 border-b border-slate-200">

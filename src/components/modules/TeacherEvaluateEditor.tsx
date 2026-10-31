@@ -16,7 +16,11 @@ import {
   CheckCircle2,
   AlertCircle,
   RefreshCw,
-  Eye
+  Eye,
+  Check,
+  X,
+  Lock,
+  Unlock
 } from 'lucide-react';
 import { QuestionItem } from '../../types';
 import { TeacherQuestionsListEditor } from './TeacherQuestionsListEditor';
@@ -38,6 +42,7 @@ interface TeacherEvaluateEditorProps {
   initialStudentActivities?: string;
   initialRequireAttachment?: boolean;
   initialCongratMessage?: string;
+  initialIsReportEnabled?: boolean;
   questionsBank: QuestionItem[];
   defaultSubject?: string;
   defaultGrade?: string;
@@ -48,6 +53,7 @@ interface TeacherEvaluateEditorProps {
   onStudentActivitiesChange: (val: string) => void;
   onRequireAttachmentChange: (val: boolean) => void;
   onCongratMessageChange: (val: string) => void;
+  onIsReportEnabledChange?: (val: boolean) => void;
 }
 
 export type MediaInputMode = 'video_url' | 'video_upload' | 'image_url' | 'image_upload';
@@ -60,6 +66,7 @@ export const TeacherEvaluateEditor: React.FC<TeacherEvaluateEditorProps> = ({
   initialStudentActivities = 'Học sinh viết báo cáo thu hoạch ngắn gọn kết quả vận dụng kiến thức.',
   initialRequireAttachment = true,
   initialCongratMessage = 'Chúc mừng các em đã hoàn thành xuất sắc bài học!',
+  initialIsReportEnabled = true,
   questionsBank,
   defaultSubject = 'Tin học',
   defaultGrade = 'Khối 3',
@@ -69,7 +76,8 @@ export const TeacherEvaluateEditor: React.FC<TeacherEvaluateEditorProps> = ({
   onQuestionsChange,
   onStudentActivitiesChange,
   onRequireAttachmentChange,
-  onCongratMessageChange
+  onCongratMessageChange,
+  onIsReportEnabledChange
 }) => {
   const [subTab, setSubTab] = useState<'step1' | 'step2' | 'step3'>('step1');
 
@@ -80,6 +88,7 @@ export const TeacherEvaluateEditor: React.FC<TeacherEvaluateEditorProps> = ({
   const [studentActivities, setStudentActivities] = useState(initialStudentActivities);
   const [requireAttachment, setRequireAttachment] = useState(initialRequireAttachment);
   const [congratMessage, setCongratMessage] = useState(initialCongratMessage);
+  const [isReportEnabled, setIsReportEnabled] = useState<boolean>(initialIsReportEnabled ?? true);
 
   // Sync initial props when switching lessons
   useEffect(() => {
@@ -97,6 +106,20 @@ export const TeacherEvaluateEditor: React.FC<TeacherEvaluateEditorProps> = ({
   useEffect(() => {
     setQuestions(initialQuestions);
   }, [initialQuestions]);
+
+  useEffect(() => {
+    if (typeof initialIsReportEnabled === 'boolean') {
+      setIsReportEnabled(initialIsReportEnabled);
+    }
+  }, [initialIsReportEnabled]);
+
+  const handleToggleReportEnabled = () => {
+    const nextVal = !isReportEnabled;
+    setIsReportEnabled(nextVal);
+    if (onIsReportEnabledChange) {
+      onIsReportEnabledChange(nextVal);
+    }
+  };
 
   // Media input mode selection
   const getInitialMediaMode = (mat: string): MediaInputMode => {
@@ -143,7 +166,6 @@ export const TeacherEvaluateEditor: React.FC<TeacherEvaluateEditorProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Check size limit: warning if > 45MB
     if (file.size > 50 * 1024 * 1024) {
       setUploadError('Dung lượng video vượt quá 50MB. Vui lòng chọn file nhẹ hơn hoặc dán link YouTube/link online.');
       return;
@@ -156,11 +178,9 @@ export const TeacherEvaluateEditor: React.FC<TeacherEvaluateEditorProps> = ({
     const reader = new FileReader();
     reader.onload = async () => {
       const base64Data = reader.result as string;
-      // Set immediately as base64 so teacher can preview and save right away
       handleUpdateMaterials(base64Data);
       setUploadProgressMsg('Đang đồng bộ máy chủ lưu trữ (Cloudinary)...');
 
-      // Attempt Cloudinary upload in background
       try {
         const cloudUrl = await uploadToCloudinary(file, 'video');
         if (cloudUrl) {
@@ -168,7 +188,6 @@ export const TeacherEvaluateEditor: React.FC<TeacherEvaluateEditorProps> = ({
         }
       } catch (err: any) {
         console.warn('Cloudinary upload fallback to base64:', err);
-        // Base64 is already preserved safely
       } finally {
         setIsUploading(false);
         setUploadProgressMsg('');
@@ -230,14 +249,52 @@ export const TeacherEvaluateEditor: React.FC<TeacherEvaluateEditorProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* HEADER CARD WITH GLOBAL STEP 3 TOGGLE */}
       <div className="p-4 rounded-2xl bg-teal-500/10 border border-teal-500/20 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <div>
           <h3 className="text-sm font-extrabold text-teal-400 uppercase tracking-wide">
             CẤU HÌNH MỤC VẬN DỤNG (EVALUATE / APPLY)
           </h3>
           <p className="text-xs text-slate-300 mt-0.5">
-            Xây dựng chuỗi 3 bước Vận dụng: Tình huống thực tế (Video / Hình ảnh), Câu hỏi tương tác và Báo cáo thu hoạch.
+            {isReportEnabled 
+              ? 'Xây dựng chuỗi 3 bước Vận dụng: Tình huống thực tế, Câu hỏi tương tác và Báo cáo thu hoạch.' 
+              : 'Xây dựng chuỗi 2 bước Vận dụng: Tình huống thực tế và Câu hỏi tương tác (Bước 3 Báo cáo đang ĐÓNG).'}
           </p>
+        </div>
+
+        {/* NÚT BẬT / TẮT (MỞ / ĐÓNG) BƯỚC 3: BÁO CÁO THU HOẠCH */}
+        <div className="flex items-center gap-2">
+          <span className={`px-2.5 py-1 rounded-lg text-xs font-bold border flex items-center gap-1.5 ${
+            isReportEnabled 
+              ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' 
+              : 'bg-rose-500/20 text-rose-400 border-rose-500/30'
+          }`}>
+            {isReportEnabled ? <Check className="w-3.5 h-3.5" /> : <X className="w-3.5 h-3.5" />}
+            <span>Bước 3: {isReportEnabled ? 'Đang Mở' : 'Đang Đóng'}</span>
+          </span>
+
+          <button
+            type="button"
+            onClick={handleToggleReportEnabled}
+            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all shadow-md cursor-pointer flex items-center gap-1.5 ${
+              isReportEnabled 
+                ? 'bg-rose-600 hover:bg-rose-500 text-white' 
+                : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+            }`}
+            title={isReportEnabled ? 'Bấm để Đóng Bước 3 (Bỏ qua nộp báo cáo)' : 'Bấm để Mở Bước 3 (Yêu cầu nộp báo cáo)'}
+          >
+            {isReportEnabled ? (
+              <>
+                <Lock className="w-3.5 h-3.5" />
+                <span>Đóng Bước 3</span>
+              </>
+            ) : (
+              <>
+                <Unlock className="w-3.5 h-3.5" />
+                <span>Mở Bước 3</span>
+              </>
+            )}
+          </button>
         </div>
       </div>
 
@@ -274,12 +331,19 @@ export const TeacherEvaluateEditor: React.FC<TeacherEvaluateEditorProps> = ({
           onClick={() => setSubTab('step3')}
           className={`flex-1 py-3 px-4 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
             subTab === 'step3'
-              ? 'bg-teal-600 text-white shadow-md shadow-teal-900/40'
-              : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+              ? (isReportEnabled ? 'bg-teal-600 text-white shadow-md shadow-teal-900/40' : 'bg-slate-700 text-amber-300 border border-amber-500/40 shadow-md')
+              : (isReportEnabled ? 'text-slate-300 hover:text-white hover:bg-slate-700/50' : 'text-slate-400 hover:text-white hover:bg-slate-700/30')
           }`}
         >
           <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-[11px]">3</span>
           <span>Bước 3: Báo cáo thu hoạch</span>
+          <span className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold ${
+            isReportEnabled 
+              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' 
+              : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+          }`}>
+            {isReportEnabled ? 'MỞ' : 'ĐÓNG'}
+          </span>
         </button>
       </div>
 
@@ -654,15 +718,74 @@ export const TeacherEvaluateEditor: React.FC<TeacherEvaluateEditorProps> = ({
         </div>
       )}
 
-      {/* SUB-TAB 3: BÁO CÁO THU HOẠCH */}
+      {/* SUB-TAB 3: BÁO CÁO THU HOẠCH & TỔNG KẾT */}
       {subTab === 'step3' && (
         <div className="space-y-4 p-5 rounded-2xl bg-slate-800/80 border border-slate-700">
-          <div className="flex items-center gap-2 text-teal-300 font-extrabold text-xs uppercase tracking-wider">
-            <FileText className="w-4 h-4" />
-            <span>Bước 3 — Báo cáo thu hoạch & Tổng kết</span>
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-3 border-b border-slate-700">
+            <div className="flex items-center gap-2 text-teal-300 font-extrabold text-xs uppercase tracking-wider">
+              <FileText className="w-4 h-4" />
+              <span>Bước 3 — Báo cáo thu hoạch & Tổng kết</span>
+            </div>
+
+            {/* CÔNG TẮC BẬT / TẮT TRỰC TIẾP TẠI BƯỚC 3 */}
+            <div className="flex items-center gap-2">
+              <span className={`px-2.5 py-1 rounded-lg text-xs font-bold border flex items-center gap-1.5 ${
+                isReportEnabled 
+                  ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' 
+                  : 'bg-rose-500/20 text-rose-400 border-rose-500/30'
+              }`}>
+                {isReportEnabled ? <Check className="w-3.5 h-3.5" /> : <X className="w-3.5 h-3.5" />}
+                <span>Trạng thái: {isReportEnabled ? 'Đang Mở (Yêu cầu nộp bài)' : 'Đang Đóng (Bỏ qua nộp bài)'}</span>
+              </span>
+
+              <button
+                type="button"
+                onClick={handleToggleReportEnabled}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all shadow-md cursor-pointer flex items-center gap-1.5 ${
+                  isReportEnabled 
+                    ? 'bg-rose-600 hover:bg-rose-500 text-white' 
+                    : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                }`}
+              >
+                {isReportEnabled ? (
+                  <>
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>Đóng Bước 3 (Bỏ qua nộp bài)</span>
+                  </>
+                ) : (
+                  <>
+                    <Unlock className="w-3.5 h-3.5" />
+                    <span>Mở Bước 3 (Yêu cầu nộp bài)</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
 
-          <div className="space-y-3">
+          {/* HỘP CẢNH BÁO / HƯỚNG DẪN KHI BƯỚC 3 ĐANG ĐÓNG */}
+          {!isReportEnabled && (
+            <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-start gap-3 animate-in fade-in duration-200">
+              <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+              <div className="space-y-1.5 flex-1">
+                <p className="font-bold text-amber-300">
+                  Bước 3 (Báo cáo thu hoạch) hiện đang ĐÓNG:
+                </p>
+                <p className="text-[11px] text-amber-200/90 leading-relaxed">
+                  Khi học sinh vào học, hệ thống sẽ ẩn hoàn toàn Bước 3 khỏi quy trình Vận dụng. Chuỗi hoạt động chỉ gồm 2 bước (Bước 1: Tình huống và Bước 2: Hướng giải quyết). Học sinh làm xong các câu hỏi ở Bước 2 là được ghi nhận hoàn thành mục Vận dụng ngay mà không phải làm báo cáo hay đính kèm minh chứng.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleToggleReportEnabled}
+                  className="mt-1 inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg shadow-sm transition-all cursor-pointer"
+                >
+                  <Unlock className="w-3.5 h-3.5" />
+                  <span>Bấm vào đây để MỞ LẠI Bước 3 (Yêu cầu học sinh nộp báo cáo)</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className={`space-y-3 transition-opacity ${!isReportEnabled ? 'opacity-60 pointer-events-none' : ''}`}>
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-1">Hướng dẫn / Yêu cầu viết báo cáo thu hoạch:</label>
               <textarea
