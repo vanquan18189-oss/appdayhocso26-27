@@ -2,6 +2,7 @@ import { ExamPaper, HomeworkAssignment, Lesson5EPlan, GameItem, StudentRecord } 
 import { getSubjectsForClassOrGrade, SchoolClassItem } from './classStorageService';
 import { getStudentAssignedSubjects, isSubjectMatch } from './studentSessionService';
 import { getCurrentActiveAcademicYear, getStudentClassInfo } from './studentStorageService';
+import { normalizeStudentCode, isValidStudentCode } from './studentCode';
 import { formatScore, roundTotalScore, formatTotalScore, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../utils/scoreUtils';
 
 export { formatScore, roundTotalScore, formatTotalScore, getCurrentSubmissionTimestamp, formatSubmissionDateTime };
@@ -215,7 +216,7 @@ export function normalizeExamTypeKey(str: string): string {
     return 'cuoi_ki_2';
   }
   if (clean.includes('thuong_xuyen') || clean.includes('thường xuyên') || clean === 'tx') {
-    return 'thuong_xuyen';
+    return 'giua_ki_1';
   }
   if (clean.includes('giữa') && (clean.includes('1') || clean.includes('i'))) return 'giua_ki_1';
   if (clean.includes('cuối') && (clean.includes('1') || clean.includes('i'))) return 'cuoi_ki_1';
@@ -447,54 +448,37 @@ export function getStudentCandidateIdentifiers(
 }
 
 /**
- * Kiểm tra xem một bản ghi bài nộp (submission) có thuộc về học sinh này không
+ * Kiểm tra xem một bản ghi bài nộp (submission) có thuộc về học sinh này không bằng Mã HS chuẩn duy nhất
  */
 export function isSubmissionBelongsToStudent(
   sub: any,
-  candidateIds: Set<string>,
-  normStudentName: string
+  studentCodeOrIds: string | Set<string>,
+  normName?: string
 ): boolean {
   if (!sub) return false;
-  const subId = (sub.studentId || sub.userId || '').trim().toLowerCase();
-  const subCode = (sub.studentCode || sub.maHs || sub.code || '').trim().toLowerCase();
-  const subName = (sub.studentName || sub.fullName || sub.name || '').trim().toLowerCase();
+  const subCode = normalizeStudentCode(sub.studentCode || sub.code || sub.maHs || sub.studentId || '');
+  
+  if (typeof studentCodeOrIds === 'string') {
+    const normTarget = normalizeStudentCode(studentCodeOrIds);
+    if (subCode && normTarget && subCode === normTarget) return true;
+    const rawTarget = studentCodeOrIds.trim();
+    const subRawId = (sub.studentId || sub.id || sub.userId || '').trim();
+    if (rawTarget && subRawId && rawTarget.toLowerCase() === subRawId.toLowerCase()) return true;
+    return false;
+  } else if (studentCodeOrIds instanceof Set) {
+    const candidateIds = studentCodeOrIds;
+    const sId = (sub.studentId || sub.id || sub.userId || '').trim();
+    const sCode = (sub.studentCode || sub.code || sub.maHs || '').trim();
+    const sName = (sub.studentName || sub.name || '').trim().toLowerCase();
 
-  for (const c of candidateIds) {
-    const cLow = c.toLowerCase();
-    const cClean = cLow.replace(/^st-/i, '').replace(/^hs-/i, '').replace(/-/g, '');
-
-    if (subId) {
-      const subIdClean = subId.replace(/^st-/i, '').replace(/^hs-/i, '').replace(/-/g, '');
-      if (
-        subId === cLow ||
-        subIdClean === cClean ||
-        subId.replace(/^st-/i, '') === cLow ||
-        cLow.replace(/^st-/i, '') === subId ||
-        subId.replace(/-/g, '') === cLow.replace(/-/g, '')
-      ) {
-        return true;
-      }
-    }
-    if (subCode) {
-      const subCodeClean = subCode.replace(/^st-/i, '').replace(/^hs-/i, '').replace(/-/g, '');
-      if (
-        subCode === cLow ||
-        subCodeClean === cClean ||
-        subCode.replace(/^st-/i, '') === cLow ||
-        cLow.replace(/^st-/i, '') === subCode ||
-        subCode.replace(/-/g, '') === cLow.replace(/-/g, '')
-      ) {
-        return true;
-      }
-    }
+    if (sId && candidateIds.has(sId)) return true;
+    if (sId && candidateIds.has(sId.toLowerCase())) return true;
+    if (sCode && candidateIds.has(sCode)) return true;
+    if (sCode && candidateIds.has(sCode.toLowerCase())) return true;
+    if (subCode && candidateIds.has(subCode)) return true;
+    if (normName && sName && (sName === normName || sName.includes(normName) || normName.includes(sName))) return true;
+    return false;
   }
-
-  if (normStudentName && normStudentName !== 'học sinh' && subName) {
-    if (subName === normStudentName || subName.includes(normStudentName) || normStudentName.includes(subName)) {
-      return true;
-    }
-  }
-
   return false;
 }
 
@@ -568,17 +552,13 @@ export function getStudentExamSubmissions(
   submittedTime: string;
   title: string;
 }> {
-  let studentId = '';
-  let studentName = '';
   let studentCode = '';
   let exams = optionalExams;
 
   if (typeof studentIdOrParams === 'string') {
-    studentId = studentIdOrParams;
+    studentCode = studentIdOrParams;
   } else if (studentIdOrParams && typeof studentIdOrParams === 'object') {
-    studentId = studentIdOrParams.studentId || '';
-    studentName = studentIdOrParams.studentName || '';
-    studentCode = studentIdOrParams.studentCode || '';
+    studentCode = studentIdOrParams.studentCode || studentIdOrParams.studentId || '';
     if (studentIdOrParams.exams) {
       exams = studentIdOrParams.exams;
     }
@@ -597,7 +577,6 @@ export function getStudentExamSubmissions(
     } catch {}
   }
 
-  const { candidateIds, normName } = getStudentCandidateIdentifiers(studentId, studentCode, studentName);
   const results: Array<{
     examId: string;
     subject: string;
@@ -621,6 +600,12 @@ export function getStudentExamSubmissions(
     if (seenExamIds.has(exId)) return;
     seenExamIds.add(exId);
 
+    const examObj = exams.find(e => e.id === exId) || sub.exam || exFallback;
+    const examType = examObj?.examType || sub.examType || 'Thường xuyên';
+    if ((examType || '').toLowerCase().includes('thường xuyên') || (examType || '').toLowerCase().includes('thuong_xuyen')) {
+      return;
+    }
+
     const rawScore = sub.rawScore ?? sub.totalScore ?? sub.score;
     let numScore = 9.0;
     if (typeof rawScore === 'number') {
@@ -637,9 +622,6 @@ export function getStudentExamSubmissions(
       }
     }
 
-    const examObj = exams.find(e => e.id === exId) || sub.exam || exFallback;
-    const examType = examObj?.examType || sub.examType || 'Thường xuyên';
-
     results.push({
       examId: exId,
       subject: normalizeSubjectName(sub.subject || examObj?.subject || 'Toán'),
@@ -655,7 +637,7 @@ export function getStudentExamSubmissions(
     if (typeof window !== 'undefined') {
       const cache = getGlobalSubmissionsCache();
       cache.examSubs.forEach((sub: any) => {
-        if (isSubmissionBelongsToStudent(sub, candidateIds, normName)) {
+        if (isSubmissionBelongsToStudent(sub, studentCode)) {
           addExamSubIfValid(sub);
         }
       });
@@ -669,7 +651,7 @@ export function getStudentExamSubmissions(
     exams.forEach(ex => {
       if (ex && (ex as any).submissions && Array.isArray((ex as any).submissions)) {
         (ex as any).submissions.forEach((sub: any) => {
-          if (isSubmissionBelongsToStudent(sub, candidateIds, normName)) {
+          if (isSubmissionBelongsToStudent(sub, studentCode)) {
             addExamSubIfValid(sub, ex);
           }
         });
@@ -1136,23 +1118,7 @@ export function calculateUnifiedHocBaData(params: {
 
     const weightsUsed: { score: number; weight: number }[] = [];
 
-    if (filter === 'thuong_xuyen') {
-      if (homeworkScore !== null) {
-        weightsUsed.push({ score: homeworkScore, weight: 0.60 });
-        sourceCount++;
-        hasRealData = true;
-      }
-      if (lessonScore !== null) {
-        weightsUsed.push({ score: lessonScore, weight: 0.40 });
-        sourceCount++;
-        hasRealData = true;
-      }
-      if (examScore !== null && weightsUsed.length === 0) {
-        weightsUsed.push({ score: examScore, weight: 1.0 });
-        sourceCount++;
-        hasRealData = true;
-      }
-    } else if (filter.includes('ki')) {
+    if (filter.includes('ki')) {
       if (examScore !== null) {
         weightsUsed.push({ score: examScore, weight: SCORE_WEIGHTS.EXAM });
         sourceCount++;

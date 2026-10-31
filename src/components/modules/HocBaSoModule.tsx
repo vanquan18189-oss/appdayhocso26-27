@@ -82,6 +82,7 @@ import {
   getStudentsFromLocalStorage,
   generateDefaultClassRoster,
   saveStudentsToLocalStorage,
+  saveAllStudentsToLocalStorage,
   syncClassStudentsToFirestore,
   subscribeToFirestoreClassStudents,
   getStandardClassName,
@@ -102,9 +103,11 @@ import { exportSoNhanXetToExcel, exportSoTongKetToExcel } from '../../services/e
 import { getStudentGameProfile } from '../../services/studentGameStoreService';
 import { db } from '../../services/firebase';
 import { collection, onSnapshot } from 'firebase/firestore';
+import { normalizeStudentCode, isValidStudentCode, formatStandardStudentCode } from '../../services/studentCode';
 
 interface StudentRecord {
   id: string;
+  code: string;
   lastName: string;
   firstName: string;
   dob: string;
@@ -119,6 +122,7 @@ interface StudentRecord {
     overallDat: 'T' | 'H' | 'CHT';
     score: number;
     hasCommented: boolean;
+    testTitle?: string;
   };
 }
 
@@ -131,11 +135,18 @@ export interface HocBaSoModuleProps {
   currentStudent?: GlobalStudentRecord | null;
 }
 
+function cleanStudentName(rawName: string): string {
+  if (!rawName) return '';
+  return rawName.replace(/([À-ỹa-zđĐ])A$/i, '$1').trim();
+}
+
 function convertToHocBaStudent(st: GlobalStudentRecord): StudentRecord {
-  const name = st.fullName || st.name || '';
+  const name = cleanStudentName(st.fullName || st.name || '');
   const parts = name.trim().split(/\s+/);
   const firstName = parts.length > 0 ? parts[parts.length - 1] : '';
   const lastName = parts.length > 1 ? parts.slice(0, parts.length - 1).join(' ') : '';
+  const rawCode = st.code || (st as any).studentCode || (st as any).maHs || formatStandardStudentCode(st.id, st.className || '', (st as any).stt || 1);
+  const code = normalizeStudentCode(rawCode);
 
   const rawEvaluations = (st as any).evaluations;
   const evaluations: Record<string, { dat: 'T' | 'H' | 'CHT'; score: string }> =
@@ -147,6 +158,7 @@ function convertToHocBaStudent(st: GlobalStudentRecord): StudentRecord {
 
   return {
     id: st.id,
+    code,
     lastName,
     firstName,
     dob: st.dob || '',
@@ -185,7 +197,6 @@ const MONTH_FILTER_OPTIONS = [
 
 const EXAM_FILTER_OPTIONS = [
   { key: 'all', label: 'Tất cả bài kiểm tra' },
-  { key: 'thuong_xuyen', label: 'Thường xuyên' },
   { key: 'giua_ki_1', label: 'Giữa kì 1' },
   { key: 'cuoi_ki_1', label: 'Cuối kì 1' },
   { key: 'giua_ki_2', label: 'Giữa kì 2' },
@@ -196,8 +207,7 @@ const BAR_FILTER_CHIPS = [
   { key: 'giua_ki_1', label: 'Giữa kỳ 1' },
   { key: 'cuoi_ki_1', label: 'Cuối kỳ 1' },
   { key: 'giua_ki_2', label: 'Giữa kỳ 2' },
-  { key: 'cuoi_ki_2', label: 'Cuối kỳ 2' },
-  { key: 'thuong_xuyen', label: 'Thường xuyên' }
+  { key: 'cuoi_ki_2', label: 'Cuối kỳ 2' }
 ];
 
 const BAR_MONTH_OPTIONS = [
@@ -364,8 +374,20 @@ const StudentHocBaSoView: React.FC<StudentHocBaSoViewProps> = memo(({
   const isHk2 = selectedSemester === 'Học kỳ II';
 
   // Block 2: Test Type Filter & Month Filter state
-  const [selectedExamFilter, setSelectedExamFilter] = useState<string>(isHk2 ? 'giua_ki_2' : 'giua_ki_1');
+  const [selectedExamFilter, setSelectedExamFilter] = useState<string>(() => {
+    const saved = localStorage.getItem('eduplay_hocba_exam_filter');
+    if (!saved || saved === 'thuong_xuyen' || saved === 'Thường xuyên' || !['giua_ki_1', 'cuoi_ki_1', 'giua_ki_2', 'cuoi_ki_2', 'all'].includes(saved)) {
+      return isHk2 ? 'giua_ki_2' : 'giua_ki_1';
+    }
+    return saved;
+  });
   const [selectedMonth, setSelectedMonth] = useState<string>(isHk2 ? '1' : '9');
+
+  useEffect(() => {
+    if (selectedExamFilter) {
+      localStorage.setItem('eduplay_hocba_exam_filter', selectedExamFilter);
+    }
+  }, [selectedExamFilter]);
 
   // Block 7: AI Advisor state
   const [isAiAdvisorActive, setIsAiAdvisorActive] = useState<boolean>(false);
@@ -375,13 +397,13 @@ const StudentHocBaSoView: React.FC<StudentHocBaSoViewProps> = memo(({
   useEffect(() => {
     if (selectedSemester === 'Học kỳ II') {
       setSelectedMonth('1');
-      setSelectedExamFilter('giua_ki_2');
-      setBarFilter('giua_ki_2');
+      setSelectedExamFilter(prev => (prev === 'thuong_xuyen' || !['giua_ki_1', 'cuoi_ki_1', 'giua_ki_2', 'cuoi_ki_2', 'all'].includes(prev)) ? 'giua_ki_2' : prev);
+      setBarFilter(prev => (prev === 'thuong_xuyen' || !['giua_ki_1', 'cuoi_ki_1', 'giua_ki_2', 'cuoi_ki_2'].includes(prev)) ? 'giua_ki_2' : prev);
       setBarSelectedMonth('1');
     } else {
       setSelectedMonth('9');
-      setSelectedExamFilter('giua_ki_1');
-      setBarFilter('giua_ki_1');
+      setSelectedExamFilter(prev => (prev === 'thuong_xuyen' || !['giua_ki_1', 'cuoi_ki_1', 'giua_ki_2', 'cuoi_ki_2', 'all'].includes(prev)) ? 'giua_ki_1' : prev);
+      setBarFilter(prev => (prev === 'thuong_xuyen' || !['giua_ki_1', 'cuoi_ki_1', 'giua_ki_2', 'cuoi_ki_2'].includes(prev)) ? 'giua_ki_1' : prev);
       setBarSelectedMonth('9');
     }
   }, [selectedSemester]);
@@ -839,8 +861,20 @@ const StudentHocBaSoView: React.FC<StudentHocBaSoViewProps> = memo(({
   // =========================================================================
   // BỘ LỌC DẠNG CHIP & DỮ LIỆU CHO BIỂU ĐỒ "SO SÁNH ĐIỂM SỐ CÁC MÔN HỌC"
   // =========================================================================
-  const [barFilter, setBarFilter] = useState<string>('giua_ki_1');
-  const [barSelectedMonth, setBarSelectedMonth] = useState<string>('9');
+  const [barFilter, setBarFilter] = useState<string>(() => {
+    const saved = localStorage.getItem('eduplay_hocba_bar_filter');
+    if (!saved || saved === 'thuong_xuyen' || saved === 'Thường xuyên' || !['giua_ki_1', 'cuoi_ki_1', 'giua_ki_2', 'cuoi_ki_2'].includes(saved)) {
+      return isHk2 ? 'giua_ki_2' : 'giua_ki_1';
+    }
+    return saved;
+  });
+  const [barSelectedMonth, setBarSelectedMonth] = useState<string>(isHk2 ? '1' : '9');
+
+  useEffect(() => {
+    if (barFilter) {
+      localStorage.setItem('eduplay_hocba_bar_filter', barFilter);
+    }
+  }, [barFilter]);
 
   // Lấy dữ liệu bài nộp kiểm tra & bài tập của học sinh
   const rawStudentExamSubs = useMemo(() => {
@@ -918,99 +952,48 @@ const StudentHocBaSoView: React.FC<StudentHocBaSoViewProps> = memo(({
       else if (sLower.includes('khoa học')) subjectColor = '#0891b2'; // Cyan
       else if (sLower.includes('lịch sử') || sLower.includes('địa')) subjectColor = '#ea580c'; // Orange
 
-      if (barFilter === 'thuong_xuyen') {
-        // Thường xuyên: tính trung bình cộng tất cả bài kiểm tra thường xuyên & bài tập trong tháng
-        const matchedExams = rawStudentExamSubs.filter(ex => {
-          if (!isSubjectMatch(ex.subject, subject)) return false;
-          if (!isExamTypeMatch(ex.examType, ex.title, 'thuong_xuyen')) return false;
-          return isSubmissionInMonth(ex.submittedTime, barSelectedMonth, ex.title);
-        });
+      // Định kỳ: Giữa kỳ 1, Cuối kỳ 1, Giữa kỳ 2, Cuối kỳ 2 -> Lấy trực tiếp điểm bài kiểm tra định kỳ đó
+      const matchedExams = rawStudentExamSubs.filter(ex => {
+        if (!isSubjectMatch(ex.subject, subject)) return false;
+        return isExamTypeMatch(ex.examType, ex.title, barFilter);
+      });
 
-        const matchedHw = rawStudentHwSubs.filter(hw => {
-          if (!isSubjectMatch(hw.subject, subject)) return false;
-          return isSubmissionInMonth(hw.submittedTime, barSelectedMonth, hw.title);
-        });
-
-        const allTasks: Array<{ title: string; score: number; type: string; time: string }> = [
-          ...matchedExams.map(e => ({ title: e.title || 'Đề kiểm tra', score: e.score, type: 'Đề kiểm tra', time: e.submittedTime })),
-          ...matchedHw.map(h => ({ title: h.title || 'Bài tập', score: h.score, type: 'Bài tập', time: h.submittedTime }))
-        ];
-
-        if (allTasks.length > 0) {
-          const totalScore = allTasks.reduce((sum, t) => sum + t.score, 0);
-          const avgScore = Math.round(totalScore / allTasks.length);
-          const detailStr = allTasks.map((t, idx) => `Bài ${idx + 1}: ${formatScore(t.score)}đ`).join(', ') + ` → TB: ${formatScore(avgScore)}đ`;
-
-          return {
-            subject,
-            shortName,
-            score: avgScore,
-            displayScore: avgScore,
-            hasData: true,
-            color: subjectColor,
-            itemCount: allTasks.length,
-            calculationSummary: detailStr,
-            itemsDetail: allTasks,
-            subtext: `Tháng ${barSelectedMonth} (${allTasks.length} bài)`
-          };
-        }
+      if (matchedExams.length > 0) {
+        const mainExam = matchedExams[0];
+        const scoreVal = Math.round(mainExam.score);
+        const allExamDetails = matchedExams.map(e => ({
+          title: e.title || 'Bài kiểm tra định kỳ',
+          score: e.score,
+          type: 'Đề định kỳ',
+          time: e.submittedTime
+        }));
 
         return {
           subject,
           shortName,
-          score: null,
-          displayScore: 0,
-          hasData: false,
-          color: '#cbd5e1',
-          itemCount: 0,
-          calculationSummary: `Chưa có bài trong Tháng ${barSelectedMonth}`,
-          itemsDetail: [],
-          subtext: 'Chưa có bài'
-        };
-      } else {
-        // Định kỳ: Giữa kỳ 1, Cuối kỳ 1, Giữa kỳ 2, Cuối kỳ 2 -> Lấy trực tiếp điểm bài kiểm tra định kỳ đó
-        const matchedExams = rawStudentExamSubs.filter(ex => {
-          if (!isSubjectMatch(ex.subject, subject)) return false;
-          return isExamTypeMatch(ex.examType, ex.title, barFilter);
-        });
-
-        if (matchedExams.length > 0) {
-          const mainExam = matchedExams[0];
-          const scoreVal = Math.round(mainExam.score);
-          const allExamDetails = matchedExams.map(e => ({
-            title: e.title || 'Bài kiểm tra định kỳ',
-            score: e.score,
-            type: 'Đề định kỳ',
-            time: e.submittedTime
-          }));
-
-          return {
-            subject,
-            shortName,
-            score: scoreVal,
-            displayScore: scoreVal,
-            hasData: true,
-            color: subjectColor,
-            itemCount: matchedExams.length,
-            calculationSummary: `${mainExam.title}: ${scoreVal}đ`,
-            itemsDetail: allExamDetails,
-            subtext: `${scoreVal}đ`
-          };
-        }
-
-        return {
-          subject,
-          shortName,
-          score: null,
-          displayScore: 0,
-          hasData: false,
-          color: '#cbd5e1',
-          itemCount: 0,
-          calculationSummary: 'Chưa có bài kiểm tra',
-          itemsDetail: [],
-          subtext: 'Chưa có bài'
+          score: scoreVal,
+          displayScore: scoreVal,
+          hasData: true,
+          color: subjectColor,
+          itemCount: matchedExams.length,
+          calculationSummary: `${mainExam.title}: ${scoreVal}đ`,
+          itemsDetail: allExamDetails,
+          subtext: `${scoreVal}đ`
         };
       }
+
+      return {
+        subject,
+        shortName,
+        score: null,
+        displayScore: 0,
+        hasData: false,
+        color: '#cbd5e1',
+        itemCount: 0,
+        calculationSummary: 'Chưa có bài kiểm tra',
+        itemsDetail: [],
+        subtext: 'Chưa có bài'
+      };
     });
   }, [scoredClassSubjects, barFilter, barSelectedMonth, rawStudentExamSubs, rawStudentHwSubs]);
 
@@ -1642,9 +1625,7 @@ const StudentHocBaSoView: React.FC<StudentHocBaSoViewProps> = memo(({
           <span className="text-[11px] font-bold text-teal-700 bg-teal-50 px-3 py-1 rounded-full border border-teal-200/70 shrink-0">
             {selectedExamFilter === 'all' 
               ? 'Tất cả bài kiểm tra' 
-              : selectedExamFilter === 'thuong_xuyen' 
-                ? `Thường xuyên (Tháng ${selectedMonth})` 
-                : EXAM_FILTER_OPTIONS.find(o => o.key === selectedExamFilter)?.label}
+              : EXAM_FILTER_OPTIONS.find(o => o.key === selectedExamFilter)?.label}
           </span>
         </div>
 
@@ -1683,25 +1664,6 @@ const StudentHocBaSoView: React.FC<StudentHocBaSoViewProps> = memo(({
                     );
                   })}
                 </div>
-
-                {/* Dropdown chọn tháng khi chọn 'Thường xuyên' */}
-                {barFilter === 'thuong_xuyen' && (
-                  <div className="flex items-center gap-1.5 shrink-0 bg-teal-50 px-2 py-0.5 rounded-lg border border-teal-200 animate-in fade-in">
-                    <span className="text-[11px] font-bold text-teal-800 whitespace-nowrap">Tháng:</span>
-                    <div className="relative">
-                      <select
-                        value={barSelectedMonth}
-                        onChange={(e) => setBarSelectedMonth(e.target.value)}
-                        className="pl-2 pr-5 py-0.5 rounded text-xs font-bold bg-white border border-teal-300 text-teal-900 focus:outline-none focus:ring-1 focus:ring-teal-500 cursor-pointer appearance-none shadow-2xs"
-                      >
-                        {BAR_MONTH_OPTIONS.map(m => (
-                          <option key={m.key} value={m.key}>{m.label}</option>
-                        ))}
-                      </select>
-                      <ChevronDown className="w-3 h-3 text-teal-600 absolute right-1 top-1/2 -translate-y-1/2 pointer-events-none" />
-                    </div>
-                  </div>
-                )}
               </div>
 
               {/* Highlight badge môn cao nhất hoặc câu động viên khi chưa có dữ liệu */}
@@ -2534,29 +2496,6 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
   const { classes, getClassesForGrade } = useClassesList();
   const gradesList = GRADES;
   
-  // Section 1 Filters
-  const [selectedGrade1, setSelectedGrade1] = useState<string>('Khối 3');
-  const [selectedClass1, setSelectedClass1] = useState<string>(() => {
-    const initList = getClassesForGrade('Khối 3');
-    return initList?.[0]?.name || 'Lớp 3C';
-  });
-  const [selectedSubject1, setSelectedSubject1] = useState<string>('Công nghệ');
-  const [selectedExamType1, setSelectedExamType1] = useState<string>('Giữa kì 1');
-  const [selectedTestName1, setSelectedTestName1] = useState<string>('Tất cả bài kiểm tra');
-  const [searchKeyword1, setSearchKeyword1] = useState<string>('');
-
-  // Section 2 Filters (Sổ Tổng Kết Kết Quả Giáo Dục)
-  const [selectedGrade2, setSelectedGrade2] = useState<string>('Khối 3');
-  const [selectedClass2, setSelectedClass2] = useState<string>(() => {
-    const initList = getClassesForGrade('Khối 3');
-    return initList?.[0]?.name || 'Lớp 3C';
-  });
-  const [selectedSemester2, setSelectedSemester2] = useState<string>('Giữa kì 1');
-  const [searchKeyword2, setSearchKeyword2] = useState<string>('');
-
-  const [selectedStudentDetail, setSelectedStudentDetail] = useState<StudentRecord | null>(null);
-  const [isDetailModalOpen, setIsDetailModalOpen] = useState<boolean>(false);
-
   // Academic Year & Semester selection from AcademicYearContext
   const {
     selectedAcademicYear,
@@ -2566,6 +2505,43 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
     availableYears,
     hasYearEnrollments
   } = useAcademicYear();
+
+  const isHk2 = selectedSemester === 'Học kỳ II';
+
+  // Section 1 Filters
+  const [selectedGrade1, setSelectedGrade1] = useState<string>('Khối 3');
+  const [selectedClass1, setSelectedClass1] = useState<string>(() => {
+    const initList = getClassesForGrade('Khối 3');
+    return initList?.[0]?.name || 'Lớp 3C';
+  });
+  const [selectedSubject1, setSelectedSubject1] = useState<string>('Công nghệ');
+  const [selectedExamType1, setSelectedExamType1] = useState<string>(() => {
+    const saved = localStorage.getItem('eduplay_hocba_exam_type_1');
+    if (!saved || saved === 'Thường xuyên' || saved === 'thuong_xuyen' || !['Giữa kì 1', 'Cuối kì 1', 'Giữa kì 2', 'Cuối kì 2'].includes(saved)) {
+      return isHk2 ? 'Giữa kì 2' : 'Giữa kì 1';
+    }
+    return saved;
+  });
+  const [selectedTestName1, setSelectedTestName1] = useState<string>('Tất cả bài kiểm tra');
+  const [searchKeyword1, setSearchKeyword1] = useState<string>('');
+
+  // Section 2 Filters (Sổ Tổng Kết Kết Quả Giáo Dục)
+  const [selectedGrade2, setSelectedGrade2] = useState<string>('Khối 3');
+  const [selectedClass2, setSelectedClass2] = useState<string>(() => {
+    const initList = getClassesForGrade('Khối 3');
+    return initList?.[0]?.name || 'Lớp 3C';
+  });
+  const [selectedSemester2, setSelectedSemester2] = useState<string>(() => {
+    const saved = localStorage.getItem('eduplay_hocba_semester_2');
+    if (!saved || saved === 'Thường xuyên' || saved === 'thuong_xuyen' || !['Giữa kì 1', 'Cuối kì 1', 'Giữa kì 2', 'Cuối kì 2'].includes(saved)) {
+      return isHk2 ? 'Giữa kì 2' : 'Giữa kì 1';
+    }
+    return saved;
+  });
+  const [searchKeyword2, setSearchKeyword2] = useState<string>('');
+
+  const [selectedStudentDetail, setSelectedStudentDetail] = useState<StudentRecord | null>(null);
+  const [isDetailModalOpen, setIsDetailModalOpen] = useState<boolean>(false);
 
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
@@ -2606,25 +2582,36 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
   // Tự động đồng bộ Học kỳ từ Header toàn cục xuống Sổ Nhận Xét và Sổ Tổng Kết
   useEffect(() => {
     if (selectedSemester === 'Học kỳ II') {
-      setSelectedExamType1('Giữa kì 2');
-      setSelectedSemester2('Giữa kì 2');
+      setSelectedExamType1(prev => (prev === 'Thường xuyên' || !['Giữa kì 1', 'Cuối kì 1', 'Giữa kì 2', 'Cuối kì 2'].includes(prev)) ? 'Giữa kì 2' : prev);
+      setSelectedSemester2(prev => (!['Giữa kì 1', 'Cuối kì 1', 'Giữa kì 2', 'Cuối kì 2'].includes(prev)) ? 'Giữa kì 2' : prev);
     } else {
-      setSelectedExamType1('Giữa kì 1');
-      setSelectedSemester2('Giữa kì 1');
+      setSelectedExamType1(prev => (prev === 'Thường xuyên' || !['Giữa kì 1', 'Cuối kì 1', 'Giữa kì 2', 'Cuối kì 2'].includes(prev)) ? 'Giữa kì 1' : prev);
+      setSelectedSemester2(prev => (!['Giữa kì 1', 'Cuối kì 1', 'Giữa kì 2', 'Cuối kì 2'].includes(prev)) ? 'Giữa kì 1' : prev);
     }
   }, [selectedSemester]);
+
+  useEffect(() => {
+    if (selectedExamType1) {
+      localStorage.setItem('eduplay_hocba_exam_type_1', selectedExamType1);
+    }
+  }, [selectedExamType1]);
+
+  useEffect(() => {
+    if (selectedSemester2) {
+      localStorage.setItem('eduplay_hocba_semester_2', selectedSemester2);
+    }
+  }, [selectedSemester2]);
 
   // Section 2 Subjects filter based on Grade/Class configured in DB
   const getSubjectsForGrade = (grade: string) => {
     return getSubjectsForClassOrGrade(grade, classes);
   };
 
-  const isHk2 = selectedSemester === 'Học kỳ II';
   const currentGradeSubjects2 = getSubjectsForGrade(selectedGrade2);
   const subjectsList = PRIMARY_SCHOOL_SUBJECTS;
   const examTypesList1 = isHk2
-    ? ['Giữa kì 2', 'Cuối kì 2', 'Thường xuyên', 'Giữa kì 1', 'Cuối kì 1']
-    : ['Giữa kì 1', 'Cuối kì 1', 'Thường xuyên', 'Giữa kì 2', 'Cuối kì 2'];
+    ? ['Giữa kì 2', 'Cuối kì 2', 'Giữa kì 1', 'Cuối kì 1']
+    : ['Giữa kì 1', 'Cuối kì 1', 'Giữa kì 2', 'Cuối kì 2'];
   const testNamesList = ['Tất cả bài kiểm tra', 'Kiểm tra 15 phút', 'Kiểm tra miệng', 'Bài thực hành định kì', 'Kiểm tra học kì'];
   const semestersList = isHk2
     ? ['Giữa kì 2', 'Cuối kì 2', 'Giữa kì 1', 'Cuối kì 1']
@@ -2632,12 +2619,11 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
 
   const mapFilterToExamFilter = (filterStr: string): string => {
     const clean = (filterStr || '').toLowerCase();
-    if (clean.includes('thường xuyên')) return 'thuong_xuyen';
     if (clean.includes('giữa kì 1') || clean.includes('giữa k 1')) return 'giua_ki_1';
     if (clean.includes('cuối kì 1') || clean.includes('cuối k 1')) return 'cuoi_ki_1';
     if (clean.includes('giữa kì 2') || clean.includes('giữa k 2')) return 'giua_ki_2';
     if (clean.includes('cuối kì 2') || clean.includes('cuối k 2')) return 'cuoi_ki_2';
-    return 'all';
+    return isHk2 ? 'giua_ki_2' : 'giua_ki_1';
   };
 
   // Student Database State and Real-Time Sync
@@ -2726,10 +2712,25 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
         classRoster.forEach((rawSt) => {
           if (rawSt && rawSt.id) {
             const st = convertToHocBaStudent({ ...rawSt, className: rawSt.className || clsName });
+            if (!isValidStudentCode(st.code)) {
+              st.commentDetail = {
+                correctCount: 0,
+                totalQuestions: 10,
+                strengths: 'Mã HS không hợp lệ',
+                reminders: 'Cần cập nhật lại Mã HS chuẩn [Lớp]26-27-[STT]',
+                overallDat: 'CHT',
+                score: 0,
+                hasCommented: true,
+                testTitle: 'Mã HS lỗi'
+              };
+              studentMap.set(st.code || st.id, st);
+              return;
+            }
 
             const examFilterVal = mapFilterToExamFilter(selectedExamType1);
             const summary = calculateUnifiedHocBaData({
               studentId: st.id,
+              studentCode: st.code,
               studentName: `${st.lastName} ${st.firstName}`,
               className: st.className,
               examFilter: examFilterVal,
@@ -2804,7 +2805,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
               st.commentDetail = undefined;
             }
 
-            studentMap.set(st.id, st);
+            studentMap.set(st.code, st);
           }
         });
       }
@@ -2866,9 +2867,116 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
     });
   }, [activeStudentsList, selectedClass2, selectedGrade2, searchKeyword2]);
 
+  const studentSubmissionStatusMap = useMemo(() => {
+    const map = new Map<string, { hasSubmitted: boolean; hasComment: boolean; score?: number; dat?: string }>();
+    filteredStudents1.forEach(st => {
+      const subs = getStudentExamSubmissions({
+        studentId: st.id,
+        studentName: `${st.lastName} ${st.firstName}`,
+        studentCode: st.code,
+        exams
+      });
+      const matched = subs.filter(ex => isExamTypeMatch(ex.examType, ex.title, selectedExamType1) && isSubjectMatch(ex.subject, selectedSubject1));
+      const hasSubmitted = matched.length > 0;
+      const hasComment = Boolean(st.commentDetail?.hasCommented);
+      const score = hasSubmitted ? matched[0].score : (st.commentDetail?.score !== undefined ? st.commentDetail.score : undefined);
+      const dat = st.commentDetail?.overallDat || (score !== undefined ? (score >= 5 ? 'T' : 'H') : undefined);
+      map.set(st.code, { hasSubmitted, hasComment, score, dat });
+    });
+    return map;
+  }, [filteredStudents1, exams, selectedExamType1, selectedSubject1]);
+
+  const submittedCount = useMemo(() => {
+    let count = 0;
+    studentSubmissionStatusMap.forEach(val => {
+      if (val.hasSubmitted) count++;
+    });
+    return count;
+  }, [studentSubmissionStatusMap]);
+
   const commentedCount = useMemo(() => {
-    return filteredStudents1.filter(st => st.commentDetail?.hasCommented).length;
-  }, [filteredStudents1]);
+    let count = 0;
+    studentSubmissionStatusMap.forEach(val => {
+      if (val.hasSubmitted && val.hasComment) count++;
+    });
+    return count;
+  }, [studentSubmissionStatusMap]);
+
+  const handleGenerateMissingComments = useCallback(() => {
+    const missingStudents = filteredStudents1.filter(st => {
+      const status = studentSubmissionStatusMap.get(st.code);
+      return status?.hasSubmitted && !status?.hasComment;
+    });
+
+    if (missingStudents.length === 0) {
+      showToast('✨ Tất cả học sinh đã nộp bài đều đã có nhận xét!');
+      return;
+    }
+
+    showToast(`⏳ Đang tạo nhận xét cho ${missingStudents.length} học sinh còn thiếu...`);
+
+    const updatedDb = { ...allStudentsDb };
+    let count = 0;
+
+    missingStudents.forEach(st => {
+      const subs = getStudentExamSubmissions({
+        studentId: st.id,
+        studentName: `${st.lastName} ${st.firstName}`,
+        studentCode: st.code,
+        exams
+      });
+      const matched = subs.filter(ex => isExamTypeMatch(ex.examType, ex.title, selectedExamType1) && isSubjectMatch(ex.subject, selectedSubject1));
+      if (matched.length > 0) {
+        const examSub = matched[0];
+        const scoreVal = examSub.score !== undefined ? examSub.score : 8.0;
+        const datVal = scoreVal >= 5 ? 'T' : 'H';
+        const comment = {
+          correctCount: Math.round((scoreVal / 10) * 10),
+          totalQuestions: 10,
+          strengths: examSub.title || 'Bài kiểm tra định kỳ',
+          reminders: scoreVal >= 8 ? `Đã hoàn thành xuất sắc bài kiểm tra ${selectedExamType1}.` : 'Cần chú ý ôn tập thêm nội dung bài học.',
+          overallDat: datVal as 'T' | 'H' | 'CHT',
+          score: scoreVal,
+          hasCommented: true,
+          testTitle: examSub.title
+        };
+
+        st.commentDetail = comment;
+        if (!st.evaluations) st.evaluations = {};
+        st.evaluations[selectedSubject1] = {
+          dat: datVal,
+          score: formatTotalScore(scoreVal)
+        };
+
+        const cls = st.className || selectedClass1;
+        if (updatedDb[cls]) {
+          updatedDb[cls] = updatedDb[cls].map((item: any) => {
+            const itemCode = normalizeStudentCode(item.code || item.studentCode || item.maHs || item.id);
+            if (itemCode === st.code) {
+              return {
+                ...item,
+                commentDetail: comment,
+                evaluations: {
+                  ...(item.evaluations || {}),
+                  [selectedSubject1]: { dat: datVal, score: formatTotalScore(scoreVal) }
+                },
+                commentDetailByExamType: {
+                  ...(item.commentDetailByExamType || {}),
+                  [selectedExamType1]: comment
+                }
+              };
+            }
+            return item;
+          });
+        }
+        count++;
+      }
+    });
+
+    setAllStudentsDb(updatedDb);
+    saveAllStudentsToLocalStorage(updatedDb);
+    showToast(`✅ Đã tạo thành công nhận xét cho ${count} học sinh còn thiếu!`, 'success');
+  }, [filteredStudents1, studentSubmissionStatusMap, allStudentsDb, exams, selectedExamType1, selectedSubject1, selectedClass1]);
 
   /**
    * Helper function: Tra cứu GVCN chính xác của từng lớp từ Firestore classes collection
@@ -3208,11 +3316,20 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <div className="px-4 py-2 rounded-xl bg-slate-100 border border-slate-200 text-xs font-extrabold text-slate-700 flex items-center gap-2 shadow-xs">
               <MessageSquare className="w-4 h-4 text-teal-600" />
-              <span>ĐÃ NHẬN XÉT: <b className="text-teal-700 text-sm">{commentedCount}/{filteredStudents1.length} HS</b></span>
+              <span>Đã nộp <b className="text-teal-700">{submittedCount}/{filteredStudents1.length}</b> — Đã có nhận xét <b className="text-teal-700">{commentedCount}/{submittedCount}</b></span>
             </div>
+
+            <button
+              onClick={handleGenerateMissingComments}
+              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-teal-600 hover:bg-teal-700 text-white transition-all flex items-center gap-2 cursor-pointer shadow-xs shadow-teal-200"
+              title="Tự động tạo nhận xét cho các em đã làm bài nhưng chưa có nhận xét"
+            >
+              <Sparkles className="w-4 h-4" />
+              <span>Tạo nhận xét thiếu</span>
+            </button>
 
             <button
               onClick={handleExportExcelSection1}
@@ -3322,6 +3439,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
                 <thead>
                   <tr className="bg-slate-100 text-slate-700 font-extrabold border-b border-slate-200 text-center">
                     <th className="p-3 border-r border-slate-200 w-12">STT</th>
+                    <th className="p-3 border-r border-slate-200 w-28">Mã HS</th>
                     <th className="p-3 border-r border-slate-200 min-w-[150px]">Họ và tên</th>
                     <th className="p-3 border-r border-slate-200 min-w-[100px]">Ngày sinh</th>
                     <th className="p-3 border-r border-slate-200 text-left min-w-[380px]">Lời nhận xét</th>
@@ -3335,7 +3453,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
                 <tbody className="divide-y divide-slate-200">
                   {filteredStudents1.length === 0 ? (
                     <tr>
-                      <td colSpan={isSubjectWithScore(selectedSubject1) ? 7 : 6} className="text-center py-12 text-slate-400 text-xs">
+                      <td colSpan={isSubjectWithScore(selectedSubject1) ? 8 : 7} className="text-center py-12 text-slate-400 text-xs">
                         <div className="flex flex-col items-center justify-center space-y-2">
                           <AlertCircle className="w-8 h-8 text-slate-300" />
                           <span>Không tìm thấy học sinh nào phù hợp.</span>
@@ -3346,13 +3464,16 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
                     filteredStudents1.map((st, idx) => {
                       const comment = st.commentDetail;
                       const hasComment = Boolean(comment && comment.hasCommented);
+                      const subStatus = studentSubmissionStatusMap.get(st.code);
+                      const hasSubmitted = subStatus?.hasSubmitted;
                       const studentEval = st.evaluations ? st.evaluations[selectedSubject1] : undefined;
-                      const displayDat = comment?.overallDat || studentEval?.dat;
-                      const displayScore = comment?.score !== undefined ? comment.score : (studentEval?.score || '');
+                      const displayDat = subStatus?.dat || comment?.overallDat || studentEval?.dat;
+                      const displayScore = subStatus?.score !== undefined ? subStatus.score : (comment?.score !== undefined ? comment.score : (studentEval?.score || ''));
 
                       return (
-                        <tr key={st.id} className="hover:bg-slate-50/80 transition-colors">
+                        <tr key={st.code} className="hover:bg-slate-50/80 transition-colors">
                           <td className="p-3 text-center border-r border-slate-200 font-semibold text-slate-600">{idx + 1}</td>
+                          <td className="p-3 text-center border-r border-slate-200 font-mono text-[11px] font-bold text-teal-800 bg-teal-50/40">{st.code}</td>
                           <td className="p-3 border-r border-slate-200 font-bold text-slate-900">
                             <div className="flex items-center gap-1.5 flex-wrap">
                               <span>{st.lastName} {st.firstName}</span>
@@ -3384,10 +3505,20 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
                                   </div>
                                 )}
                               </div>
+                            ) : hasSubmitted ? (
+                              <div className="flex items-center justify-between gap-2 bg-amber-50 border border-amber-200 px-3 py-2 rounded-xl text-xs">
+                                <span className="font-semibold text-amber-800">⚠️ Đã làm bài, chưa có nhận xét</span>
+                                <button
+                                  onClick={() => handleViewDetail(st)}
+                                  className="px-2.5 py-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold transition-all shadow-2xs cursor-pointer shrink-0"
+                                >
+                                  Tạo nhận xét
+                                </button>
+                              </div>
                             ) : (
                               <div className="text-slate-400 italic text-[11px] flex items-center gap-1.5 py-1">
                                 <span className="w-1.5 h-1.5 rounded-full bg-slate-300"></span>
-                                <span>Chưa có nhận xét cho đợt kiểm tra này</span>
+                                <span>— Chưa làm bài —</span>
                               </div>
                             )}
                           </td>

@@ -726,7 +726,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
     {
       id: 'games',
       title: 'Đấu Trường Đang Chờ',
-      value: `${todoGamesCount} trò`,
+      value: `${todoGamesCount} trò chơi`,
       subtext: 'Thử thách trí tuệ',
       icon: Gamepad2,
       iconBg: 'bg-purple-100 text-purple-600',

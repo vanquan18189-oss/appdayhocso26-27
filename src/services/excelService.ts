@@ -1034,6 +1034,7 @@ export function exportAssignmentResultsExcel(
 
 interface SoNhanXetExportItem {
   id: string;
+  code?: string;
   lastName: string;
   firstName: string;
   dob: string;
@@ -1047,11 +1048,13 @@ interface SoNhanXetExportItem {
     overallDat: 'T' | 'H' | 'CHT';
     score: number;
     hasCommented: boolean;
+    testTitle?: string;
   };
 }
 
 interface SoTongKetExportItem {
   id: string;
+  code?: string;
   lastName: string;
   firstName: string;
   dob: string;
@@ -1106,7 +1109,7 @@ export function exportSoNhanXetToExcel(params: {
   const titleRow3 = [`Ngày xuất báo cáo: ${new Date().toLocaleDateString('vi-VN')} | Tổng số học sinh: ${students.length}`];
   const emptyRow: string[] = [];
 
-  const headers = ['STT', 'Họ và tên', 'Ngày sinh', 'Lời nhận xét chi tiết (AI Sư phạm)', 'Đạt'];
+  const headers = ['STT', 'Mã HS', 'Họ và tên', 'Ngày sinh', 'Lời nhận xét chi tiết (AI Sư phạm)', 'Đạt'];
   if (hasScore) {
     headers.push('Điểm');
   }
@@ -1126,21 +1129,27 @@ export function exportSoNhanXetToExcel(params: {
     const fullName = `${st.lastName} ${st.firstName}`.trim();
     const genderTag = st.isFemale ? ' (Nữ)' : '';
     const nameWithGender = `${fullName}${genderTag}`;
+    const studentCode = st.code || formatStandardStudentCode(st.id, displayClass, idx + 1);
+
+    const testTitle = comment?.testTitle || (testName !== 'Tất cả bài kiểm tra' ? testName : '');
+    const qCount = comment?.totalQuestions;
+    const testPrefix = testTitle ? `Đề: ${testTitle}${qCount ? ` (${qCount} câu)` : ''} — ` : '';
 
     const commentText = hasComment && comment
-      ? `Khen ngợi em đã hoàn thành đúng ${comment.correctCount}/${comment.totalQuestions} câu. Làm tốt các câu: ${comment.strengths}. Cần ôn tập kỹ hơn ở ${comment.reminders}`
-      : 'Chưa có nhận xét';
+      ? `${testPrefix}Khen ngợi em đã hoàn thành đúng ${comment.correctCount}/${comment.totalQuestions} câu. Làm tốt các câu: ${comment.strengths}.${comment.reminders ? ` Cần ôn tập kỹ hơn ở ${comment.reminders}` : ''}`
+      : `Chưa được giao / chưa làm bài kiểm tra ${examType} môn ${subject}`;
 
     const row = [
       idx + 1,
+      studentCode,
       nameWithGender,
       st.dob || '',
       commentText,
-      hasComment && comment?.overallDat ? comment.overallDat : '-'
+      hasComment && comment?.overallDat ? comment.overallDat : 'Chưa có'
     ];
 
     if (hasScore) {
-      row.push(hasComment && comment?.score !== undefined ? formatTotalScore(comment.score) : '-');
+      row.push(hasComment && comment?.score !== undefined ? formatTotalScore(comment.score) : '—');
     }
 
     sheetData.push(row);
@@ -1149,7 +1158,7 @@ export function exportSoNhanXetToExcel(params: {
   const ws = XLSX.utils.aoa_to_sheet(sheetData);
 
   // Auto Column Widths
-  const colWidths = [8, 28, 14, 75, 10];
+  const colWidths = [8, 16, 28, 14, 75, 10];
   if (hasScore) colWidths.push(10);
   setWorksheetColWidths(ws, colWidths);
 
@@ -1209,8 +1218,8 @@ export function exportSoTongKetToExcel(params: {
   const emptyRow: string[] = [];
 
   const headers = isAllClasses
-    ? ['STT', 'Lớp', 'GVCN', 'Họ lót', 'Tên', 'Ngày sinh', 'Nữ']
-    : ['STT', 'Họ lót', 'Tên', 'Ngày sinh', 'Nữ'];
+    ? ['STT', 'Mã HS', 'Lớp', 'GVCN', 'Họ lót', 'Tên', 'Ngày sinh', 'Nữ']
+    : ['STT', 'Mã HS', 'Họ lót', 'Tên', 'Ngày sinh', 'Nữ'];
 
   subjects.forEach((subj) => {
     headers.push(`${subj} (Đạt)`);
@@ -1228,9 +1237,11 @@ export function exportSoTongKetToExcel(params: {
   ];
 
   students.forEach((st, idx) => {
+    const studentCode = st.code || formatStandardStudentCode(st.id, st.className || displayClass, idx + 1);
     const row: any[] = isAllClasses
       ? [
           idx + 1,
+          studentCode,
           st.className || '',
           st.homeroomTeacher || '',
           st.lastName || '',
@@ -1240,6 +1251,7 @@ export function exportSoTongKetToExcel(params: {
         ]
       : [
           idx + 1,
+          studentCode,
           st.lastName || '',
           st.firstName || '',
           st.dob || '',
@@ -1260,7 +1272,7 @@ export function exportSoTongKetToExcel(params: {
   const ws = XLSX.utils.aoa_to_sheet(sheetData);
 
   // Column Widths
-  const colWidths = isAllClasses ? [8, 12, 22, 18, 12, 14, 8] : [8, 18, 12, 14, 8];
+  const colWidths = isAllClasses ? [8, 16, 12, 22, 18, 12, 14, 8] : [8, 16, 18, 12, 14, 8];
   subjects.forEach((subj) => {
     colWidths.push(14);
     if (checkHasScore(subj)) {
