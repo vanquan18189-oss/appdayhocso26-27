@@ -17,13 +17,22 @@ import {
   ExternalLink,
   Play,
   ArrowUp,
-  ArrowDown
+  ArrowDown,
+  Video,
+  Film
 } from 'lucide-react';
 import { Lesson5EPlan, QuestionItem } from '../../types';
 import { getQuestionTypeLabel, getCorrectOrderingSequence } from '../../lib/constants';
 import { uploadToCloudinary } from '../../lib/cloudinary';
 import { stableShuffle, getMatchingPairColor } from '../../utils/arrayUtils';
 import { checkQuestionCorrectLocal } from './StudentExamModule';
+import { 
+  isYouTubeUrl, 
+  getYouTubeEmbedUrl, 
+  isVideoSource, 
+  isImageSource, 
+  detectMediaType 
+} from '../../utils/mediaUtils';
 
 interface StudentApplyViewProps {
   lesson: Lesson5EPlan;
@@ -252,28 +261,86 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
             </div>
 
             {/* Media / Materials Illustration */}
-            {evaluateStep?.materials && (
-              <div className="p-5 bg-white rounded-2xl border border-slate-200 space-y-3">
-                <span className="text-xs font-extrabold text-indigo-700 uppercase tracking-wide block flex items-center gap-1.5">
-                  <ImageIcon className="w-4 h-4 text-indigo-600" /> Tư liệu / Hình ảnh / Video minh họa:
-                </span>
-                
-                {evaluateStep.materials.startsWith('http') ? (
-                  <div className="rounded-2xl overflow-hidden border border-indigo-100 bg-black/5 max-h-64 flex items-center justify-center p-2">
-                    <img 
-                      src={evaluateStep.materials} 
-                      alt="Tư liệu tình huống" 
-                      className="max-h-60 object-contain rounded-xl"
-                      referrerPolicy="no-referrer"
-                    />
+            {evaluateStep?.materials && evaluateStep.materials.trim() && (() => {
+              const mediaType = detectMediaType(evaluateStep.materials);
+              return (
+                <div className="p-5 bg-white rounded-2xl border border-slate-200 space-y-3 shadow-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-extrabold text-indigo-700 uppercase tracking-wide flex items-center gap-1.5">
+                      {mediaType === 'youtube' && <Play className="w-4 h-4 text-rose-600" />}
+                      {mediaType === 'video' && <Video className="w-4 h-4 text-indigo-600" />}
+                      {mediaType === 'image' && <ImageIcon className="w-4 h-4 text-teal-600" />}
+                      {mediaType === 'text' && <FileText className="w-4 h-4 text-slate-600" />}
+                      <span>
+                        {mediaType === 'youtube' && 'Video tình huống thực tế (YouTube)'}
+                        {mediaType === 'video' && 'Video minh họa tình huống thực tế'}
+                        {mediaType === 'image' && 'Hình ảnh tư liệu tình huống thực tế'}
+                        {mediaType === 'text' && 'Tư liệu tình huống'}
+                      </span>
+                    </span>
+
+                    {evaluateStep.materials.startsWith('http') && (
+                      <a
+                        href={evaluateStep.materials}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[11px] text-slate-500 hover:text-indigo-600 font-bold inline-flex items-center gap-1 transition-colors"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        <span>Mở liên kết gốc</span>
+                      </a>
+                    )}
                   </div>
-                ) : (
-                  <div className="p-3 bg-indigo-50/60 rounded-xl border border-indigo-100 text-xs text-indigo-900 font-medium leading-relaxed">
-                    {evaluateStep.materials}
-                  </div>
-                )}
-              </div>
-            )}
+
+                  {/* 1. YOUTUBE VIDEO PLAYER */}
+                  {mediaType === 'youtube' && (
+                    <div className="relative w-full aspect-video rounded-2xl overflow-hidden border border-slate-200 bg-black shadow-sm">
+                      <iframe
+                        src={getYouTubeEmbedUrl(evaluateStep.materials)}
+                        title="Video tình huống vận dụng"
+                        className="w-full h-full border-0"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                        allowFullScreen
+                      />
+                    </div>
+                  )}
+
+                  {/* 2. MP4 VIDEO PLAYER (URL OR BASE64) */}
+                  {mediaType === 'video' && (
+                    <div className="rounded-2xl overflow-hidden border border-slate-200 bg-black shadow-sm flex items-center justify-center">
+                      <video
+                        src={evaluateStep.materials}
+                        controls
+                        playsInline
+                        preload="metadata"
+                        className="w-full max-h-[460px] rounded-2xl object-contain bg-black"
+                      >
+                        Trình duyệt không hỗ trợ định dạng video này.
+                      </video>
+                    </div>
+                  )}
+
+                  {/* 3. SHARP RESPONSIVE IMAGE */}
+                  {mediaType === 'image' && (
+                    <div className="rounded-2xl overflow-hidden border border-slate-200 bg-slate-50 flex items-center justify-center p-3 shadow-xs">
+                      <img 
+                        src={evaluateStep.materials} 
+                        alt="Tư liệu tình huống" 
+                        className="max-h-[460px] max-w-full object-contain rounded-xl shadow-xs"
+                        referrerPolicy="no-referrer"
+                      />
+                    </div>
+                  )}
+
+                  {/* 4. PLAIN TEXT DESCRIPTION */}
+                  {mediaType === 'text' && (
+                    <div className="p-3.5 bg-indigo-50/60 rounded-xl border border-indigo-100 text-xs text-indigo-950 font-medium leading-relaxed whitespace-pre-line">
+                      {evaluateStep.materials}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
 
           <div className="flex justify-end pt-2">

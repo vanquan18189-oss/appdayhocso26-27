@@ -898,7 +898,7 @@ export const Lesson5EModal: React.FC<Lesson5EModalProps> = ({
         objectives: evaluateObj || 'Đánh giá mức độ tiếp thu.',
         teacherActivities: evaluateTeacher || 'Tổ chức kiểm tra ngắn.',
         studentActivities: evaluateStudent || 'Làm bài kiểm tra.',
-        materials: evaluateMat || 'Thang điểm Rubric.',
+        materials: evaluateMat ?? '',
         questions: evaluateQuestions
       } as any,
       ...({
