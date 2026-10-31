@@ -83,7 +83,7 @@ import {
   subscribeAssignedELearningLessons,
   AssignedELearningLesson
 } from '../../services/elearningAssignmentService';
-import { saveLessonToFirestore } from '../../services/lessonStorageService';
+import { saveLessonToFirestore, getLocalCachedLessons } from '../../services/lessonStorageService';
 
 interface StudentELearningProps {
   lessons: Lesson5EPlan[];
@@ -130,6 +130,53 @@ export const StudentELearning: React.FC<StudentELearningProps> = ({
       }
     }
   }, [lessons, selectedLesson?.id]);
+
+  // Real-time cross-tab & storage listeners for lesson updates
+  useEffect(() => {
+    const handleLessonUpdated = (e: any) => {
+      const updated = e.detail;
+      if (updated && selectedLesson?.id && (updated.id === selectedLesson.id || (updated as any).code === (selectedLesson as any).code)) {
+        setSelectedLesson(updated);
+      }
+    };
+    window.addEventListener('eduplay_lesson_updated', handleLessonUpdated);
+
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'eduplay_5e_lessons' && e.newValue && selectedLesson?.id) {
+        try {
+          const list = JSON.parse(e.newValue);
+          if (Array.isArray(list)) {
+            const found = list.find((item: any) => item && (item.id === selectedLesson.id || item.code === (selectedLesson as any).code));
+            if (found) {
+              setSelectedLesson(found);
+            }
+          }
+        } catch {}
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+
+    let bc: BroadcastChannel | null = null;
+    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+      try {
+        bc = new BroadcastChannel('eduplay_lessons_sync');
+        bc.onmessage = (msgEvent) => {
+          if (msgEvent.data?.type === 'LESSON_UPDATED' && msgEvent.data?.lesson && selectedLesson?.id) {
+            const up = msgEvent.data.lesson;
+            if (up.id === selectedLesson.id || up.code === (selectedLesson as any).code) {
+              setSelectedLesson(up);
+            }
+          }
+        };
+      } catch {}
+    }
+
+    return () => {
+      window.removeEventListener('eduplay_lesson_updated', handleLessonUpdated);
+      window.removeEventListener('storage', handleStorageChange);
+      if (bc) bc.close();
+    };
+  }, [selectedLesson?.id]);
 
   // Increment study views count when student opens lesson (once per session)
   useEffect(() => {
@@ -294,7 +341,14 @@ export const StudentELearning: React.FC<StudentELearningProps> = ({
       materials: 'Tài liệu số, video tương tác'
     };
 
-    const matchedLesson: Lesson5EPlan = lessons.find(l => l.id === assigned.lessonId) || assigned.lessonData || {
+    const cachedLessons = getLocalCachedLessons();
+    const liveLesson = 
+      lessons.find(l => l.id === assigned.lessonId || l.id === assigned.id) ||
+      cachedLessons.find(l => l.id === assigned.lessonId || l.id === assigned.id) ||
+      lessons.find(l => (l.title && assigned.lessonTitle && l.title.trim().toLowerCase() === assigned.lessonTitle.trim().toLowerCase())) ||
+      cachedLessons.find(l => (l.title && assigned.lessonTitle && l.title.trim().toLowerCase() === assigned.lessonTitle.trim().toLowerCase()));
+
+    const fallbackLesson: Lesson5EPlan = assigned.lessonData || {
       id: assigned.lessonId || assigned.id,
       title: assigned.lessonTitle || assigned.title,
       subject: assigned.subject,
@@ -313,6 +367,10 @@ export const StudentELearning: React.FC<StudentELearningProps> = ({
       stepElaborate: { ...defaultStep, title: '3. Áp dụng (Elaborate)', subtitle: 'Vận dụng thực hành bài tập tình huống' },
       stepEvaluate: { ...defaultStep, title: '4. Đánh giá (Evaluate)', subtitle: 'Củng cố kiến thức và kiểm tra nhanh' }
     };
+
+    const matchedLesson: Lesson5EPlan = liveLesson 
+      ? { ...fallbackLesson, ...liveLesson, stepEvaluate: liveLesson.stepEvaluate || fallbackLesson.stepEvaluate }
+      : fallbackLesson;
 
     const unified = getUnifiedStudentLessonProgress(effectiveUserId, assigned.lessonId || matchedLesson.id, {
       id: effectiveUserId,

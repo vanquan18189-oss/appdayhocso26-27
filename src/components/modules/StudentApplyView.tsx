@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   Sparkles, 
   Target, 
@@ -55,10 +55,39 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
 }) => {
   const [selectingLeftItem, setSelectingLeftItem] = useState<{ [qId: string]: number | null }>({});
   const evaluateStep = lesson.stepEvaluate as any;
-  const isReportEnabled = evaluateStep?.isReportEnabled ?? evaluateStep?.isStep3Enabled ?? (lesson as any)?.isApplyReportEnabled ?? true;
   
-  // 3-step internal workflow state
-  const [currentSubStep, setCurrentSubStep] = useState<1 | 2 | 3>(savedData?.subStep || 1);
+  // Comprehensive evaluation of whether Step 3 is enabled or closed across all flags
+  const isReportEnabled = useMemo(() => {
+    const evalStep = lesson?.stepEvaluate as any;
+    const candidateFlags = [
+      evalStep?.isReportEnabled,
+      evalStep?.isStep3Enabled,
+      evalStep?.isStep3Open,
+      evalStep?.isReportRequired,
+      (lesson as any)?.isApplyReportEnabled,
+      (lesson as any)?.isStep3Open,
+      (lesson as any)?.isStep3Enabled,
+      (lesson as any)?.isReportRequired
+    ];
+    for (const f of candidateFlags) {
+      if (f === false || f === 'false' || f === 0 || f === '0' || f === 'closed' || f === 'dong') {
+        return false;
+      }
+    }
+    for (const f of candidateFlags) {
+      if (f === true || f === 'true' || f === 1 || f === '1' || f === 'open' || f === 'mo') {
+        return true;
+      }
+    }
+    return true;
+  }, [lesson]);
+  
+  // 3-step internal workflow state (strictly clamped if Step 3 is closed)
+  const [currentSubStep, setCurrentSubStep] = useState<1 | 2 | 3>(() => {
+    const raw = savedData?.subStep || 1;
+    if (!isReportEnabled && raw === 3) return 2;
+    return raw > 3 ? 1 : (raw as 1 | 2 | 3);
+  });
   const [isCompleted, setIsCompleted] = useState<boolean>(Boolean(savedData?.isCompleted));
 
   // If Step 3 is closed by teacher, ensure subStep doesn't stay on 3
@@ -67,6 +96,9 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
       setCurrentSubStep(2);
     }
   }, [isReportEnabled, currentSubStep]);
+
+  // Effective subStep guaranteed to never be 3 when Step 3 is closed
+  const effectiveSubStep = !isReportEnabled && currentSubStep === 3 ? 2 : currentSubStep;
 
   const handleCompleteTwoStepApply = () => {
     setIsCompleted(true);
@@ -221,7 +253,7 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
           <button
             onClick={() => setCurrentSubStep(1)}
             className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-              currentSubStep === 1 
+              effectiveSubStep === 1 
                 ? 'bg-pink-600 text-white shadow-xs' 
                 : 'text-slate-600 hover:text-slate-900'
             }`}
@@ -233,7 +265,7 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
           <button
             onClick={() => setCurrentSubStep(2)}
             className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-              currentSubStep === 2 
+              effectiveSubStep === 2 
                 ? 'bg-pink-600 text-white shadow-xs' 
                 : 'text-slate-600 hover:text-slate-900'
             }`}
@@ -246,7 +278,7 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
             <button
               onClick={() => setCurrentSubStep(3)}
               className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                currentSubStep === 3 
+                effectiveSubStep === 3 
                   ? 'bg-pink-600 text-white shadow-xs' 
                   : 'text-slate-600 hover:text-slate-900'
               }`}
@@ -259,7 +291,7 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
       </div>
 
       {/* SUB-STEP 1: TÌNH HUỐNG THỰC TẾ */}
-      {currentSubStep === 1 && (
+      {effectiveSubStep === 1 && (
         <div className="bg-slate-50 p-6 sm:p-8 rounded-3xl border border-slate-200 space-y-6 animate-in fade-in duration-200">
           <div className="flex items-center justify-between pb-3 border-b border-slate-200">
             <div className="flex items-center gap-2">
@@ -384,7 +416,7 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
       )}
 
       {/* SUB-STEP 2: HƯỚNG GIẢI QUYẾT & CÂU HỎI TƯƠNG TÁC */}
-      {currentSubStep === 2 && (
+      {effectiveSubStep === 2 && (
         <div className="bg-slate-50 p-6 sm:p-8 rounded-3xl border border-slate-200 space-y-6 animate-in fade-in duration-200">
           <div className="flex items-center justify-between pb-3 border-b border-slate-200">
             <div className="flex items-center gap-2">
@@ -919,7 +951,7 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
       )}
 
       {/* SUB-STEP 3: BÁO CÁO THU HOẠCH & MINH CHỨNG */}
-      {isReportEnabled && currentSubStep === 3 && (
+      {isReportEnabled && effectiveSubStep === 3 && (
         <div className="space-y-6 animate-in fade-in duration-200">
           <div className="bg-slate-50 p-6 sm:p-8 rounded-3xl border border-slate-200 space-y-6">
             <div className="flex items-center justify-between pb-3 border-b border-slate-200">

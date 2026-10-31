@@ -507,11 +507,31 @@ export const Lesson5EModal: React.FC<Lesson5EModalProps> = ({
         evaluateObj: targetLesson.stepEvaluate?.objectives || '',
         evaluateTeacher: targetLesson.stepEvaluate?.teacherActivities || '',
         evaluateStudent: targetLesson.stepEvaluate?.studentActivities || '',
-        evaluateMat: targetLesson.stepEvaluate?.materials || '',
         evaluateQuestions: (targetLesson.stepEvaluate as any)?.questions || [],
-        isEvaluateReportEnabled: (targetLesson?.stepEvaluate as any)?.isReportEnabled ?? (targetLesson?.stepEvaluate as any)?.isStep3Enabled ?? true,
-
-        // Assessment
+        isEvaluateReportEnabled: (() => {
+          const evalStep = targetLesson?.stepEvaluate as any;
+          const candidateFlags = [
+            evalStep?.isReportEnabled,
+            evalStep?.isStep3Enabled,
+            evalStep?.isStep3Open,
+            evalStep?.isReportRequired,
+            (targetLesson as any)?.isApplyReportEnabled,
+            (targetLesson as any)?.isStep3Open,
+            (targetLesson as any)?.isStep3Enabled,
+            (targetLesson as any)?.isReportRequired
+          ];
+          for (const f of candidateFlags) {
+            if (f === false || f === 'false' || f === 0 || f === '0' || f === 'closed' || f === 'dong') {
+              return false;
+            }
+          }
+          for (const f of candidateFlags) {
+            if (f === true || f === 'true' || f === 1 || f === '1' || f === 'open' || f === 'mo') {
+              return true;
+            }
+          }
+          return true;
+        })(),
         assessmentNotes:
           (targetLesson as any).assessmentNotes || (targetLesson as any).assessmentConfig?.notes || 'Rubric đánh giá năng lực học sinh qua sản phẩm thực hành.',
         assessmentQuestions: (targetLesson as any).assessmentQuestions || (targetLesson as any).assessmentConfig?.questions || [],
@@ -801,54 +821,8 @@ export const Lesson5EModal: React.FC<Lesson5EModalProps> = ({
     setLessonCode(newCode);
   };
 
-  const handleSaveCurrentSection = () => {
-    if (activeTab === 'info') {
-      if (!title.trim()) {
-        setTitleError(true);
-        if (titleInputRef.current) {
-          titleInputRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          titleInputRef.current.focus();
-        }
-        showToast('Vui lòng nhập tên bài giảng trước khi lưu!', 'error');
-        return;
-      }
-      setTitleError(false);
-    }
-    setSavedSections(prev => ({ ...prev, [activeTab]: true }));
-    
-    const tabLabels: Record<string, string> = {
-      info: 'Thông tin chung',
-      engage: 'Khởi động',
-      intro: 'Giới thiệu bài',
-      objectives: 'Mục tiêu',
-      explore: 'Khám phá',
-      elaborate: 'Luyện tập',
-      evaluate: 'Vận dụng',
-      assessment: 'Đánh giá',
-      feedback: 'Nhận xét'
-    };
-    showToast(`Đã lưu thành công dữ liệu mục ${tabLabels[activeTab]}!`, 'success');
-  };
-
-  const completedCount = Object.values(savedSections).filter(Boolean).length;
-  const totalSections = 9;
-  const isAllCompleted = isEditMode || completedCount >= 7;
-
-  const handleCompleteAndSave = () => {
-    if (!title.trim()) {
-      setActiveTab('info');
-      setTitleError(true);
-      setTimeout(() => {
-        if (titleInputRef.current) {
-          titleInputRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          titleInputRef.current.focus();
-        }
-      }, 50);
-      showToast('Vui lòng nhập tên bài giảng trước khi hoàn tất!', 'error');
-      return;
-    }
-
-    const savedLesson: Lesson5EPlan = {
+  const buildCurrentLesson = (): Lesson5EPlan => {
+    return {
       id: isEditMode && targetLesson?.id ? targetLesson.id : `les-${Date.now()}`,
       title: title.trim() || (isEditMode ? targetLesson?.title || 'Bài Giảng 5E' : 'Bài Giảng 5E Mới'),
       subject: subject,
@@ -905,7 +879,9 @@ export const Lesson5EModal: React.FC<Lesson5EModalProps> = ({
         materials: evaluateMat ?? '',
         questions: evaluateQuestions,
         isReportEnabled: isEvaluateReportEnabled,
-        isStep3Enabled: isEvaluateReportEnabled
+        isStep3Enabled: isEvaluateReportEnabled,
+        isStep3Open: isEvaluateReportEnabled,
+        isReportRequired: isEvaluateReportEnabled
       } as any,
       ...({
         code: lessonCode,
@@ -913,6 +889,10 @@ export const Lesson5EModal: React.FC<Lesson5EModalProps> = ({
         status: status,
         selectedClasses,
         shareWithColleagues,
+        isApplyReportEnabled: isEvaluateReportEnabled,
+        isStep3Enabled: isEvaluateReportEnabled,
+        isStep3Open: isEvaluateReportEnabled,
+        isReportRequired: isEvaluateReportEnabled,
         introContent,
         isIntroEnabled,
         objectivesContent,
@@ -931,6 +911,66 @@ export const Lesson5EModal: React.FC<Lesson5EModalProps> = ({
         }
       } as any)
     };
+  };
+
+  const handleSaveCurrentSection = () => {
+    if (activeTab === 'info') {
+      if (!title.trim()) {
+        setTitleError(true);
+        if (titleInputRef.current) {
+          titleInputRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          titleInputRef.current.focus();
+        }
+        showToast('Vui lòng nhập tên bài giảng trước khi lưu!', 'error');
+        return;
+      }
+      setTitleError(false);
+    }
+    setSavedSections(prev => ({ ...prev, [activeTab]: true }));
+    
+    // Also persist section changes immediately if title is present or in edit mode
+    try {
+      if (title.trim() || isEditMode) {
+        const partialLesson = buildCurrentLesson();
+        onSave(partialLesson);
+      }
+    } catch (err) {
+      console.warn('Auto-persist current section error:', err);
+    }
+
+    const tabLabels: Record<string, string> = {
+      info: 'Thông tin chung',
+      engage: 'Khởi động',
+      intro: 'Giới thiệu bài',
+      objectives: 'Mục tiêu',
+      explore: 'Khám phá',
+      elaborate: 'Luyện tập',
+      evaluate: 'Vận dụng',
+      assessment: 'Đánh giá',
+      feedback: 'Nhận xét'
+    };
+    showToast(`Đã lưu thành công dữ liệu mục ${tabLabels[activeTab]}!`, 'success');
+  };
+
+  const completedCount = Object.values(savedSections).filter(Boolean).length;
+  const totalSections = 9;
+  const isAllCompleted = isEditMode || completedCount >= 7;
+
+  const handleCompleteAndSave = () => {
+    if (!title.trim()) {
+      setActiveTab('info');
+      setTitleError(true);
+      setTimeout(() => {
+        if (titleInputRef.current) {
+          titleInputRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          titleInputRef.current.focus();
+        }
+      }, 50);
+      showToast('Vui lòng nhập tên bài giảng trước khi hoàn tất!', 'error');
+      return;
+    }
+
+    const savedLesson = buildCurrentLesson();
 
     try {
       onSave(savedLesson);

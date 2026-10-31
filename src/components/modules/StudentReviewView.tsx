@@ -568,9 +568,21 @@ export const StudentReviewView: React.FC<StudentReviewViewProps> = ({
               id: 'apply',
               title: 'Vận dụng (Apply)',
               iconEmoji: '🚀',
-              desc: 'Giải quyết tình huống thực tế và đính kèm sản phẩm.',
+              desc: ((lesson?.stepEvaluate as any)?.isReportEnabled === false || 
+                     (lesson?.stepEvaluate as any)?.isStep3Enabled === false || 
+                     (lesson?.stepEvaluate as any)?.isStep3Open === false || 
+                     (lesson as any)?.isApplyReportEnabled === false)
+                ? 'Khám phá tình huống thực tế và trả lời câu hỏi vận dụng.'
+                : 'Giải quyết tình huống thực tế và đính kèm sản phẩm.',
               isCompleted: isApplySubmitted,
-              badgeText: isApplySubmitted ? '✓ Đã nộp báo cáo' : 'Chưa bắt đầu',
+              badgeText: isApplySubmitted 
+                ? (((lesson?.stepEvaluate as any)?.isReportEnabled === false || 
+                    (lesson?.stepEvaluate as any)?.isStep3Enabled === false || 
+                    (lesson?.stepEvaluate as any)?.isStep3Open === false || 
+                    (lesson as any)?.isApplyReportEnabled === false)
+                    ? '✓ Đã hoàn thành' 
+                    : '✓ Đã nộp báo cáo')
+                : 'Chưa bắt đầu',
               badgeColor: isApplySubmitted ? 'text-emerald-700 bg-emerald-100/90 border-emerald-300' : 'text-slate-400 bg-slate-100 border-slate-200',
               extraScore: null
             },
