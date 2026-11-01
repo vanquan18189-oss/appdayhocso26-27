@@ -58,6 +58,7 @@ import {
   parseStudentExcel,
   STANDARD_STUDENT_HEADERS
 } from '../../services/excelService';
+import { normalizeStudentCode } from '../../services/studentCode';
 import {
   getAllStudentsFromLocalStorage,
   getStudentsFromLocalStorage,
@@ -1233,6 +1234,64 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
     system: false
   });
 
+  const [addForm, setAddForm] = useState<{
+    code: string;
+    pin: string;
+    name: string;
+    dob: string;
+    gender: 'Nam' | 'Nữ';
+    avatar: string;
+    parentName: string;
+    phone: string;
+    address: string;
+    sddcn: string;
+    email: string;
+  }>({
+    code: '',
+    pin: '123456',
+    name: '',
+    dob: '10/10/2016',
+    gender: 'Nam',
+    avatar: FOX_AVATAR_URL,
+    parentName: '',
+    phone: '',
+    address: 'Thôn Quang Hưng, Xã Phú Ký',
+    sddcn: '',
+    email: ''
+  });
+
+  const [addAccordionState, setAddAccordionState] = useState<{
+    personal: boolean;
+    family: boolean;
+    system: boolean;
+  }>({
+    personal: true,
+    family: false,
+    system: false
+  });
+
+  const handleOpenAddStudentModal = () => {
+    if (!selectedClass) return;
+    const currentList = studentDatabase[selectedClass] || [];
+    const nextStt = currentList.length + 1;
+    const defaultCode = generateStudentCode(selectedClass, nextStt);
+    setAddForm({
+      code: defaultCode,
+      pin: '123456',
+      name: '',
+      dob: '10/10/2016',
+      gender: 'Nam',
+      avatar: FOX_AVATAR_URL,
+      parentName: '',
+      phone: '',
+      address: 'Thôn Quang Hưng, Xã Phú Ký',
+      sddcn: '',
+      email: ''
+    });
+    setAddAccordionState({ personal: true, family: false, system: false });
+    setIsAddStudentModalOpen(true);
+  };
+
   const avatarOptions = [
     { label: '🦊 Chú cáo đỏ', value: FOX_AVATAR_URL },
     { label: '🐰 Bé thỏ trắng', value: RABBIT_AVATAR_URL },
@@ -1443,33 +1502,36 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
 
   // Add student to current class
   const handleAddStudentToClass = () => {
-    if (!selectedClass || !newStudentName.trim()) return;
+    if (!selectedClass || !addForm.name.trim()) {
+      setToastMessage('⚠️ Vui lòng nhập họ và tên học sinh!');
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
 
     const currentList = studentDatabase[selectedClass] || [];
     const nextStt = currentList.length + 1;
-    const sddcnVal = newStudentSddcn.trim();
-    const emailVal = newStudentEmail.trim();
+    const rawCode = addForm.code.trim() || generateStudentCode(selectedClass, nextStt);
+    const normCode = normalizeStudentCode(rawCode);
 
     const newStudent: StudentRecord = {
       id: `std-${Date.now()}`,
       stt: nextStt,
-      code: generateStudentCode(selectedClass, nextStt),
-      pin: '123456',
-      sddcn: sddcnVal,
-      name: newStudentName,
-      gender: newStudentGender,
-      dob: newStudentDob || '10/10/2016',
+      code: normCode,
+      pin: addForm.pin || '123456',
+      sddcn: addForm.sddcn.trim(),
+      name: addForm.name.trim(),
+      gender: addForm.gender,
+      dob: addForm.dob || '10/10/2016',
       className: selectedClass,
-      parentName: newStudentParent || 'Phụ huynh học sinh',
-      phone: newStudentPhone || '0982957979',
-      email: emailVal,
+      parentName: addForm.parentName || 'Phụ huynh học sinh',
+      phone: addForm.phone || '0982957979',
+      address: addForm.address || 'Thôn Quang Hưng, Xã Phú Ký',
+      email: addForm.email.trim(),
       status: 'active',
       conduct: 'Tốt',
       avgScore: 0,
       notes: 'Học sinh mới nhập học',
-      avatar: newStudentGender === 'Nam'
-        ? `https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?w=100&auto=format&fit=crop&q=80`
-        : `https://images.unsplash.com/photo-1517841905240-472988babdf9?w=100&auto=format&fit=crop&q=80`
+      avatar: addForm.avatar
     };
 
     const updatedList = reindexClassStudents([...currentList, newStudent], selectedClass);
@@ -1482,15 +1544,10 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
     saveStudentsToLocalStorage(selectedClass, updatedList);
     syncClassStudentsToFirestore(selectedClass, updatedList);
 
-    setToastMessage(`✅ Đã thêm học sinh "${newStudent.name}" vào ${selectedClass} (đã lưu LocalStorage & Firestore)!`);
+    setToastMessage(`✅ Đã thêm học sinh "${newStudent.name}" (Mã HS: ${normCode}) vào ${selectedClass} thành công!`);
     setTimeout(() => setToastMessage(null), 4000);
 
     setIsAddStudentModalOpen(false);
-    setNewStudentName('');
-    setNewStudentParent('');
-    setNewStudentPhone('');
-    setNewStudentSddcn('');
-    setNewStudentEmail('');
   };
 
   // Filter teacher records
@@ -2293,7 +2350,7 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
                         <Upload className="w-3.5 h-3.5" /> 📤 Nhập từ Excel
                       </button>
                       <button
-                        onClick={() => setIsAddStudentModalOpen(true)}
+                        onClick={handleOpenAddStudentModal}
                         className="px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white transition-all shadow-xs flex items-center gap-1.5 cursor-pointer active:scale-95"
                       >
                         <UserPlus className="w-3.5 h-3.5" /> Thêm học sinh vào {selectedClass}
@@ -3172,104 +3229,217 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
       {/* MODAL: ADD NEW STUDENT TO CLASS                          */}
       {/* ======================================================== */}
       {isAddStudentModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-scale-up">
-            <h3 className="text-lg font-black text-slate-900 font-heading">
-              ➕ Thêm Học Sinh Mới Vào {selectedClass}
-            </h3>
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-scale-up max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <h3 className="text-base font-black text-slate-900 font-heading flex items-center gap-2">
+                <span>➕</span> Thêm Học Sinh Mới Vào {selectedClass}
+              </h3>
+              <button
+                onClick={() => setIsAddStudentModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-full cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
 
             <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Họ và Tên Học Sinh:</label>
-                <input
-                  type="text"
-                  value={newStudentName}
-                  onChange={(e) => setNewStudentName(e.target.value)}
-                  placeholder="Ví dụ: Nguyễn Gia Huy"
-                  className="w-full p-2.5 text-xs rounded-xl border border-slate-300 focus:ring-2 focus:ring-emerald-500"
-                />
+              {/* ACCORDION 1: PERSONAL INFO */}
+              <div className="bg-slate-50/90 rounded-2xl border border-slate-200/90 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setAddAccordionState((prev) => ({ ...prev, personal: !prev.personal }))}
+                  className="w-full flex items-center justify-between p-3 text-left font-extrabold text-xs text-slate-800 hover:bg-slate-100/70 transition-colors cursor-pointer"
+                >
+                  <span className="flex items-center gap-2">
+                    <span>👤</span> Thông tin cá nhân
+                  </span>
+                  {addAccordionState.personal ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                </button>
+
+                {addAccordionState.personal && (
+                  <div className="p-3.5 pt-1 space-y-3 border-t border-slate-200/60 bg-white">
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1">Mã số Học sinh (Mã HS)</label>
+                        <input
+                          type="text"
+                          value={addForm.code}
+                          onChange={(e) => setAddForm((prev) => ({ ...prev, code: e.target.value }))}
+                          className="w-full p-2.5 text-xs font-semibold rounded-xl border border-slate-200 bg-slate-50/80 text-slate-800 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1">Mã PIN cá nhân (4 số)</label>
+                        <input
+                          type="text"
+                          value={addForm.pin}
+                          onChange={(e) => setAddForm((prev) => ({ ...prev, pin: e.target.value }))}
+                          className="w-full p-2.5 text-xs font-mono font-bold rounded-xl border border-slate-200 bg-slate-50/80 text-slate-800 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 mb-1">Họ và Tên học sinh</label>
+                      <input
+                        type="text"
+                        value={addForm.name}
+                        onChange={(e) => setAddForm((prev) => ({ ...prev, name: e.target.value }))}
+                        placeholder="Ví dụ: Hoàng Bảo An"
+                        className="w-full p-2.5 text-xs font-bold rounded-xl border border-slate-200 bg-slate-50/80 text-slate-900 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1">Ngày sinh của bé</label>
+                        <input
+                          type="text"
+                          value={addForm.dob}
+                          onChange={(e) => setAddForm((prev) => ({ ...prev, dob: e.target.value }))}
+                          placeholder="dd/mm/yyyy"
+                          className="w-full p-2.5 text-xs font-medium rounded-xl border border-slate-200 bg-slate-50/80 text-slate-800 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-600 mb-1">Giới tính</label>
+                        <select
+                          value={addForm.gender}
+                          onChange={(e) => setAddForm((prev) => ({ ...prev, gender: e.target.value as 'Nam' | 'Nữ' }))}
+                          className="w-full p-2.5 text-xs font-semibold rounded-xl border border-slate-200 bg-slate-50/80 text-slate-800 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none cursor-pointer"
+                        >
+                          <option value="Nam">Nam</option>
+                          <option value="Nữ">Nữ</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 mb-1">Hình đại diện Avatar</label>
+                      <div className="flex items-center gap-2">
+                        <img
+                          src={resolveAvatarUrl(addForm.avatar)}
+                          alt="Avatar preview"
+                          className="w-9 h-9 rounded-xl object-cover border-2 border-emerald-400 shrink-0 shadow-2xs"
+                          onError={(e: any) => {
+                            e.target.src = getAvatarSvgFallback(addForm.avatar);
+                          }}
+                        />
+                        <select
+                          value={resolveAvatarUrl(addForm.avatar)}
+                          onChange={(e) => setAddForm((prev) => ({ ...prev, avatar: e.target.value }))}
+                          className="flex-1 p-2 text-xs font-semibold rounded-xl border border-slate-200 bg-slate-50/80 text-slate-800 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none cursor-pointer"
+                        >
+                          {avatarOptions.map((opt) => (
+                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Giới Tính:</label>
-                  <select
-                    value={newStudentGender}
-                    onChange={(e) => setNewStudentGender(e.target.value as 'Nam' | 'Nữ')}
-                    className="w-full p-2.5 text-xs rounded-xl border border-slate-300 font-bold"
-                  >
-                    <option value="Nam">Nam</option>
-                    <option value="Nữ">Nữ</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Ngày Sinh:</label>
-                  <input
-                    type="text"
-                    value={newStudentDob}
-                    onChange={(e) => setNewStudentDob(e.target.value)}
-                    placeholder="DD/MM/YYYY"
-                    className="w-full p-2.5 text-xs rounded-xl border border-slate-300"
-                  />
-                </div>
+              {/* ACCORDION 2: FAMILY CONTACT */}
+              <div className="bg-slate-50/90 rounded-2xl border border-slate-200/90 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setAddAccordionState((prev) => ({ ...prev, family: !prev.family }))}
+                  className="w-full flex items-center justify-between p-3 text-left font-extrabold text-xs text-slate-800 hover:bg-slate-100/70 transition-colors cursor-pointer"
+                >
+                  <span className="flex items-center gap-2">
+                    <span>🏠</span> Liên hệ gia đình
+                  </span>
+                  {addAccordionState.family ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                </button>
+
+                {addAccordionState.family && (
+                  <div className="p-3.5 pt-1 space-y-3 border-t border-slate-200/60 bg-white">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 mb-1">Họ tên phụ huynh</label>
+                      <input
+                        type="text"
+                        value={addForm.parentName}
+                        onChange={(e) => setAddForm((prev) => ({ ...prev, parentName: e.target.value }))}
+                        placeholder="Ví dụ: Nguyễn Văn An"
+                        className="w-full p-2.5 text-xs font-semibold rounded-xl border border-slate-200 bg-slate-50/80 text-slate-900 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 mb-1">Số điện thoại liên hệ (SĐT)</label>
+                      <input
+                        type="text"
+                        value={addForm.phone}
+                        onChange={(e) => setAddForm((prev) => ({ ...prev, phone: e.target.value }))}
+                        placeholder="0982957979"
+                        className="w-full p-2.5 text-xs font-mono font-semibold rounded-xl border border-slate-200 bg-slate-50/80 text-slate-900 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 mb-1">Nơi ở / Thôn xóm</label>
+                      <input
+                        type="text"
+                        value={addForm.address}
+                        onChange={(e) => setAddForm((prev) => ({ ...prev, address: e.target.value }))}
+                        placeholder="Thôn Quang Hưng, Xã Phú Ký"
+                        className="w-full p-2.5 text-xs font-semibold rounded-xl border border-slate-200 bg-slate-50/80 text-slate-900 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Số Định Danh Cá Nhân (SĐDCN / CCCD):</label>
-                <input
-                  type="text"
-                  value={newStudentSddcn}
-                  onChange={(e) => setNewStudentSddcn(e.target.value)}
-                  placeholder="Ví dụ: 038316001234 (12 chữ số)"
-                  className="w-full p-2.5 text-xs font-mono rounded-xl border border-slate-300 focus:ring-2 focus:ring-emerald-500"
-                />
-              </div>
+              {/* ACCORDION 3: SYSTEM INFO */}
+              <div className="bg-slate-50/90 rounded-2xl border border-slate-200/90 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setAddAccordionState((prev) => ({ ...prev, system: !prev.system }))}
+                  className="w-full flex items-center justify-between p-3 text-left font-extrabold text-xs text-slate-800 hover:bg-slate-100/70 transition-colors cursor-pointer"
+                >
+                  <span className="flex items-center gap-2">
+                    <span>⚙️</span> Thông tin hệ thống
+                  </span>
+                  {addAccordionState.system ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                </button>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Họ Tên Phụ Huynh:</label>
-                <input
-                  type="text"
-                  value={newStudentParent}
-                  onChange={(e) => setNewStudentParent(e.target.value)}
-                  placeholder="Ví dụ: Nguyễn Văn Bình"
-                  className="w-full p-2.5 text-xs rounded-xl border border-slate-300"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Số Điện Thoại Liên Hệ:</label>
-                  <input
-                    type="text"
-                    value={newStudentPhone}
-                    onChange={(e) => setNewStudentPhone(e.target.value)}
-                    placeholder="0982957979"
-                    className="w-full p-2.5 text-xs font-mono rounded-xl border border-slate-300"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Email Liên Lạc:</label>
-                  <input
-                    type="email"
-                    value={newStudentEmail}
-                    onChange={(e) => setNewStudentEmail(e.target.value)}
-                    placeholder="hs.abc@quanghungpk1.edu.vn"
-                    className="w-full p-2.5 text-xs font-mono rounded-xl border border-slate-300"
-                  />
-                </div>
+                {addAccordionState.system && (
+                  <div className="p-3.5 pt-1 space-y-3 border-t border-slate-200/60 bg-white">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 mb-1">SĐDCN (Số định danh cá nhân)</label>
+                      <input
+                        type="text"
+                        value={addForm.sddcn}
+                        onChange={(e) => setAddForm((prev) => ({ ...prev, sddcn: e.target.value }))}
+                        placeholder="038316001001"
+                        className="w-full p-2.5 text-xs font-mono font-bold rounded-xl border border-slate-200 bg-slate-50/80 text-slate-900 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-600 mb-1">Email trường học</label>
+                      <input
+                        type="email"
+                        value={addForm.email}
+                        onChange={(e) => setAddForm((prev) => ({ ...prev, email: e.target.value }))}
+                        placeholder="hs.nguyenvanan@quanghungpk1.edu.vn"
+                        className="w-full p-2.5 text-xs font-mono font-semibold rounded-xl border border-slate-200 bg-slate-50/80 text-slate-900 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
-            <div className="flex justify-end gap-2 pt-3 border-t border-slate-200">
+            <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-200">
               <button
                 onClick={() => setIsAddStudentModalOpen(false)}
-                className="px-4 py-2 text-xs font-bold bg-slate-100 text-slate-700 rounded-xl cursor-pointer"
+                className="px-4 py-2.5 text-xs font-bold bg-slate-100 text-slate-700 rounded-xl cursor-pointer"
               >
                 Hủy
               </button>
               <button
                 onClick={handleAddStudentToClass}
-                className="px-5 py-2 text-xs font-extrabold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-md cursor-pointer active:scale-95"
+                className="px-5 py-2.5 text-xs font-extrabold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-md cursor-pointer active:scale-95 uppercase tracking-wider"
               >
                 Xác Nhận Thêm
               </button>
