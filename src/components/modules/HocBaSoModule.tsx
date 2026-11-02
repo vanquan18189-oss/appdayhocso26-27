@@ -105,6 +105,7 @@ import { getStudentGameProfile } from '../../services/studentGameStoreService';
 import { db } from '../../services/firebase';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { normalizeStudentCode, isValidStudentCode, formatStandardStudentCode } from '../../services/studentCode';
+import { getCurrentTeacherProfile } from '../../services/teacherStorageService';
 
 interface StudentRecord {
   id: string;
@@ -2509,12 +2510,23 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
 
   const isHk2 = selectedSemester === 'Học kỳ II';
 
+  const getCurrentUserAccountKey = (): string => {
+    if (typeof window === 'undefined') return 'default';
+    const email = localStorage.getItem('eduplay_teacher_email') || localStorage.getItem('user_email') || '';
+    const name = localStorage.getItem('eduplay_teacher_name') || localStorage.getItem('user_name') || '';
+    return (email || name || 'default').trim().toLowerCase();
+  };
+
+  const getInitialGradeAndClass = (): { grade: string; className: string } => {
+    return { grade: 'Khối 5', className: 'Lớp 5C' };
+  };
+
+  const userKey = useMemo(() => getCurrentUserAccountKey(), []);
+  const initialDefaults = useMemo(() => getInitialGradeAndClass(), []);
+
   // Section 1 Filters
-  const [selectedGrade1, setSelectedGrade1] = useState<string>('Khối 3');
-  const [selectedClass1, setSelectedClass1] = useState<string>(() => {
-    const initList = getClassesForGrade('Khối 3');
-    return initList?.[0]?.name || 'Lớp 3C';
-  });
+  const [selectedGrade1, setSelectedGrade1] = useState<string>(initialDefaults.grade);
+  const [selectedClass1, setSelectedClass1] = useState<string>(initialDefaults.className);
   const [selectedSubject1, setSelectedSubject1] = useState<string>('Công nghệ');
   const [selectedExamType1, setSelectedExamType1] = useState<string>(() => {
     const saved = localStorage.getItem('eduplay_hocba_exam_type_1');
@@ -2527,11 +2539,8 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
   const [searchKeyword1, setSearchKeyword1] = useState<string>('');
 
   // Section 2 Filters (Sổ Tổng Kết Kết Quả Giáo Dục)
-  const [selectedGrade2, setSelectedGrade2] = useState<string>('Khối 3');
-  const [selectedClass2, setSelectedClass2] = useState<string>(() => {
-    const initList = getClassesForGrade('Khối 3');
-    return initList?.[0]?.name || 'Lớp 3C';
-  });
+  const [selectedGrade2, setSelectedGrade2] = useState<string>(initialDefaults.grade);
+  const [selectedClass2, setSelectedClass2] = useState<string>(initialDefaults.className);
   const [selectedSemester2, setSelectedSemester2] = useState<string>(() => {
     const saved = localStorage.getItem('eduplay_hocba_semester_2');
     if (!saved || saved === 'Thường xuyên' || saved === 'thuong_xuyen' || !['Giữa kì 1', 'Cuối kì 1', 'Giữa kì 2', 'Cuối kì 2'].includes(saved)) {
@@ -2551,32 +2560,63 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
   };
   
   const classesList1 = useMemo(() => {
+    if (!selectedGrade1) return [];
     const list = getClassesForGrade(selectedGrade1).map(c => c.name);
     return [...Array.from(new Set(list)), 'Tất cả Lớp'];
   }, [selectedGrade1, classes]);
 
   const classesList2 = useMemo(() => {
+    if (!selectedGrade2) return [];
     const list = getClassesForGrade(selectedGrade2).map(c => c.name);
     return [...Array.from(new Set(list)), 'Tất cả Lớp'];
   }, [selectedGrade2, classes]);
 
+  // Lưu lại lựa chọn gần nhất theo từng tài khoản
+  useEffect(() => {
+    if (selectedGrade1 && selectedClass1) {
+      localStorage.setItem(`eduplay_hocba_last_grade_${userKey}`, selectedGrade1);
+      localStorage.setItem(`eduplay_hocba_last_class_${userKey}`, selectedClass1);
+    }
+  }, [selectedGrade1, selectedClass1, userKey]);
+
+  useEffect(() => {
+    if (selectedGrade2 && selectedClass2) {
+      localStorage.setItem(`eduplay_hocba_last_grade_${userKey}`, selectedGrade2);
+      localStorage.setItem(`eduplay_hocba_last_class_${userKey}`, selectedClass2);
+    }
+  }, [selectedGrade2, selectedClass2, userKey]);
+
   // Tự động chọn lớp đầu tiên của khối khi đổi khối học ở Section 1
   useEffect(() => {
+    if (!selectedGrade1) {
+      setSelectedClass1('');
+      return;
+    }
     const available = getClassesForGrade(selectedGrade1);
     if (available && available.length > 0) {
-      setSelectedClass1(available[0].name);
+      const exists = available.some(c => c.name === selectedClass1);
+      if (!exists) {
+        setSelectedClass1(available[0].name);
+      }
     } else {
-      setSelectedClass1('Tất cả Lớp');
+      setSelectedClass1('');
     }
   }, [selectedGrade1]);
 
   // Tự động chọn lớp đầu tiên của khối khi đổi khối học ở Section 2
   useEffect(() => {
+    if (!selectedGrade2) {
+      setSelectedClass2('');
+      return;
+    }
     const available = getClassesForGrade(selectedGrade2);
     if (available && available.length > 0) {
-      setSelectedClass2(available[0].name);
+      const exists = available.some(c => c.name === selectedClass2);
+      if (!exists) {
+        setSelectedClass2(available[0].name);
+      }
     } else {
-      setSelectedClass2('Tất cả Lớp');
+      setSelectedClass2('');
     }
   }, [selectedGrade2]);
 
@@ -2845,6 +2885,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
   }, [allStudentsDb, exams, assignments, lessons, games, classes, selectedExamType1, selectedSubject1]);
 
   const filteredStudents1 = useMemo(() => {
+    if (!selectedGrade1 || !selectedClass1) return [];
     const list = activeStudentsList.filter(st => {
       if (selectedClass1 !== 'Tất cả Lớp') {
         const normSel = getStandardClassName(selectedClass1).toLowerCase().replace(/\s+/g, '');
@@ -2869,6 +2910,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
   }, [activeStudentsList, selectedClass1, selectedGrade1, searchKeyword1]);
 
   const filteredStudents2 = useMemo(() => {
+    if (!selectedGrade2 || !selectedClass2) return [];
     const list = activeStudentsList.filter(st => {
       if (selectedClass2 !== 'Tất cả Lớp') {
         const normSel = getStandardClassName(selectedClass2).toLowerCase().replace(/\s+/g, '');
@@ -3384,6 +3426,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
               onChange={(e) => setSelectedGrade1(e.target.value)}
               className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500"
             >
+              <option value="">-- Chọn khối --</option>
               {gradesList.map(g => (
                 <option key={g} value={g}>{g}</option>
               ))}
@@ -3397,6 +3440,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
               onChange={(e) => setSelectedClass1(e.target.value)}
               className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500"
             >
+              <option value="">-- Chọn lớp --</option>
               {classesList1.map(c => (
                 <option key={c} value={c}>{c}</option>
               ))}
@@ -3457,6 +3501,16 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
                 window.dispatchEvent(new CustomEvent('eduplay_navigate_module', { detail: { module: 'user_management' } }));
               }}
             />
+          ) : !selectedGrade1 || !selectedClass1 ? (
+            <div className="bg-amber-50/70 border border-amber-200 rounded-2xl p-8 text-center space-y-3 my-4">
+              <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center mx-auto text-xl font-bold">
+                👆
+              </div>
+              <h3 className="text-sm font-extrabold text-amber-900">Chọn khối và lớp để xem</h3>
+              <p className="text-xs text-amber-800/80 max-w-sm mx-auto">
+                Vui lòng chọn Khối và Lớp ở bộ lọc phía trên để hiển thị danh sách học sinh và sổ nhận xét.
+              </p>
+            </div>
           ) : (
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
             <div className="overflow-x-auto relative">
@@ -3635,6 +3689,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
               onChange={(e) => setSelectedGrade2(e.target.value)}
               className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500"
             >
+              <option value="">-- Chọn khối --</option>
               {gradesList.map(g => (
                 <option key={g} value={g}>{g}</option>
               ))}
@@ -3648,6 +3703,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
               onChange={(e) => setSelectedClass2(e.target.value)}
               className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-500"
             >
+              <option value="">-- Chọn lớp --</option>
               {classesList2.map(c => (
                 <option key={c} value={c}>{c}</option>
               ))}
@@ -3683,6 +3739,17 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
         </div>
 
         {!isCollapsed2 && (
+          !selectedGrade2 || !selectedClass2 ? (
+            <div className="bg-amber-50/70 border border-amber-200 rounded-2xl p-8 text-center space-y-3 my-4">
+              <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center mx-auto text-xl font-bold">
+                👆
+              </div>
+              <h3 className="text-sm font-extrabold text-amber-900">Chọn khối và lớp để xem</h3>
+              <p className="text-xs text-amber-800/80 max-w-sm mx-auto">
+                Vui lòng chọn Khối và Lớp ở bộ lọc phía trên để hiển thị sổ tổng kết kết quả giáo dục.
+              </p>
+            </div>
+          ) : (
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
             <div className="p-4 border-b border-slate-200 flex items-center justify-between bg-slate-50/80">
               <div className="text-xs font-extrabold text-slate-800 uppercase tracking-wider flex items-center gap-2">
@@ -3870,6 +3937,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
               </div>
             </div>
           </div>
+          )
         )}
       </div>
 
