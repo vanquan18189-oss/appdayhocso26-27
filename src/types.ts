@@ -350,7 +350,7 @@ export interface StudentRecord {
     totalQuestions: number;
     strengths: string;
     reminders: string;
-    overallDat: 'T' | 'H' | 'CHT';
+    overallDat: 'T' | 'H' | 'C' | 'CHT';
     score: number;
     hasCommented: boolean;
   };

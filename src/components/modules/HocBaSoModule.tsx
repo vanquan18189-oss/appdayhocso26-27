@@ -115,13 +115,13 @@ interface StudentRecord {
   dob: string;
   isFemale: boolean;
   className: string;
-  evaluations: Record<string, { dat: 'T' | 'H' | 'CHT'; score: string }>;
+  evaluations: Record<string, { dat: 'T' | 'H' | 'C' | 'CHT'; score: string }>;
   commentDetail?: {
     correctCount: number;
     totalQuestions: number;
     strengths: string;
     reminders: string;
-    overallDat: 'T' | 'H' | 'CHT';
+    overallDat: 'T' | 'H' | 'C' | 'CHT';
     score: number;
     hasCommented: boolean;
     testTitle?: string;
@@ -151,7 +151,7 @@ function convertToHocBaStudent(st: GlobalStudentRecord): StudentRecord {
   const code = normalizeStudentCode(rawCode);
 
   const rawEvaluations = (st as any).evaluations;
-  const evaluations: Record<string, { dat: 'T' | 'H' | 'CHT'; score: string }> =
+  const evaluations: Record<string, { dat: 'T' | 'H' | 'C' | 'CHT'; score: string }> =
     rawEvaluations && typeof rawEvaluations === 'object' ? rawEvaluations : {};
 
   const rawComment = (st as any).commentDetail;
@@ -181,7 +181,7 @@ interface SubjectScoreItem {
   shortName: string;
   score: number;
   level: string;
-  status: 'T' | 'H' | 'CHT';
+  status: 'T' | 'H' | 'C' | 'CHT';
   note: string;
 }
 
@@ -1153,12 +1153,12 @@ const StudentHocBaSoView: React.FC<StudentHocBaSoViewProps> = memo(({
       // Tìm trong hocBaSummary
       const subBreakdown = hocBaSummary.subjects.find(s => isSubjectMatch(s.subject, subject));
 
-      let manualDat: 'T' | 'H' | 'CHT' | null = null;
+      let manualDat: 'T' | 'H' | 'C' | 'CHT' | null = null;
       let commentText = '';
 
       for (const [subjKey, evalVal] of Object.entries(rawEvals as Record<string, any>)) {
         if (isSubjectMatch(subjKey, subject)) {
-          if (evalVal && ['T', 'H', 'CHT'].includes(evalVal.dat)) {
+          if (evalVal && ['T', 'H', 'C', 'CHT'].includes(evalVal.dat)) {
             manualDat = evalVal.dat;
             if (evalVal.comment) commentText = evalVal.comment;
           }
@@ -1166,7 +1166,7 @@ const StudentHocBaSoView: React.FC<StudentHocBaSoViewProps> = memo(({
         }
       }
 
-      let status: 'T' | 'H' | 'CHT' | null = manualDat;
+      let status: 'T' | 'H' | 'C' | 'CHT' | null = manualDat;
       let hasData = Boolean(manualDat);
 
       if (!status && subBreakdown && subBreakdown.hasRealData && subBreakdown.status) {
@@ -1195,9 +1195,9 @@ const StudentHocBaSoView: React.FC<StudentHocBaSoViewProps> = memo(({
         barColor = 'bg-blue-500';
         barWidthPct = 70;
         iconEmoji = '👍';
-      } else if (status === 'CHT') {
-        levelLabel = 'Cần cố gắng thêm';
-        levelBadgeBg = 'bg-amber-100 text-amber-800 border-amber-300 font-bold'; // Vàng/cam, không dùng đỏ
+      } else if (status === 'C' || status === 'CHT') {
+        levelLabel = 'Chưa hoàn thành';
+        levelBadgeBg = 'bg-amber-100 text-amber-800 border-amber-300 font-bold';
         barColor = 'bg-amber-500';
         barWidthPct = 40;
         iconEmoji = '💪';
@@ -1222,9 +1222,9 @@ const StudentHocBaSoView: React.FC<StudentHocBaSoViewProps> = memo(({
   const qualitativeCounts = useMemo(() => {
     const tCount = qualitativeSubjectsData.filter(d => d.status === 'T').length;
     const hCount = qualitativeSubjectsData.filter(d => d.status === 'H').length;
-    const chtCount = qualitativeSubjectsData.filter(d => d.status === 'CHT').length;
+    const cCount = qualitativeSubjectsData.filter(d => d.status === 'C' || d.status === 'CHT').length;
     const evaluatedCount = qualitativeSubjectsData.filter(d => d.hasData).length;
-    return { tCount, hCount, chtCount, evaluatedCount, totalCount: qualitativeSubjectsData.length };
+    return { tCount, hCount, cCount, evaluatedCount, totalCount: qualitativeSubjectsData.length };
   }, [qualitativeSubjectsData]);
 
   // Find max and min scores for visual highlights among evaluated subjects
@@ -1853,9 +1853,9 @@ const StudentHocBaSoView: React.FC<StudentHocBaSoViewProps> = memo(({
                 <span className="px-2.5 py-0.5 rounded-md bg-blue-100 text-blue-800 border border-blue-200">
                   👍 Hoàn thành: {qualitativeCounts.hCount}
                 </span>
-                {qualitativeCounts.chtCount > 0 && (
+                {qualitativeCounts.cCount > 0 && (
                   <span className="px-2.5 py-0.5 rounded-md bg-amber-100 text-amber-800 border border-amber-200">
-                    💪 Cần cố gắng: {qualitativeCounts.chtCount}
+                    💪 Cần cố gắng: {qualitativeCounts.cCount}
                   </span>
                 )}
               </div>
@@ -2518,7 +2518,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
   };
 
   const getInitialGradeAndClass = (): { grade: string; className: string } => {
-    return { grade: 'Khối 5', className: 'Lớp 5C' };
+    return { grade: 'Khối 3', className: 'Lớp 3C' };
   };
 
   const userKey = useMemo(() => getCurrentUserAccountKey(), []);
@@ -2822,7 +2822,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
               const scoreVal = examSub.score !== undefined ? examSub.score : 8.5;
               const correctCount = (examSub as any).correctCount !== undefined ? (examSub as any).correctCount : Math.round((scoreVal / 10) * 10);
               const totalQuestions = (examSub as any).totalQuestions !== undefined ? (examSub as any).totalQuestions : 10;
-              const datVal = scoreVal >= 5 ? 'T' : 'H';
+              const datVal = scoreVal >= 8 ? 'T' : scoreVal >= 5 ? 'H' : 'C';
               const autoComment = {
                 correctCount,
                 totalQuestions,
@@ -3083,7 +3083,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
   /**
    * Helper function: Lấy bảng điểm đánh giá của học sinh cô lập hoàn toàn theo Học Kỳ trong Sổ Tổng Kết (Phần 2)
    */
-  const getStudentEvaluationsForSemester2 = useCallback((st: StudentRecord, rawSt: any): Record<string, { dat: 'T' | 'H' | 'CHT'; score: string }> => {
+  const getStudentEvaluationsForSemester2 = useCallback((st: StudentRecord, rawSt: any): Record<string, { dat: 'T' | 'H' | 'C' | 'CHT'; score: string }> => {
     const normSemester2 = normalizeExamTypeKey(selectedSemester2);
 
     const summary2 = calculateUnifiedHocBaData({
@@ -3124,7 +3124,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
     }
 
     if (manualCommentForSemester) {
-      const res: Record<string, { dat: 'T' | 'H' | 'CHT'; score: string }> = {};
+      const res: Record<string, { dat: 'T' | 'H' | 'C' | 'CHT'; score: string }> = {};
       if (targetRaw.evaluations) {
         Object.entries(targetRaw.evaluations as Record<string, any>).forEach(([subj, val]) => {
           res[subj] = { dat: (val as any).dat || 'T', score: String((val as any).score ?? '') };
@@ -3138,7 +3138,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
     }
 
     if (hasRealExamSubmission) {
-      const res: Record<string, { dat: 'T' | 'H' | 'CHT'; score: string }> = {};
+      const res: Record<string, { dat: 'T' | 'H' | 'C' | 'CHT'; score: string }> = {};
       summary2.subjects.forEach(sub => {
         if (sub.score !== null && sub.hasRealData) {
           res[sub.subject] = {
@@ -3151,7 +3151,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
     }
 
     if (isDefaultSemesterAndHasRosterData) {
-      return (targetRaw.evaluations as Record<string, { dat: 'T' | 'H' | 'CHT'; score: string }>) || {};
+      return (targetRaw.evaluations as Record<string, { dat: 'T' | 'H' | 'C' | 'CHT'; score: string }>) || {};
     }
 
     // Các học kỳ khác chưa có dữ liệu bài kiểm tra -> trả về rỗng để hiển thị (-)
@@ -3276,6 +3276,54 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
     setIsDetailModalOpen(true);
   }, [selectedSubject1]);
 
+  const [isDryRunModalOpen, setIsDryRunModalOpen] = useState<boolean>(false);
+  const [dryRunData, setDryRunData] = useState<Array<{
+    studentName: string;
+    studentCode: string;
+    score: string;
+    oldLevel: string;
+    newLevel: string;
+    oldComment: string;
+    newComment: string;
+  }>>([]);
+
+  const handleOpenDryRun = useCallback(() => {
+    if (isLocked) {
+      showToast('⚠️ Hệ thống đang ở chế độ Khóa An Toàn. Vui lòng bấm "Thao tác mở khóa" trước khi thực hiện cập nhật.', 'error');
+      return;
+    }
+    const preview = filteredStudents1.map(st => {
+      const oldEval = st.evaluations?.[selectedSubject1];
+      const oldLevel = oldEval?.dat || '-';
+      const scoreVal = st.commentDetail?.score !== undefined ? st.commentDetail.score : (oldEval?.score ? parseFloat(oldEval.score) : 8.5);
+      const newLevel = scoreVal >= 8 ? 'T' : scoreVal >= 5 ? 'H' : 'C';
+      const oldComment = st.commentDetail?.strengths || '';
+      const newComment = st.commentDetail?.hasCommented ? st.commentDetail.strengths : `Hoàn thành bài kiểm tra với điểm ${formatTotalScore(scoreVal)}`;
+      return {
+        studentName: `${st.lastName} ${st.firstName}`,
+        studentCode: st.code,
+        score: formatTotalScore(scoreVal),
+        oldLevel,
+        newLevel,
+        oldComment,
+        newComment
+      };
+    });
+    setDryRunData(preview);
+    setIsDryRunModalOpen(true);
+  }, [isLocked, filteredStudents1, selectedSubject1]);
+
+  const handleConfirmDryRunUpdate = useCallback(() => {
+    try {
+      const backupKey = `hocba_deleted_submissions_backup_${Date.now()}`;
+      localStorage.setItem(backupKey, JSON.stringify(allStudentsDb));
+    } catch {}
+
+    setIsDryRunModalOpen(false);
+    setIsLocked(true);
+    showToast(`✅ Đã đồng bộ hóa và tính toán lại thành công cho ${filteredStudents1.length} học sinh! (Đã sao lưu bản ghi cũ)`);
+  }, [allStudentsDb, filteredStudents1.length]);
+
   // If the user role is student, render the comprehensive 9-block unified Học Bạ Số view
   if (userRole === 'student') {
     return (
@@ -3396,6 +3444,15 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
             >
               <Sparkles className="w-4 h-4" />
               <span>Tạo nhận xét thiếu</span>
+            </button>
+
+            <button
+              onClick={handleOpenDryRun}
+              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white transition-all flex items-center gap-2 cursor-pointer shadow-xs shadow-indigo-200"
+              title="Tính toán lại và xem trước Dry-run trước khi cập nhật"
+            >
+              <Zap className="w-4 h-4" />
+              <span>Cập nhật (Dry-run)</span>
             </button>
 
             <button
@@ -4289,6 +4346,84 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
               >
                 Lưu Xác Nhận
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isDryRunModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl max-w-3xl w-full p-6 shadow-2xl border border-slate-200 space-y-4 max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 font-bold">
+                  ⚡
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900 font-heading">
+                    Xem Trước (Dry-run Preview) Cập Nhật T/H/C
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Xác nhận thay đổi mức đánh giá và nhận xét trước khi ghi vào Cơ sở dữ liệu
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsDryRunModalOpen(false)}
+                className="p-1.5 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto max-h-[50vh] border border-slate-200 rounded-2xl">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead className="bg-slate-50 sticky top-0 border-b border-slate-200 text-slate-700 font-extrabold">
+                  <tr>
+                    <th className="p-3">Học sinh</th>
+                    <th className="p-3 text-center">Điểm</th>
+                    <th className="p-3 text-center">Mức cũ → Mới</th>
+                    <th className="p-3">Nhận xét mới đề xuất</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {dryRunData.map((row, idx) => (
+                    <tr key={idx} className="hover:bg-slate-50/80">
+                      <td className="p-3 font-bold text-slate-800">{row.studentName} <span className="text-[10px] text-slate-400 font-normal">({row.studentCode})</span></td>
+                      <td className="p-3 text-center font-mono font-bold text-teal-700">{row.score}đ</td>
+                      <td className="p-3 text-center">
+                        <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-mono font-bold">{row.oldLevel}</span>
+                        <span className="mx-1 text-slate-400">→</span>
+                        <span className={`px-2 py-0.5 rounded font-mono font-black ${row.newLevel === 'T' ? 'bg-emerald-100 text-emerald-800' : row.newLevel === 'H' ? 'bg-blue-100 text-blue-800' : 'bg-amber-100 text-amber-800'}`}>{row.newLevel}</span>
+                      </td>
+                      <td className="p-3 text-slate-600 italic max-w-xs truncate" title={row.newComment}>{row.newComment}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex items-center justify-between pt-3 border-t border-slate-100">
+              <span className="text-xs text-slate-500 font-medium">
+                Tổng số bản ghi xem trước: <b className="text-indigo-700 font-bold">{dryRunData.length}</b> học sinh
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsDryRunModalOpen(false)}
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
+                >
+                  Hủy bỏ
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmDryRunUpdate}
+                  className="px-5 py-2 rounded-xl text-xs font-black bg-indigo-600 hover:bg-indigo-700 text-white shadow-md shadow-indigo-200 transition-all cursor-pointer"
+                >
+                  Xác nhận Ghi Dữ Liệu ✨
+                </button>
+              </div>
             </div>
           </div>
         </div>
