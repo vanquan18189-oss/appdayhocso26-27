@@ -1,5 +1,6 @@
 import { SUBJECTS, GRADES, CLASSES_BY_GRADE, ALL_CLASSES, EXAM_TYPES, QUESTION_TYPES, getQuestionTypeLabel, isGradeMatching, extractGradeDigit, purgeStaleQuestionAnswerFields } from '../../lib/constants';
 import { getSubjectColorStyles } from '../../utils/subjectColors';
+import { sortStudentsByName } from '../../utils/vietnameseNameSort';
 import { formatScore, formatTotalScore, roundTotalScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
 import { getTeachersFromLocalStorage, resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
 import { getStudentsFromLocalStorage, getClassStudentCount, deleteStudentFromClass, generateDefaultClassRoster, normalizeClassKey } from '../../services/studentStorageService';
@@ -607,6 +608,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   // Tracking Modal State
   const [trackingExam, setTrackingExam] = useState<ExamPaper | null>(null);
   const [trackingFilter, setTrackingFilter] = useState<'all' | 'need_manual' | 'unmatched'>('all');
+  const [nameSortDirection, setNameSortDirection] = useState<'asc' | 'desc'>('asc');
 
   useEffect(() => {
     if (!showUnmatchedTab && trackingFilter === 'unmatched') {
@@ -1059,12 +1061,8 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       }
     });
 
-    return mapped.sort((a, b) => {
-      const idA = String(a?.id || '');
-      const idB = String(b?.id || '');
-      return idA.localeCompare(idB, undefined, { numeric: true, sensitivity: 'base' });
-    });
-  }, [trackingExam, submissionsVersion, trackingFirestoreSubs]);
+    return sortStudentsByName(mapped, nameSortDirection);
+  }, [trackingExam, submissionsVersion, trackingFirestoreSubs, nameSortDirection]);
 
   // Unified completion stats for current tracking exam
   const trackingCompletion = useMemo(() => {
@@ -1640,6 +1638,8 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     setTrackingActionMenuId(null);
     setTrackingExam(exam);
     setTrackingFilter('all');
+    setNameSortDirection('asc');
+    setSortScoreDirection(null);
     setOpenActionMenuId(null);
   };
 
@@ -4824,7 +4824,31 @@ return (
                     <tr className="bg-slate-100 text-[10px] uppercase font-black text-slate-500 tracking-wider">
                       <th className="sticky top-0 left-0 z-30 w-[56px] min-w-[56px] max-w-[56px] bg-slate-100 p-4 border-b border-slate-200 text-center">STT</th>
                       <th className="sticky top-0 left-[56px] z-30 w-[120px] min-w-[120px] max-w-[120px] bg-slate-100 p-4 border-b border-slate-200">Mã HS</th>
-                      <th className="sticky top-0 left-[176px] z-30 w-[220px] min-w-[220px] max-w-[220px] bg-slate-100 p-4 border-b border-slate-200 shadow-[2px_0_4px_rgba(0,0,0,0.08)]">Tên học sinh</th>
+                      <th 
+                        onClick={() => {
+                          setNameSortDirection(prev => prev === 'asc' ? 'desc' : 'asc');
+                          setSortScoreDirection(null);
+                        }}
+                        className={`sticky top-0 left-[176px] z-30 w-[220px] min-w-[220px] max-w-[220px] p-4 border-b border-slate-200 shadow-[2px_0_4px_rgba(0,0,0,0.08)] select-none cursor-pointer transition-colors ${
+                          !sortScoreDirection ? 'bg-indigo-100 text-indigo-900' : 'bg-slate-100 text-slate-700 hover:bg-slate-200/70'
+                        }`}
+                        title="Click để sắp xếp theo Tên học sinh (A-Z / Z-A)"
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span className={!sortScoreDirection ? 'text-indigo-900 font-black' : 'text-slate-700 font-black'}>Tên học sinh</span>
+                          {!sortScoreDirection && (
+                            nameSortDirection === 'asc' ? (
+                              <span className="inline-flex items-center justify-center w-5 h-5 rounded-md bg-indigo-600 text-white font-black text-xs shadow-xs" title="Tên A-Z">
+                                <ArrowUp className="w-3.5 h-3.5 stroke-[2.5]" />
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center justify-center w-5 h-5 rounded-md bg-indigo-600 text-white font-black text-xs shadow-xs" title="Tên Z-A">
+                                <ArrowDown className="w-3.5 h-3.5 stroke-[2.5]" />
+                              </span>
+                            )
+                          )}
+                        </div>
+                      </th>
                       {Array.from({ length: trackingExam?.questions?.length || 5 }).map((_, qIdx) => (
                         <th key={qIdx} className="sticky top-0 z-20 bg-slate-100 p-4 border-b border-slate-200 text-center text-slate-700 font-black">
                           CÂU {qIdx + 1}

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, memo } from 'react';
+import { sortStudentsByName } from '../../utils/vietnameseNameSort';
 import {
   BookOpen,
   Lock,
@@ -2844,7 +2845,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
   }, [allStudentsDb, exams, assignments, lessons, games, classes, selectedExamType1, selectedSubject1]);
 
   const filteredStudents1 = useMemo(() => {
-    return activeStudentsList.filter(st => {
+    const list = activeStudentsList.filter(st => {
       if (selectedClass1 !== 'Tất cả Lớp') {
         const normSel = getStandardClassName(selectedClass1).toLowerCase().replace(/\s+/g, '');
         const normSt = getStandardClassName(st.className).toLowerCase().replace(/\s+/g, '');
@@ -2863,15 +2864,12 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
         if (!full.includes(searchKeyword1.toLowerCase())) return false;
       }
       return true;
-    }).sort((a, b) => {
-      const fnCmp = (a.firstName || '').localeCompare(b.firstName || '', 'vi', { sensitivity: 'base' });
-      if (fnCmp !== 0) return fnCmp;
-      return (a.lastName || '').localeCompare(b.lastName || '', 'vi', { sensitivity: 'base' });
     });
+    return sortStudentsByName(list, 'asc');
   }, [activeStudentsList, selectedClass1, selectedGrade1, searchKeyword1]);
 
   const filteredStudents2 = useMemo(() => {
-    return activeStudentsList.filter(st => {
+    const list = activeStudentsList.filter(st => {
       if (selectedClass2 !== 'Tất cả Lớp') {
         const normSel = getStandardClassName(selectedClass2).toLowerCase().replace(/\s+/g, '');
         const normSt = getStandardClassName(st.className).toLowerCase().replace(/\s+/g, '');
@@ -2890,11 +2888,8 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
         if (!full.includes(searchKeyword2.toLowerCase())) return false;
       }
       return true;
-    }).sort((a, b) => {
-      const fnCmp = (a.firstName || '').localeCompare(b.firstName || '', 'vi', { sensitivity: 'base' });
-      if (fnCmp !== 0) return fnCmp;
-      return (a.lastName || '').localeCompare(b.lastName || '', 'vi', { sensitivity: 'base' });
     });
+    return sortStudentsByName(list, 'asc');
   }, [activeStudentsList, selectedClass2, selectedGrade2, searchKeyword2]);
 
   const studentSubmissionStatusMap = useMemo(() => {

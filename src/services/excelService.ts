@@ -4,6 +4,7 @@ import { formatScore, formatTotalScore, roundTotalScore, formatSubmissionDateTim
 import { getExamCompletion } from './examCompletionService';
 import { getStudentsFromLocalStorage, generateDefaultClassRoster, getClassStudentCount } from './studentStorageService';
 import { formatStandardStudentCode, normalizeStudentCode } from './studentCode';
+import { sortStudentsByName } from '../utils/vietnameseNameSort';
 
 /**
  * Utility helper to trigger binary .xlsx file download in the browser
@@ -834,13 +835,17 @@ export function exportExamToExcel(exam: ExamPaper) {
     const cleanClass = className.replace(/^Lớp\s*/i, '').trim().toUpperCase();
     const stdClassName = className.startsWith('Lớp ') ? className : `Lớp ${cleanClass}`;
     const rawRoster = getStudentsFromLocalStorage(stdClassName) || generateDefaultClassRoster(stdClassName, 38);
-    const classRoster = rawRoster.map((st, idx) => ({
+    const unSortedRoster = rawRoster.map((st, idx) => ({
       ...st,
       stt: st.stt || (idx + 1),
       code: formatStandardStudentCode(st.code, cleanClass, st.stt || (idx + 1)),
       name: st.name || st.fullName || `Học sinh ${idx + 1}`,
       fullName: st.fullName || st.name || `Học sinh ${idx + 1}`,
       dob: st.dob || st.birthday || ''
+    }));
+    const classRoster = sortStudentsByName(unSortedRoster, 'asc').map((st, idx) => ({
+      ...st,
+      stt: idx + 1
     }));
 
     // Retrieve authentic completion stats using unified getExamCompletion
