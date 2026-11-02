@@ -27,7 +27,7 @@ export interface SubjectScoreBreakdown {
   shortName: string;
   score: number | null;
   level: string;
-  status: 'T' | 'H' | 'C' | 'CHT';
+  status: 'T' | 'HT' | 'CHT' | 'H' | 'C';
   note: string;
   // Chi tiết từng nguồn dữ liệu (phục vụ minh bạch và cố vấn AI)
   examScore: number | null;
@@ -1142,7 +1142,7 @@ export function calculateUnifiedHocBaData(params: {
       }
     }
 
-    let status: 'T' | 'H' | 'C' | 'CHT' = 'C';
+    let status: 'T' | 'HT' | 'CHT' = 'CHT';
     let level = 'Chưa đánh giá';
 
     if (weightsUsed.length > 0 && hasRealData) {
@@ -1160,11 +1160,11 @@ export function calculateUnifiedHocBaData(params: {
         status = 'T';
         level = 'Hoàn thành tốt (T)';
       } else if (finalScore >= 5.0) {
-        status = 'H';
-        level = 'Hoàn thành (H)';
+        status = 'HT';
+        level = 'Hoàn thành (HT)';
       } else {
-        status = 'C';
-        level = 'Chưa hoàn thành (C)';
+        status = 'CHT';
+        level = 'Chưa hoàn thành (CHT)';
       }
     }
 
@@ -1309,7 +1309,7 @@ export interface OverallClassificationParams {
   studentName?: string;
   className?: string;
   hocBaSummary?: StudentHocBaSummary;
-  evaluations?: Record<string, { dat: 'T' | 'H' | 'C' | 'CHT'; score: string }>;
+  evaluations?: Record<string, { dat: 'T' | 'HT' | 'CHT' | 'H' | 'C'; score: string }>;
   subjects?: SubjectScoreBreakdown[];
 }
 
@@ -1323,16 +1323,16 @@ export interface OverallClassificationResult {
   progressSubtext: string;
   statusLabel: string;
   scoredSubjects: Array<{ subject: string; score: number }>;
-  remarkSubjects: Array<{ subject: string; status: 'T' | 'H' | 'C' | 'CHT' }>;
+  remarkSubjects: Array<{ subject: string; status: 'T' | 'HT' | 'CHT' | 'H' | 'C' }>;
 }
 
 export function calculateOverallClassification(
   studentIdOrParams: string | OverallClassificationParams,
   hocBaSummaryArg?: StudentHocBaSummary,
-  evaluationsArg?: Record<string, { dat: 'T' | 'H' | 'C' | 'CHT'; score: string }>
+  evaluationsArg?: Record<string, { dat: 'T' | 'HT' | 'CHT' | 'H' | 'C'; score: string }>
 ): OverallClassificationResult {
   let summary: StudentHocBaSummary | undefined;
-  let evaluations: Record<string, { dat: 'T' | 'H' | 'C' | 'CHT'; score: string }> | undefined;
+  let evaluations: Record<string, { dat: 'T' | 'HT' | 'CHT' | 'H' | 'C'; score: string }> | undefined;
 
   if (typeof studentIdOrParams === 'string') {
     summary = hocBaSummaryArg;
@@ -1356,7 +1356,7 @@ export function calculateOverallClassification(
   const totalCount = summary?.totalSubjectsCount || (subjectsList.length > 0 ? subjectsList.length : 9);
 
   const scoredSubjects: Array<{ subject: string; score: number }> = [];
-  const remarkSubjects: Array<{ subject: string; status: 'T' | 'H' | 'C' | 'CHT' }> = [];
+  const remarkSubjects: Array<{ subject: string; status: 'T' | 'HT' | 'CHT' | 'H' | 'C' }> = [];
   const seenSubjects = new Set<string>();
 
   // 1. Duyệt qua các môn từ hocBaSummary
@@ -1366,7 +1366,7 @@ export function calculateOverallClassification(
     const manualEval = evaluations ? evaluations[subName] : undefined;
 
     let numericScore: number | null = null;
-    let remarkStatus: 'T' | 'H' | 'C' | 'CHT' | null = null;
+    let remarkStatus: 'T' | 'HT' | 'CHT' | 'H' | 'C' | null = null;
 
     if (sub.score !== null && sub.hasRealData) {
       numericScore = sub.score;
@@ -1374,8 +1374,8 @@ export function calculateOverallClassification(
       numericScore = Number(manualEval.score);
     }
 
-    if (manualEval && ['T', 'H', 'C', 'CHT'].includes(manualEval.dat)) {
-      remarkStatus = manualEval.dat;
+    if (manualEval && ['T', 'HT', 'H', 'CHT', 'C'].includes(manualEval.dat)) {
+      remarkStatus = manualEval.dat === 'H' ? 'HT' : manualEval.dat === 'C' ? 'CHT' : manualEval.dat;
     } else if (sub.hasRealData && sub.level !== 'Chưa đánh giá') {
       remarkStatus = sub.status;
     }
@@ -1405,7 +1405,7 @@ export function calculateOverallClassification(
       if (seenSubjects.has(subName) || !ev) return;
       const isScored = isSubjectWithScore(subName);
       const numScore = ev.score && !isNaN(Number(ev.score)) ? Number(ev.score) : null;
-      const dat = ev.dat && ['T', 'H', 'C', 'CHT'].includes(ev.dat) ? ev.dat : null;
+      const dat = ev.dat && ['T', 'HT', 'H', 'CHT', 'C'].includes(ev.dat) ? (ev.dat === 'H' ? 'HT' : ev.dat === 'C' ? 'CHT' : ev.dat) : null;
 
       if (isScored) {
         if (numScore !== null) {
@@ -1447,13 +1447,13 @@ export function calculateOverallClassification(
     progressSubtext = '';
   } else {
     const hasFailingScore = scoredSubjects.some((s) => s.score < 5.0);
-    const hasFailingRemark = remarkSubjects.some((s) => s.status === 'C' || s.status === 'CHT');
+    const hasFailingRemark = remarkSubjects.some((s) => s.status === 'CHT' || s.status === 'C');
 
     const allScoredXuatSac = scoredSubjects.every((s) => s.score >= 9.0);
     const allRemarksXuatSac = remarkSubjects.every((s) => s.status === 'T');
 
     const allScoredTot = scoredSubjects.every((s) => s.score >= 7.0);
-    const allRemarksTot = remarkSubjects.every((s) => s.status === 'T' || s.status === 'H');
+    const allRemarksTot = remarkSubjects.every((s) => s.status === 'T' || s.status === 'HT' || s.status === 'H');
 
     if (hasFailingScore || hasFailingRemark) {
       classification = 'Chưa hoàn thành';

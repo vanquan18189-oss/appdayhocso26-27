@@ -1050,7 +1050,7 @@ interface SoNhanXetExportItem {
     totalQuestions: number;
     strengths: string;
     reminders: string;
-    overallDat: 'T' | 'H' | 'C' | 'CHT';
+    overallDat: 'T' | 'HT' | 'CHT' | 'H' | 'C';
     score: number;
     hasCommented: boolean;
     testTitle?: string;
@@ -1066,7 +1066,7 @@ interface SoTongKetExportItem {
   isFemale: boolean;
   className: string;
   homeroomTeacher?: string;
-  evaluations: Record<string, { dat: 'T' | 'H' | 'C' | 'CHT'; score: string }>;
+  evaluations: Record<string, { dat: 'T' | 'HT' | 'CHT' | 'H' | 'C'; score: string }>;
 }
 
 /**

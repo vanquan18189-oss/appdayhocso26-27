@@ -5052,7 +5052,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                         <td className="py-4 px-6 text-center">
                           <span className={`font-extrabold px-3 py-1 rounded-full text-xs ${
                             !isSubjectWithScore(sub.subject)
-                              ? (getQualitativeLevel(sub.score) === 'T' ? 'bg-emerald-100 text-emerald-800' : getQualitativeLevel(sub.score) === 'H' ? 'bg-sky-100 text-sky-800' : 'bg-rose-100 text-rose-800')
+                              ? (getQualitativeLevel(sub.score) === 'T' ? 'bg-emerald-100 text-emerald-800' : getQualitativeLevel(sub.score) === 'HT' ? 'bg-sky-100 text-sky-800' : 'bg-rose-100 text-rose-800')
                               : 'bg-emerald-100 text-emerald-800'
                           }`}>
                             {!isSubjectWithScore(sub.subject) ? getQualitativeLabel(sub.score) : sub.score}

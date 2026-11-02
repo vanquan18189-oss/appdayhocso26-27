@@ -115,13 +115,13 @@ interface StudentRecord {
   dob: string;
   isFemale: boolean;
   className: string;
-  evaluations: Record<string, { dat: 'T' | 'H' | 'C' | 'CHT'; score: string }>;
+  evaluations: Record<string, { dat: 'T' | 'HT' | 'CHT' | 'H' | 'C'; score: string }>;
   commentDetail?: {
     correctCount: number;
     totalQuestions: number;
     strengths: string;
     reminders: string;
-    overallDat: 'T' | 'H' | 'C' | 'CHT';
+    overallDat: 'T' | 'HT' | 'CHT' | 'H' | 'C';
     score: number;
     hasCommented: boolean;
     testTitle?: string;
@@ -181,7 +181,7 @@ interface SubjectScoreItem {
   shortName: string;
   score: number;
   level: string;
-  status: 'T' | 'H' | 'C' | 'CHT';
+  status: 'T' | 'HT' | 'CHT' | 'H' | 'C';
   note: string;
 }
 
@@ -1153,24 +1153,24 @@ const StudentHocBaSoView: React.FC<StudentHocBaSoViewProps> = memo(({
       // Tìm trong hocBaSummary
       const subBreakdown = hocBaSummary.subjects.find(s => isSubjectMatch(s.subject, subject));
 
-      let manualDat: 'T' | 'H' | 'C' | 'CHT' | null = null;
+      let manualDat: 'T' | 'HT' | 'CHT' | null = null;
       let commentText = '';
 
       for (const [subjKey, evalVal] of Object.entries(rawEvals as Record<string, any>)) {
         if (isSubjectMatch(subjKey, subject)) {
-          if (evalVal && ['T', 'H', 'C', 'CHT'].includes(evalVal.dat)) {
-            manualDat = evalVal.dat;
+          if (evalVal && ['T', 'HT', 'H', 'CHT', 'C'].includes(evalVal.dat)) {
+            manualDat = evalVal.dat === 'H' ? 'HT' : evalVal.dat === 'C' ? 'CHT' : evalVal.dat;
             if (evalVal.comment) commentText = evalVal.comment;
           }
           break;
         }
       }
 
-      let status: 'T' | 'H' | 'C' | 'CHT' | null = manualDat;
+      let status: 'T' | 'HT' | 'CHT' | null = manualDat;
       let hasData = Boolean(manualDat);
 
       if (!status && subBreakdown && subBreakdown.hasRealData && subBreakdown.status) {
-        status = subBreakdown.status;
+        status = subBreakdown.status === 'H' ? 'HT' : subBreakdown.status === 'C' ? 'CHT' : subBreakdown.status;
         hasData = true;
         if (subBreakdown.note && !subBreakdown.note.includes('Chưa có')) {
           commentText = subBreakdown.note;
@@ -1189,13 +1189,13 @@ const StudentHocBaSoView: React.FC<StudentHocBaSoViewProps> = memo(({
         barColor = 'bg-emerald-500';
         barWidthPct = 100;
         iconEmoji = '🌟';
-      } else if (status === 'H') {
+      } else if (status === 'HT') {
         levelLabel = 'Hoàn thành';
         levelBadgeBg = 'bg-blue-100 text-blue-800 border-blue-300 font-bold';
         barColor = 'bg-blue-500';
         barWidthPct = 70;
         iconEmoji = '👍';
-      } else if (status === 'C' || status === 'CHT') {
+      } else if (status === 'CHT') {
         levelLabel = 'Chưa hoàn thành';
         levelBadgeBg = 'bg-amber-100 text-amber-800 border-amber-300 font-bold';
         barColor = 'bg-amber-500';
@@ -1221,10 +1221,10 @@ const StudentHocBaSoView: React.FC<StudentHocBaSoViewProps> = memo(({
 
   const qualitativeCounts = useMemo(() => {
     const tCount = qualitativeSubjectsData.filter(d => d.status === 'T').length;
-    const hCount = qualitativeSubjectsData.filter(d => d.status === 'H').length;
-    const cCount = qualitativeSubjectsData.filter(d => d.status === 'C' || d.status === 'CHT').length;
+    const htCount = qualitativeSubjectsData.filter(d => d.status === 'HT').length;
+    const chtCount = qualitativeSubjectsData.filter(d => d.status === 'CHT').length;
     const evaluatedCount = qualitativeSubjectsData.filter(d => d.hasData).length;
-    return { tCount, hCount, cCount, evaluatedCount, totalCount: qualitativeSubjectsData.length };
+    return { tCount, hCount: htCount, htCount, cCount: chtCount, chtCount, evaluatedCount, totalCount: qualitativeSubjectsData.length };
   }, [qualitativeSubjectsData]);
 
   // Find max and min scores for visual highlights among evaluated subjects
@@ -3083,7 +3083,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
   /**
    * Helper function: Lấy bảng điểm đánh giá của học sinh cô lập hoàn toàn theo Học Kỳ trong Sổ Tổng Kết (Phần 2)
    */
-  const getStudentEvaluationsForSemester2 = useCallback((st: StudentRecord, rawSt: any): Record<string, { dat: 'T' | 'H' | 'C' | 'CHT'; score: string }> => {
+  const getStudentEvaluationsForSemester2 = useCallback((st: StudentRecord, rawSt: any): Record<string, { dat: 'T' | 'HT' | 'CHT' | 'H' | 'C'; score: string }> => {
     const normSemester2 = normalizeExamTypeKey(selectedSemester2);
 
     const summary2 = calculateUnifiedHocBaData({
@@ -3138,11 +3138,11 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
     }
 
     if (hasRealExamSubmission) {
-      const res: Record<string, { dat: 'T' | 'H' | 'C' | 'CHT'; score: string }> = {};
+      const res: Record<string, { dat: 'T' | 'HT' | 'CHT' | 'H' | 'C'; score: string }> = {};
       summary2.subjects.forEach(sub => {
         if (sub.score !== null && sub.hasRealData) {
           res[sub.subject] = {
-            dat: sub.status,
+            dat: sub.status === 'H' ? 'HT' : sub.status === 'C' ? 'CHT' : sub.status,
             score: formatTotalScore(sub.score)
           };
         }
@@ -3151,7 +3151,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
     }
 
     if (isDefaultSemesterAndHasRosterData) {
-      return (targetRaw.evaluations as Record<string, { dat: 'T' | 'H' | 'C' | 'CHT'; score: string }>) || {};
+      return (targetRaw.evaluations as Record<string, { dat: 'T' | 'HT' | 'CHT' | 'H' | 'C'; score: string }>) || {};
     }
 
     // Các học kỳ khác chưa có dữ liệu bài kiểm tra -> trả về rỗng để hiển thị (-)
@@ -3662,9 +3662,9 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
                             {displayDat ? (
                               <span className={`inline-block px-2.5 py-1 rounded-lg font-extrabold text-xs ${
                                 displayDat === 'T' ? 'bg-emerald-100 text-emerald-800' :
-                                displayDat === 'H' ? 'bg-sky-100 text-sky-800' : 'bg-rose-100 text-rose-800'
+                                displayDat === 'HT' || displayDat === 'H' ? 'bg-sky-100 text-sky-800' : 'bg-rose-100 text-rose-800'
                               }`}>
-                                {displayDat}
+                                {displayDat === 'H' ? 'HT' : displayDat === 'C' ? 'CHT' : displayDat}
                               </span>
                             ) : (
                               <span className="text-slate-300 font-bold text-xs">-</span>
@@ -3813,7 +3813,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
                 <FileText className="w-4 h-4 text-teal-600" /> Bảng Điểm & Đánh Giá Mức Độ (Tổng số: {filteredStudents2.length} học sinh)
               </div>
               <div className="text-[11px] text-slate-500 italic">
-                Ký hiệu mức đạt: T (Tốt), H (Hoàn thành), CHT (Chưa hoàn thành)
+                Ký hiệu mức đạt: T (Hoàn thành tốt), HT (Hoàn thành), CHT (Chưa hoàn thành)
               </div>
             </div>
 
@@ -3909,9 +3909,9 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
                                   {evalData && evalData.dat ? (
                                     <span className={`inline-block px-2 py-0.5 rounded font-extrabold text-[11px] ${
                                       evalData.dat === 'T' ? 'bg-emerald-100 text-emerald-800' :
-                                      evalData.dat === 'H' ? 'bg-sky-100 text-sky-800' : 'bg-rose-100 text-rose-800'
+                                      evalData.dat === 'HT' || evalData.dat === 'H' ? 'bg-sky-100 text-sky-800' : 'bg-rose-100 text-rose-800'
                                     }`}>
-                                      {evalData.dat}
+                                      {evalData.dat === 'H' ? 'HT' : evalData.dat === 'C' ? 'CHT' : evalData.dat}
                                     </span>
                                   ) : (
                                     <span className="text-slate-300 font-bold text-[11px]">-</span>

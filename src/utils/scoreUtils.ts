@@ -68,30 +68,30 @@ export function isSubjectWithScore(subjectName?: string): boolean {
 export function getQualitativeLevel(
   scoreOrCorrectCount?: number | string | null,
   totalQuestions?: number
-): 'T' | 'H' | 'C' {
-  if (scoreOrCorrectCount === null || scoreOrCorrectCount === undefined || scoreOrCorrectCount === '') return 'H';
+): 'T' | 'HT' | 'CHT' {
+  if (scoreOrCorrectCount === null || scoreOrCorrectCount === undefined || scoreOrCorrectCount === '') return 'HT';
 
   if (typeof totalQuestions === 'number' && totalQuestions > 0) {
     const correct = typeof scoreOrCorrectCount === 'number' ? scoreOrCorrectCount : parseFloat(String(scoreOrCorrectCount));
-    if (isNaN(correct)) return 'H';
+    if (isNaN(correct)) return 'HT';
     const ratio = correct / totalQuestions;
     if (ratio >= 0.8) return 'T';
-    if (ratio >= 0.5) return 'H';
-    return 'C';
+    if (ratio >= 0.5) return 'HT';
+    return 'CHT';
   }
 
   const num = typeof scoreOrCorrectCount === 'number' ? scoreOrCorrectCount : parseFloat(String(scoreOrCorrectCount));
-  if (isNaN(num)) return 'H';
+  if (isNaN(num)) return 'HT';
   if (num >= 8.0) return 'T';
-  if (num >= 5.0) return 'H';
-  return 'C';
+  if (num >= 5.0) return 'HT';
+  return 'CHT';
 }
 
 export function getQualitativeLabel(
-  levelOrCorrectCount?: 'T' | 'H' | 'C' | 'CHT' | string | number | null,
+  levelOrCorrectCount?: 'T' | 'HT' | 'CHT' | string | number | null,
   totalQuestions?: number
 ): string {
-  if (levelOrCorrectCount === null || levelOrCorrectCount === undefined) return 'Hoàn thành (H)';
+  if (levelOrCorrectCount === null || levelOrCorrectCount === undefined) return 'Hoàn thành (HT)';
 
   if (typeof levelOrCorrectCount === 'number' && typeof totalQuestions === 'number') {
     const lvl = getQualitativeLevel(levelOrCorrectCount, totalQuestions);
@@ -105,9 +105,8 @@ export function getQualitativeLabel(
 
   const str = String(levelOrCorrectCount).trim();
   if (str === 'T') return 'Hoàn thành tốt (T)';
-  if (str === 'H') return 'Hoàn thành (H)';
-  if (str === 'C') return 'Chưa hoàn thành (C)';
-  if (str === 'CHT') return 'Chưa hoàn thành (C)';
+  if (str === 'HT' || str === 'H') return 'Hoàn thành (HT)';
+  if (str === 'CHT' || str === 'C') return 'Chưa hoàn thành (CHT)';
 
   const num = parseFloat(str);
   if (!isNaN(num)) {
