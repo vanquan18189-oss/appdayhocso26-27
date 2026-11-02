@@ -8,7 +8,7 @@ import { seedInitialExamsManually, deleteAllExamsFromFirestore, isValidOfficialE
 import { getExamCompletion, registerFirestoreExamSubs, fetchDirectExamCompletions, getCachedExamCompletion, ExamCompletionStats } from '../../services/examCompletionService';
 import { downloadBulkSubmissionsZip } from '../../services/bulkSubmissionZipService';
 import { auth } from '../../services/firebase';
-import { collection, onSnapshot, doc, getDocFromServer } from 'firebase/firestore';
+import { collection, onSnapshot, doc, getDocFromServer, deleteDoc, runTransaction } from 'firebase/firestore';
 import { db } from '../../firebaseConfig';
 import { StatCard } from '../common/StatCard';
 import { BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer } from 'recharts';
@@ -5293,7 +5293,39 @@ return (
       <ConfirmDeleteModal
         isOpen={!!deleteStudent}
         onClose={() => setDeleteStudent(null)}
-        onConfirm={() => {
+        onConfirm={async () => {
+          if (deleteStudent) {
+            const stId = deleteStudent.id;
+            const exId = trackingExam?.id;
+            try {
+              if (db && exId && stId) {
+                try {
+                  await deleteDoc(doc(db, 'exams', exId, 'submissions', stId));
+                } catch {}
+                try {
+                  const masterRef = doc(db, 'exams', exId);
+                  await runTransaction(db, async (tx) => {
+                    const snap = await tx.get(masterRef);
+                    if (snap.exists()) {
+                      const d = snap.data();
+                      if (Array.isArray(d.submissions)) {
+                        const updated = d.submissions.filter((s: any) => {
+                          const sCode = (s.studentCode || s.code || s.maHs || s.studentId || '').trim().toLowerCase();
+                          return sCode !== stId.trim().toLowerCase() && s.id !== stId;
+                        });
+                        tx.update(masterRef, { submissions: updated });
+                      }
+                    }
+                  });
+                } catch {}
+              }
+              window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
+              window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
+              setToast({ message: `Đã xóa kết quả bài làm của học sinh ${deleteStudent.name} thành công!`, type: 'success' });
+            } catch (err: any) {
+              setToast({ message: `Không thể xóa bài làm: ${err?.message || 'Lỗi kết nối cơ sở dữ liệu'}`, type: 'error' });
+            }
+          }
           setDeleteStudent(null);
         }}
         title="Xác nhận xóa bài làm của học sinh"

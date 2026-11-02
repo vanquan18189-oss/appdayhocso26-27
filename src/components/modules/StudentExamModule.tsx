@@ -19,7 +19,9 @@ import {
   Bookmark,
   Check,
   AlertTriangle,
-  Send
+  Send,
+  Trash2,
+  RotateCcw
 } from 'lucide-react';
 import { StatsSummaryRow } from '../common/StatsSummaryRow';
 import { StudentRewardBadgeCard } from '../common/StudentRewardBadgeCard';
@@ -39,14 +41,16 @@ import {
 import { getStudentGameProfile } from '../../services/studentGameStoreService';
 import { getEffectiveStudentClassAndGrade, getCurrentStudentSession, getAuthenticStudentCode, normalizeClassKey } from '../../services/studentSessionService';
 import { studentResultService } from '../../services/studentResultService';
-import { normalizeStudentCode, formatStandardStudentCode } from '../../services/studentCode';
+import { normalizeStudentCode, formatStandardStudentCode, normalizeStudentName } from '../../services/studentCode';
+import { saveExamDraft, deleteExamDraft, loadAllActiveDraftsForStudent, ExamDraftRecord } from '../../services/examDraftService';
 import { subscribeToExamsFromFirestore, getExamsFromFirestore, getLocalCachedExams, isExamDeleted, isValidOfficialExam } from '../../services/examStorageService';
 import { removeUndefined } from '../../services/teacherStorageService';
 import { db } from '../../services/firebase';
-import { doc, runTransaction, setDoc, getDoc, updateDoc } from 'firebase/firestore';
+import { doc, runTransaction, setDoc, getDoc, updateDoc, deleteDoc } from 'firebase/firestore';
 import { getFirestoreDebugStatus } from '../../services/firestoreWriteVerificationService';
 import { formatScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
 import { stableShuffle, getMatchingPairColor } from '../../utils/arrayUtils';
+import { invalidateAllSubmissionsCache } from '../../services/hocBaDataService';
 
 export interface ExamSubmissionItem {
   id: string;
@@ -776,6 +780,15 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
   const [activeTab, setActiveTab] = useState<'todo' | 'history'>('todo');
   const [selectedSubject, setSelectedSubject] = useState<string>('Tất cả');
   const [filterUrgent, setFilterUrgent] = useState<boolean>(false);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+  useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => setToast(null), 3500);
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
+
   const [detailSubmission, setDetailSubmission] = useState<{
     exam: ExamPaper;
     score: string;
@@ -819,11 +832,11 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
   const isSubmittingRef = useRef<boolean>(false);
   const hasSubmittedRef = useRef<boolean>(false);
 
-  // Alert Modal for time out or warning / restriction
+  // Alert Modal for time out or warning / restriction / confirm delete
   const [alertModal, setAlertModal] = useState<{
     title: string;
     message: string;
-    type: 'timeout' | 'submitted_success' | 'restricted' | 'confirm_submit' | 'confirm_exit' | 'unanswered_warning';
+    type: 'timeout' | 'submitted_success' | 'restricted' | 'confirm_submit' | 'confirm_exit' | 'unanswered_warning' | 'confirm_delete_submission' | 'confirm_delete_all_submissions';
     examToView?: ExamPaper;
     answersToView?: Record<number, any>;
     scoreToView?: string;
@@ -856,6 +869,24 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
   ));
   const effectiveStudentCode = authenticStudentCode;
   const effectiveStudentName = session?.name || session?.fullName || currentUserName || studentInfoSession.studentName || 'Học sinh';
+
+  // Quản lý bản nháp bài thi (exam_drafts)
+  const [activeDrafts, setActiveDrafts] = useState<Record<string, ExamDraftRecord>>({});
+
+  useEffect(() => {
+    if (!authenticStudentCode) return;
+    let isMounted = true;
+    loadAllActiveDraftsForStudent(authenticStudentCode).then(drafts => {
+      if (isMounted) {
+        setActiveDrafts(drafts);
+      }
+    }).catch(err => {
+      console.warn('Lỗi đọc bản nháp bài thi của học sinh:', err);
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, [authenticStudentCode]);
 
   const [examHistory, setExamHistory] = useState<Array<ExamSubmissionItem>>(() => {
     try {
@@ -1203,6 +1234,65 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     });
   }, [activeExamSession?.answers, activeExamSession?.currentQuestionIndex, mode]);
 
+  // Tự động lưu bản nháp bài thi (exam_drafts) khi học sinh chọn câu trả lời hoặc chuyển câu
+  useEffect(() => {
+    if (!activeExamSession || hasSubmittedRef.current || isSubmittingRef.current) return;
+    const exam = activeExamSession.exam;
+    const examId = exam?.id;
+    if (!examId || !authenticStudentCode) return;
+
+    const draftData: ExamDraftRecord = {
+      examId,
+      examTitle: exam.title,
+      studentCode: authenticStudentCode,
+      studentId: currentUserId,
+      studentName: effectiveStudentName,
+      studentClass: studentInfoSession.studentClass,
+      answers: activeExamSession.answers,
+      bookmarked: activeExamSession.bookmarked,
+      currentQuestionIndex: activeExamSession.currentQuestionIndex,
+      remainingSeconds,
+      durationMinutes: activeExamSession.durationMinutes,
+      startTime: activeExamSession.startTime,
+      totalQuestions: (exam.questions || []).length,
+      updatedAt: new Date().toISOString()
+    };
+
+    saveExamDraft(authenticStudentCode, examId, draftData);
+    setActiveDrafts(prev => ({ ...prev, [examId]: draftData }));
+  }, [activeExamSession?.answers, activeExamSession?.currentQuestionIndex, activeExamSession?.bookmarked]);
+
+  // Định kỳ 15 giây tự động đồng bộ bản nháp lên Firestore
+  useEffect(() => {
+    if (!activeExamSession || hasSubmittedRef.current || isSubmittingRef.current) return;
+    const exam = activeExamSession.exam;
+    const examId = exam?.id;
+    if (!examId || !authenticStudentCode) return;
+
+    const interval = setInterval(() => {
+      if (!hasSubmittedRef.current && !isSubmittingRef.current && activeExamSession) {
+        saveExamDraft(authenticStudentCode, examId, {
+          examId,
+          examTitle: exam.title,
+          studentCode: authenticStudentCode,
+          studentId: currentUserId,
+          studentName: effectiveStudentName,
+          studentClass: studentInfoSession.studentClass,
+          answers: activeExamSession.answers,
+          bookmarked: activeExamSession.bookmarked,
+          currentQuestionIndex: activeExamSession.currentQuestionIndex,
+          remainingSeconds,
+          durationMinutes: activeExamSession.durationMinutes,
+          startTime: activeExamSession.startTime,
+          totalQuestions: (exam.questions || []).length,
+          updatedAt: new Date().toISOString()
+        });
+      }
+    }, 15000);
+
+    return () => clearInterval(interval);
+  }, [activeExamSession, remainingSeconds, authenticStudentCode, currentUserId, effectiveStudentName, studentInfoSession.studentClass]);
+
   // Re-sync submissions when student user switches or liveExams update
   useEffect(() => {
     try {
@@ -1487,6 +1577,37 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
               : (scoreNumber >= 8 ? 'Làm bài xuất sắc, nắm chắc kiến thức.' : (scoreNumber >= 5 ? 'Đã hoàn thành đạt yêu cầu.' : 'Cần ôn tập và rèn luyện thêm.'))
           };
           const fullExamRecord = removeUndefined(rawExamRecord);
+          const slimExamRecord = removeUndefined({
+            id: fixedDocId,
+            examId: officialExamId,
+            studentId: authenticStudentCode,
+            studentCode: authenticStudentCode,
+            maHs: authenticStudentCode,
+            studentName: effectiveStudentName,
+            studentClass: effectiveStudentClass,
+            score: scoreVal,
+            totalScore: scoreNumber,
+            rank: rankTier,
+            submittedAt: nowTimeStr,
+            submittedTime: nowTimeStr,
+            title: exam.title,
+            subject: exam.subject || 'Môn học',
+            attempts: 1,
+            answers,
+            answersById,
+            violationCount: finalViolationCount || 0,
+            isViolationLocked: isViolationLock,
+            violationReason: violationReason || '',
+            feedback: fullExamRecord.feedback || ''
+          });
+
+          // Xóa bản nháp bài thi khi đã nộp tự động thành công
+          deleteExamDraft(authenticStudentCode, officialExamId).catch(() => {});
+          setActiveDrafts(prev => {
+            const next = { ...prev };
+            delete next[officialExamId];
+            return next;
+          });
 
           // 1. Ghi bài nộp vào đúng Firestore sub-collection 'submissions' bằng setDoc với ID cố định ${studentId}_${examId}_${attemptNumber}
           if (db && officialExamId) {
@@ -1518,7 +1639,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
               } catch {}
             }
 
-            // Cập nhật mảng submissions trên master document của đề kiểm tra (KHÔNG tạo document mới nếu không tồn tại)
+            // Cập nhật mảng submissions trên master document của đề kiểm tra (dùng slimExamRecord để không vượt quá giới hạn 1MB Firestore)
             const examRef = doc(db, 'exams', officialExamId);
             try {
               await runTransaction(db, async (transaction) => {
@@ -1536,13 +1657,8 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                   const sId = String(s.id || '').toLowerCase();
                   return sCode !== authenticStudentCode.toLowerCase() && sId !== fixedDocId.toLowerCase();
                 });
-                filtered.unshift(fullExamRecord);
+                filtered.unshift(slimExamRecord);
                 const deduplicatedDocSubs = deduplicateExamSubmissions(filtered);
-
-                const uniqueStudentKeys = new Set(
-                  deduplicatedDocSubs.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean)
-                );
-                const count = uniqueStudentKeys.size;
 
                 transaction.update(examRef, {
                   submissions: deduplicatedDocSubs,
@@ -1576,7 +1692,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                     const sId = String(s.id || '').toLowerCase();
                     return sCode !== authenticStudentCode.toLowerCase() && sId !== fixedDocId.toLowerCase();
                   });
-                  origFiltered.unshift(fullExamRecord);
+                  origFiltered.unshift(slimExamRecord);
                   const deduplicatedOrigSubs = deduplicateExamSubmissions(origFiltered);
                   transaction.update(origExamRef, {
                     submissions: deduplicatedOrigSubs,
@@ -1609,7 +1725,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                     const sId = String(s.id || '').toLowerCase();
                     return sCode !== authenticStudentCode.toLowerCase() && sId !== fixedDocId.toLowerCase();
                   });
-                  asFiltered.unshift(fullExamRecord);
+                  asFiltered.unshift(slimExamRecord);
                   const deduplicatedAsSubs = deduplicateExamSubmissions(asFiltered);
                   transaction.update(asRef, {
                     submissions: deduplicatedAsSubs,
@@ -2143,15 +2259,39 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     const startTime = Date.now();
     const duration = exam.durationMinutes || (isAssignment ? 45 : 15);
     
-    setActiveExamSession({
-      exam,
-      startTime,
-      durationMinutes: duration,
-      answers: {},
-      bookmarked: {},
-      currentQuestionIndex: 0
-    });
-    setRemainingSeconds(duration * 60);
+    // Kiểm tra và khôi phục bản nháp bài làm (nếu có lưu dở từ trước)
+    const existingDraft = activeDrafts[exam.id];
+    const hasValidDraft = existingDraft && existingDraft.remainingSeconds > 0 && existingDraft.answers && Object.keys(existingDraft.answers).length > 0;
+
+    if (hasValidDraft) {
+      const restoredDuration = existingDraft.durationMinutes || duration;
+      const restoredRemaining = Math.max(10, Math.min(restoredDuration * 60, existingDraft.remainingSeconds));
+      const simulatedStartTime = Date.now() - ((restoredDuration * 60) - restoredRemaining) * 1000;
+
+      setActiveExamSession({
+        exam,
+        startTime: simulatedStartTime,
+        durationMinutes: restoredDuration,
+        answers: existingDraft.answers || {},
+        bookmarked: existingDraft.bookmarked || {},
+        currentQuestionIndex: existingDraft.currentQuestionIndex || 0
+      });
+      setRemainingSeconds(restoredRemaining);
+      setToast({
+        message: `Đã khôi phục bài làm dở của em (còn ${formatRemainingTime(restoredRemaining)})`,
+        type: 'success'
+      });
+    } else {
+      setActiveExamSession({
+        exam,
+        startTime,
+        durationMinutes: duration,
+        answers: {},
+        bookmarked: {},
+        currentQuestionIndex: 0
+      });
+      setRemainingSeconds(duration * 60);
+    }
   };
 
   const handleManualSubmitConfirm = () => {
@@ -2325,6 +2465,34 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             feedback: scoreNumber >= 8 ? 'Làm bài xuất sắc, nắm chắc kiến thức.' : (scoreNumber >= 5 ? 'Đã hoàn thành đạt yêu cầu.' : 'Cần ôn tập và rèn luyện thêm.')
           };
           const fullExamRecord = removeUndefined(rawExamRecord);
+          const slimExamRecord = removeUndefined({
+            id: fixedDocId,
+            examId: officialExamId,
+            studentId: authenticStudentCode,
+            studentCode: authenticStudentCode,
+            maHs: authenticStudentCode,
+            studentName: effectiveStudentName,
+            studentClass: effectiveStudentClass,
+            score: scoreVal,
+            totalScore: scoreNumber,
+            rank: rankTier,
+            submittedAt: nowTimeStr,
+            submittedTime: nowTimeStr,
+            title: exam.title,
+            subject: exam.subject || 'Môn học',
+            attempts: 1,
+            answers,
+            answersById,
+            feedback: fullExamRecord.feedback || ''
+          });
+
+          // Xóa bản nháp bài thi khi đã nộp bài thành công
+          deleteExamDraft(authenticStudentCode, officialExamId).catch(() => {});
+          setActiveDrafts(prev => {
+            const next = { ...prev };
+            delete next[officialExamId];
+            return next;
+          });
 
           // 1. Ghi bài nộp vào đúng Firestore sub-collection 'submissions' bằng setDoc với ID cố định ${studentId}_${examId}_${attemptNumber}
           if (db && officialExamId) {
@@ -2356,7 +2524,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
               } catch {}
             }
 
-            // 2. Cập nhật mảng submissions trên master document của đề thi (KHÔNG tạo document mới nếu không tồn tại)
+            // 2. Cập nhật mảng submissions trên master document của đề thi (dùng slimExamRecord chống vượt ngưỡng 1MB)
             const examRef = doc(db, 'exams', officialExamId);
             try {
               await runTransaction(db, async (transaction) => {
@@ -2374,13 +2542,8 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                   const sId = String(s.id || '').toLowerCase();
                   return sCode !== authenticStudentCode.toLowerCase() && sId !== fixedDocId.toLowerCase();
                 });
-                filtered.unshift(fullExamRecord);
+                filtered.unshift(slimExamRecord);
                 const deduplicatedDocSubs = deduplicateExamSubmissions(filtered);
-
-                const uniqueStudentKeys = new Set(
-                  deduplicatedDocSubs.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.sddcn || s.studentName || '').trim().toLowerCase()).filter(Boolean)
-                );
-                const count = uniqueStudentKeys.size;
 
                 transaction.update(examRef, {
                   submissions: deduplicatedDocSubs,
@@ -2414,7 +2577,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                     const sId = String(s.id || '').toLowerCase();
                     return sCode !== authenticStudentCode.toLowerCase() && sId !== fixedDocId.toLowerCase();
                   });
-                  origFiltered.unshift(fullExamRecord);
+                  origFiltered.unshift(slimExamRecord);
                   const deduplicatedOrigSubs = deduplicateExamSubmissions(origFiltered);
                   transaction.update(origExamRef, {
                     submissions: deduplicatedOrigSubs,
@@ -2447,7 +2610,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                     const sId = String(s.id || '').toLowerCase();
                     return sCode !== authenticStudentCode.toLowerCase() && sId !== fixedDocId.toLowerCase();
                   });
-                  asFiltered.unshift(fullExamRecord);
+                  asFiltered.unshift(slimExamRecord);
                   const deduplicatedAsSubs = deduplicateExamSubmissions(asFiltered);
                   transaction.update(asRef, {
                     submissions: deduplicatedAsSubs,
@@ -2621,6 +2784,220 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     } finally {
       setIsSubmitting(false);
       isSubmittingRef.current = false;
+    }
+  };
+
+  // Delete a single submission history record and clear from LocalStorage & Firestore
+  const handleDeleteExamSubmission = async (subToDelete: any) => {
+    if (!subToDelete) return;
+
+    const subId = subToDelete.id;
+    const examId = subToDelete.examId || subToDelete.exam?.id;
+    const studentCodeCands = [
+      authenticStudentCode,
+      currentUserId,
+      session?.sddcn,
+      session?.code,
+      session?.maHs
+    ].filter(Boolean) as string[];
+
+    try {
+      // 1. Immediately update local state so UI reacts instantly
+      setExamHistory((prev) =>
+        prev.filter((s: any) => {
+          if (subId && s.id && s.id === subId) return false;
+          if (examId && (s.examId === examId || s.exam?.id === examId)) return false;
+          return true;
+        })
+      );
+
+      // 2. Clean LocalStorage
+      studentCodeCands.forEach((key) => {
+        const lsKey = `eduplay_student_exam_subs_${key}`;
+        const raw = localStorage.getItem(lsKey);
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+              const filtered = parsed.filter((s: any) => {
+                if (subId && s.id && s.id === subId) return false;
+                if (examId && (s.examId === examId || s.exam?.id === examId)) return false;
+                return true;
+              });
+              localStorage.setItem(lsKey, JSON.stringify(filtered));
+            }
+          } catch {}
+        }
+
+        const hwLsKey = `eduplay_student_submissions_${key}`;
+        const rawHw = localStorage.getItem(hwLsKey);
+        if (rawHw) {
+          try {
+            const parsed = JSON.parse(rawHw);
+            if (Array.isArray(parsed)) {
+              const filtered = parsed.filter((s: any) => {
+                if (subId && s.id && s.id === subId) return false;
+                if (examId && (s.examId === examId || s.assignmentId === examId)) return false;
+                return true;
+              });
+              localStorage.setItem(hwLsKey, JSON.stringify(filtered));
+            }
+          } catch {}
+        }
+      });
+
+      // Clear from global `eduplay_all_exam_submissions`
+      const allExamSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
+      if (allExamSubsRaw) {
+        try {
+          const parsedAll = JSON.parse(allExamSubsRaw);
+          if (Array.isArray(parsedAll)) {
+            const filteredAll = parsedAll.filter((s: any) => {
+              if (subId && s.id && s.id === subId) return false;
+              const sExamId = s.examId || s.exam?.id;
+              const sCode = normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || '');
+              if (sExamId && examId && sExamId === examId && (sCode === authenticStudentCode || s.studentId === currentUserId)) {
+                return false;
+              }
+              return true;
+            });
+            localStorage.setItem('eduplay_all_exam_submissions', JSON.stringify(filteredAll));
+          }
+        } catch {}
+      }
+
+      // 3. Clean Firestore records asynchronously
+      if (db) {
+        if (examId) {
+          const docKeys = [subId, authenticStudentCode, currentUserId].filter(Boolean) as string[];
+          for (const docKey of docKeys) {
+            try {
+              await deleteDoc(doc(db, 'exams', examId, 'submissions', docKey));
+            } catch {}
+            if (subToDelete.exam?.originalExamId) {
+              try {
+                await deleteDoc(doc(db, 'exams', subToDelete.exam.originalExamId, 'submissions', docKey));
+              } catch {}
+            }
+          }
+
+          // Remove submission from master exam doc `submissions` array
+          try {
+            const masterExamRef = doc(db, 'exams', examId);
+            await runTransaction(db, async (transaction) => {
+              const masterSnap = await transaction.get(masterExamRef);
+              if (masterSnap.exists()) {
+                const data = masterSnap.data();
+                if (Array.isArray(data.submissions)) {
+                  const updatedSubs = data.submissions.filter((s: any) => {
+                    if (subId && s.id && s.id === subId) return false;
+                    const sCode = normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || '');
+                    if (sCode === authenticStudentCode || s.studentId === currentUserId) return false;
+                    return true;
+                  });
+                  transaction.update(masterExamRef, { submissions: updatedSubs });
+                }
+              }
+            });
+          } catch {}
+        }
+
+        if (subId) {
+          try {
+            await deleteDoc(doc(db, 'submissions', subId));
+          } catch {}
+        }
+      }
+
+      // 4. Invalidate cache & dispatch real-time events
+      try {
+        invalidateAllSubmissionsCache();
+      } catch {}
+      window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
+      window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
+
+      // 5. Direct visual feedback toast for success
+      setToast({
+        message: 'Đã xóa lịch sử bài làm thành công!',
+        type: 'success'
+      });
+    } catch (err: any) {
+      console.error('Lỗi khi xóa lịch sử bài làm:', err);
+      setToast({
+        message: `Không thể xóa lịch sử bài làm: ${err?.message || 'Lỗi kết nối cơ sở dữ liệu'}`,
+        type: 'error'
+      });
+    }
+  };
+
+  // Delete all submission history records for this student
+  const handleDeleteAllExamSubmissions = async () => {
+    const listToDelete = [...filteredExamHistory];
+    setExamHistory([]);
+
+    const studentCodeCands = [
+      authenticStudentCode,
+      currentUserId,
+      session?.sddcn,
+      session?.code,
+      session?.maHs
+    ].filter(Boolean) as string[];
+
+    try {
+      studentCodeCands.forEach((key) => {
+        localStorage.removeItem(`eduplay_student_exam_subs_${key}`);
+        localStorage.removeItem(`eduplay_student_submissions_${key}`);
+      });
+
+      const allExamSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
+      if (allExamSubsRaw) {
+        try {
+          const parsedAll = JSON.parse(allExamSubsRaw);
+          if (Array.isArray(parsedAll)) {
+            const filteredAll = parsedAll.filter((s: any) => {
+              const sCode = normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || '');
+              return sCode !== authenticStudentCode && s.studentId !== currentUserId;
+            });
+            localStorage.setItem('eduplay_all_exam_submissions', JSON.stringify(filteredAll));
+          }
+        } catch {}
+      }
+
+      if (db) {
+        for (const item of listToDelete) {
+          const examId = item.examId || item.exam?.id;
+          if (examId) {
+            const docKeys = [item.id, authenticStudentCode, currentUserId].filter(Boolean) as string[];
+            for (const docKey of docKeys) {
+              try {
+                await deleteDoc(doc(db, 'exams', examId, 'submissions', docKey));
+              } catch {}
+            }
+          }
+          if (item.id) {
+            try {
+              await deleteDoc(doc(db, 'submissions', item.id));
+            } catch {}
+          }
+        }
+      }
+
+      try {
+        invalidateAllSubmissionsCache();
+      } catch {}
+      window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
+      window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
+
+      setToast({
+        message: 'Đã xóa tất cả lịch sử bài làm thành công!',
+        type: 'success'
+      });
+    } catch (err: any) {
+      console.error('Lỗi khi xóa tất cả lịch sử bài làm:', err);
+      setToast({
+        message: `Không thể xóa tất cả lịch sử bài làm: ${err?.message || 'Lỗi kết nối cơ sở dữ liệu'}`,
+        type: 'error'
+      });
     }
   };
 
@@ -4466,9 +4843,15 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
 
                         {/* Status badge */}
                         {stateType === 'open' && (
-                          <span className="bg-emerald-100 text-emerald-800 text-[10px] font-extrabold px-2.5 py-1 rounded-full flex items-center gap-1">
-                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Đang mở
-                          </span>
+                          activeDrafts[ex.id] && activeDrafts[ex.id].remainingSeconds > 0 && activeDrafts[ex.id].answers && Object.keys(activeDrafts[ex.id].answers).length > 0 ? (
+                            <span className="bg-amber-100 text-amber-800 text-[10px] font-extrabold px-2.5 py-1 rounded-full flex items-center gap-1 shadow-xs">
+                              <RotateCcw className="w-3 h-3 text-amber-600 animate-spin" /> Đang làm dở
+                            </span>
+                          ) : (
+                            <span className="bg-emerald-100 text-emerald-800 text-[10px] font-extrabold px-2.5 py-1 rounded-full flex items-center gap-1">
+                              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> Đang mở
+                            </span>
+                          )
                         )}
                         {stateType === 'submitted' && (
                           <span className="bg-indigo-100 text-indigo-800 text-[10px] font-extrabold px-2.5 py-1 rounded-full flex items-center gap-1">
@@ -4517,14 +4900,25 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                     {/* Action Button depending on cases */}
                     <div className="pt-3 relative z-10">
                       {stateType === 'open' && (
-                        <button
-                          onClick={() => handleStartExam(ex)}
-                          className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white text-xs sm:text-sm font-extrabold transition-all shadow-md shadow-indigo-600/30 flex items-center justify-center gap-2 cursor-pointer active:scale-98"
-                        >
-                          <Zap className="w-4 h-4 text-amber-300" />
-                          <span>Bắt đầu làm bài</span>
-                          <ChevronRight className="w-4 h-4" />
-                        </button>
+                        activeDrafts[ex.id] && activeDrafts[ex.id].remainingSeconds > 0 && activeDrafts[ex.id].answers && Object.keys(activeDrafts[ex.id].answers).length > 0 ? (
+                          <button
+                            onClick={() => handleStartExam(ex)}
+                            className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white text-xs sm:text-sm font-extrabold transition-all shadow-md shadow-amber-500/30 flex items-center justify-center gap-2 cursor-pointer active:scale-98"
+                          >
+                            <RotateCcw className="w-4 h-4 text-yellow-200" />
+                            <span>Làm tiếp bài (Còn {formatRemainingTime(activeDrafts[ex.id].remainingSeconds)})</span>
+                            <ChevronRight className="w-4 h-4" />
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleStartExam(ex)}
+                            className="w-full py-3.5 px-4 rounded-2xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white text-xs sm:text-sm font-extrabold transition-all shadow-md shadow-indigo-600/30 flex items-center justify-center gap-2 cursor-pointer active:scale-98"
+                          >
+                            <Zap className="w-4 h-4 text-amber-300" />
+                            <span>Bắt đầu làm bài</span>
+                            <ChevronRight className="w-4 h-4" />
+                          </button>
+                        )
                       )}
 
                       {stateType === 'submitted' && (
@@ -4591,73 +4985,115 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
               </p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 text-[11px] font-extrabold uppercase tracking-wider">
-                    <th className="py-4 px-6">STT</th>
-                    <th className="py-4 px-6">Tên đề kiểm tra</th>
-                    <th className="py-4 px-6">Môn học</th>
-                    <th className="py-4 px-6 text-center">Xếp thứ</th>
-                    <th className="py-4 px-6 text-center">Điểm số</th>
-                    <th className="py-4 px-6">Thời gian nộp</th>
-                    <th className="py-4 px-6 text-center">Xem chi tiết</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-xs text-slate-700 font-medium">
-                  {filteredExamHistory.map((sub, index) => {
-                    const subjColor = getSubjectColorStyles(sub.subject);
-                    return (
-                    <tr key={`${sub.id || 'sub'}-${sub.examId || 'ex'}-${index}`} className="hover:bg-slate-50/80 transition-colors">
-                      <td className="py-4 px-6 font-bold text-slate-500">#{index + 1}</td>
-                      <td className="py-4 px-6 font-bold text-slate-900">{sub.title}</td>
-                      <td className="py-4 px-6">
-                        <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase ${subjColor.badgeClass}`}>
-                          {sub.subject}
-                        </span>
-                      </td>
-                      <td className="py-4 px-6 text-center">
-                        <span className="bg-amber-100 text-amber-900 font-extrabold px-2.5 py-1 rounded-full text-[10px]">
-                          {sub.rank}
-                        </span>
-                      </td>
-                      <td className="py-4 px-6 text-center">
-                        <span className={`font-extrabold px-3 py-1 rounded-full text-xs ${
-                          !isSubjectWithScore(sub.subject)
-                            ? (getQualitativeLevel(sub.score) === 'T' ? 'bg-emerald-100 text-emerald-800' : getQualitativeLevel(sub.score) === 'H' ? 'bg-sky-100 text-sky-800' : 'bg-rose-100 text-rose-800')
-                            : 'bg-emerald-100 text-emerald-800'
-                        }`}>
-                          {!isSubjectWithScore(sub.subject) ? getQualitativeLabel(sub.score) : sub.score}
-                        </span>
-                      </td>
-                      <td className="py-4 px-6 text-slate-500">{formatSubmissionDateTime(sub.submittedTime)}</td>
-                      <td className="py-4 px-6 text-center">
-                        <button
-                          onClick={() => setDetailSubmission({
-                            exam: sub.exam,
-                            score: sub.score,
-                            time: formatSubmissionDateTime(sub.submittedTime),
-                            answers: sub.answers,
-                            title: sub.title,
-                            subject: sub.subject,
-                            rank: sub.rank
-                          })}
-                          className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-indigo-600 hover:text-white text-slate-700 font-bold transition-all shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
-                        >
-                          <Eye className="w-3.5 h-3.5" /> Xem chi tiết
-                        </button>
-                      </td>
+            <div>
+              {/* Header Bar with Batch Actions */}
+              <div className="p-4 bg-slate-50/80 border-b border-slate-200 flex items-center justify-between flex-wrap gap-2">
+                <div className="text-xs font-extrabold text-slate-800 flex items-center gap-2">
+                  <Award className="w-4 h-4 text-indigo-600" />
+                  <span>Lịch sử các bài kiểm tra đã hoàn thành ({filteredExamHistory.length})</span>
+                </div>
+                <button
+                  onClick={() => {
+                    setAlertModal({
+                      title: 'Xóa Tất Cả Lịch Sử Bài Làm',
+                      message: 'Bạn có chắc chắn muốn xóa lịch sử bài làm này để học sinh có thể làm lại từ đầu không?',
+                      type: 'confirm_delete_all_submissions',
+                      onConfirm: () => handleDeleteAllExamSubmissions()
+                    });
+                  }}
+                  className="px-3.5 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-600 hover:text-white text-rose-700 border border-rose-200 font-bold text-xs transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
+                  title="Xóa toàn bộ lịch sử bài làm để làm lại từ đầu"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Xóa tất cả lịch sử</span>
+                </button>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 text-[11px] font-extrabold uppercase tracking-wider">
+                      <th className="py-4 px-6">STT</th>
+                      <th className="py-4 px-6">Tên đề kiểm tra</th>
+                      <th className="py-4 px-6">Môn học</th>
+                      <th className="py-4 px-6 text-center">Xếp thứ</th>
+                      <th className="py-4 px-6 text-center">Điểm số</th>
+                      <th className="py-4 px-6">Thời gian nộp</th>
+                      <th className="py-4 px-6 text-center min-w-[200px]">Thao tác</th>
                     </tr>
-                  );
-                })}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs text-slate-700 font-medium">
+                    {filteredExamHistory.map((sub, index) => {
+                      const subjColor = getSubjectColorStyles(sub.subject);
+                      return (
+                      <tr key={`${sub.id || 'sub'}-${sub.examId || 'ex'}-${index}`} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="py-4 px-6 font-bold text-slate-500">#{index + 1}</td>
+                        <td className="py-4 px-6 font-bold text-slate-900">{sub.title}</td>
+                        <td className="py-4 px-6">
+                          <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase ${subjColor.badgeClass}`}>
+                            {sub.subject}
+                          </span>
+                        </td>
+                        <td className="py-4 px-6 text-center">
+                          <span className="bg-amber-100 text-amber-900 font-extrabold px-2.5 py-1 rounded-full text-[10px]">
+                            {sub.rank}
+                          </span>
+                        </td>
+                        <td className="py-4 px-6 text-center">
+                          <span className={`font-extrabold px-3 py-1 rounded-full text-xs ${
+                            !isSubjectWithScore(sub.subject)
+                              ? (getQualitativeLevel(sub.score) === 'T' ? 'bg-emerald-100 text-emerald-800' : getQualitativeLevel(sub.score) === 'H' ? 'bg-sky-100 text-sky-800' : 'bg-rose-100 text-rose-800')
+                              : 'bg-emerald-100 text-emerald-800'
+                          }`}>
+                            {!isSubjectWithScore(sub.subject) ? getQualitativeLabel(sub.score) : sub.score}
+                          </span>
+                        </td>
+                        <td className="py-4 px-6 text-slate-500">{formatSubmissionDateTime(sub.submittedTime)}</td>
+                        <td className="py-4 px-6 text-center">
+                          <div className="flex items-center justify-center gap-2">
+                            <button
+                              onClick={() => setDetailSubmission({
+                                exam: sub.exam,
+                                score: sub.score,
+                                time: formatSubmissionDateTime(sub.submittedTime),
+                                answers: sub.answers,
+                                title: sub.title,
+                                subject: sub.subject,
+                                rank: sub.rank
+                              })}
+                              className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-indigo-600 hover:text-white text-slate-700 font-bold transition-all shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
+                              title="Xem chi tiết bài làm"
+                            >
+                              <Eye className="w-3.5 h-3.5" /> Xem chi tiết
+                            </button>
+                            <button
+                              onClick={() => {
+                                setAlertModal({
+                                  title: 'Xóa Lịch Sử Bài Làm',
+                                  message: 'Bạn có chắc chắn muốn xóa lịch sử bài làm này để học sinh có thể làm lại từ đầu không?',
+                                  type: 'confirm_delete_submission',
+                                  onConfirm: () => handleDeleteExamSubmission(sub)
+                                });
+                              }}
+                              className="px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-600 hover:text-white text-rose-600 border border-rose-200 font-bold transition-all shadow-xs inline-flex items-center gap-1.5 cursor-pointer active:scale-95"
+                              title="Xóa lịch sử bài làm để làm lại từ đầu"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" /> Xóa
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </div>
       )}
 
-      {/* ALERT / POPUP MODAL (TIMEOUT, SUBMITTED SUCCESS, RESTRICTED, CONFIRM) */}
+      {/* ALERT / POPUP MODAL (TIMEOUT, SUBMITTED SUCCESS, RESTRICTED, CONFIRM, DELETE) */}
       {alertModal && (
         <div className="fixed inset-0 z-60 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200 border border-slate-200">
@@ -4666,6 +5102,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
               alertModal.type === 'submitted_success' ? 'bg-emerald-600 text-white' :
               alertModal.type === 'confirm_submit' ? 'bg-indigo-600 text-white' :
               alertModal.type === 'unanswered_warning' ? 'bg-amber-500 text-white' :
+              (alertModal.type === 'confirm_delete_submission' || alertModal.type === 'confirm_delete_all_submissions') ? 'bg-rose-600 text-white' :
               'bg-amber-600 text-white'
             }`}>
               <AlertTriangle className="w-6 h-6 text-white shrink-0" />
@@ -4679,7 +5116,27 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             </div>
 
             <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-3">
-              {alertModal.type === 'confirm_submit' || alertModal.type === 'confirm_exit' ? (
+              {alertModal.type === 'confirm_delete_submission' || alertModal.type === 'confirm_delete_all_submissions' ? (
+                <>
+                  <button
+                    onClick={() => setAlertModal(null)}
+                    className="px-5 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-700 font-bold text-xs hover:bg-slate-100 transition-all cursor-pointer"
+                  >
+                    Hủy bỏ
+                  </button>
+                  <button
+                    onClick={() => {
+                      const cb = alertModal.onConfirm;
+                      setAlertModal(null);
+                      if (cb) cb();
+                    }}
+                    className="px-6 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-extrabold text-xs transition-all shadow-md cursor-pointer flex items-center gap-1.5"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Xác nhận xóa</span>
+                  </button>
+                </>
+              ) : alertModal.type === 'confirm_submit' || alertModal.type === 'confirm_exit' ? (
                 <>
                   <button
                     onClick={() => setAlertModal(null)}
@@ -4745,6 +5202,20 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* TOAST NOTIFICATION */}
+      {toast && (
+        <div className={`fixed bottom-6 right-6 z-[100] text-white px-5 py-3.5 rounded-2xl shadow-2xl border flex items-center gap-3 animate-slide-up backdrop-blur-md bg-slate-950/95 ${
+          toast.type === 'error' ? 'border-rose-500/50 text-rose-50' : 'border-emerald-500/50 text-emerald-50'
+        }`}>
+          {toast.type === 'error' ? (
+            <AlertCircle className="w-5 h-5 text-rose-400 shrink-0" />
+          ) : (
+            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+          )}
+          <span className="text-xs font-extrabold tracking-wide">{toast.message}</span>
         </div>
       )}
 

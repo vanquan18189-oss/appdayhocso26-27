@@ -12,20 +12,36 @@ export interface ParsedStudentCode {
 }
 
 /**
- * Chuẩn hóa mã học sinh: cắt khoảng trắng, viết hoa toàn bộ.
+ * Chuẩn hóa mã học sinh: loại bỏ toàn bộ khoảng trắng thừa, chuẩn hóa dấu gạch ngang, viết hoa toàn bộ.
+ * Ví dụ: " 5c 26-27-36 " -> "5C26-27-36", "5c_26_27_36" -> "5C26-27-36"
  */
 export function normalizeStudentCode(code?: string): string {
   if (!code || typeof code !== 'string') return '';
-  // Normalize dashes: –, —, − -> -
   return code
     .replace(/[–—−]/g, '-')
+    .replace(/\s+/g, '')
     .trim()
     .toUpperCase();
 }
 
 /**
+ * Chuẩn hóa họ tên học sinh: bỏ dấu tiếng Việt, bỏ khoảng trắng thừa, chuyển về chữ thường để so khớp chính xác.
+ * Ví dụ: "  TRẦN   MINH  ĐỨC  " -> "tran minh duc", "Trần Minh Đức" -> "tran minh duc"
+ */
+export function normalizeStudentName(name?: string): string {
+  if (!name || typeof name !== 'string') return '';
+  return name
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[đĐ]/g, 'd')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
  * Kiểm tra mã học sinh có hợp lệ theo định dạng chuẩn hay không.
- * Định dạng mẫu: ^[A-Z0-9]+\d{2}-\d{2}-\d+$ (Ví dụ: 5D26-27-1, 3C26-27-12)
+ * Định dạng mẫu: ^[A-Z0-9]+\d{2}-\d{2}-\d+$ (Ví dụ: 5D26-27-1, 3C26-27-12, 5C26-27-36)
  */
 export function isValidStudentCode(code?: string): boolean {
   if (!code || typeof code !== 'string') return false;

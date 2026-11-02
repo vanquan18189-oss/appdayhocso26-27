@@ -44,7 +44,8 @@ import {
   School,
   BookMarked,
   Info,
-  Eye
+  Eye,
+  RefreshCw
 } from 'lucide-react';
 import { UserAccount, UserRole, StudentRecord } from '../../types';
 import { PRIMARY_SCHOOL_SUBJECTS } from '../../services/mockData';
@@ -58,7 +59,13 @@ import {
   parseStudentExcel,
   STANDARD_STUDENT_HEADERS
 } from '../../services/excelService';
-import { normalizeStudentCode } from '../../services/studentCode';
+import { normalizeStudentCode, normalizeStudentName } from '../../services/studentCode';
+import {
+  renameStudentCodeAcrossSystem,
+  scanForMismatchedSubmissions,
+  executeMigrationBatch,
+  MismatchRecord
+} from '../../services/studentMigrationService';
 import {
   getAllStudentsFromLocalStorage,
   getStudentsFromLocalStorage,
@@ -1234,6 +1241,44 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
     system: false
   });
 
+  // Mismatch & Student Code Synchronization Modal State
+  const [isSyncMismatchModalOpen, setIsSyncMismatchModalOpen] = useState<boolean>(false);
+  const [isScanningMismatches, setIsScanningMismatches] = useState<boolean>(false);
+  const [isMigratingBatch, setIsMigratingBatch] = useState<boolean>(false);
+  const [detectedMismatches, setDetectedMismatches] = useState<MismatchRecord[]>([]);
+
+  const handleOpenSyncMismatchModal = async () => {
+    setIsScanningMismatches(true);
+    try {
+      const allStudents = Object.values(studentDatabase).flat().filter(Boolean);
+      const mismatches = await scanForMismatchedSubmissions(allStudents);
+      setDetectedMismatches(mismatches);
+      setIsSyncMismatchModalOpen(true);
+    } catch (err) {
+      showToast('Lỗi khi quét bài nộp lệch mã học sinh!', 'error');
+    } finally {
+      setIsScanningMismatches(false);
+    }
+  };
+
+  const handleConfirmExecuteMigration = async () => {
+    if (detectedMismatches.length === 0) {
+      setIsSyncMismatchModalOpen(false);
+      return;
+    }
+    setIsMigratingBatch(true);
+    try {
+      const res = await executeMigrationBatch(detectedMismatches);
+      showToast(`Đã liên kết lại ${res.migratedCount} bài nộp theo Mã học sinh chuẩn thành công!`, 'success');
+      setIsSyncMismatchModalOpen(false);
+      setDetectedMismatches([]);
+    } catch (err) {
+      showToast('Lỗi trong quá trình di trú bài nộp!', 'error');
+    } finally {
+      setIsMigratingBatch(false);
+    }
+  };
+
   const [addForm, setAddForm] = useState<{
     code: string;
     pin: string;
@@ -1303,7 +1348,7 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
   const handleOpenEditStudentModal = (student: StudentRecord) => {
     setEditingStudent(student);
     setEditForm({
-      code: student.code || '',
+      code: normalizeStudentCode(student.code),
       pin: student.pin || '123456',
       name: student.name || '',
       dob: student.dob || '02/02/2016',
@@ -1318,17 +1363,36 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
     setAccordionState({ personal: true, family: false, system: false });
   };
 
-  const handleSaveEditStudent = () => {
+  const handleSaveEditStudent = async () => {
     if (!selectedClass || !editingStudent) return;
+
+    const oldCode = normalizeStudentCode(editingStudent.code);
+    const newCode = normalizeStudentCode(editForm.code || editingStudent.code);
+
+    if (!newCode) {
+      showToast('⚠️ Mã học sinh không được để trống!', 'error');
+      return;
+    }
+
+    // 1. Kiểm tra tính duy nhất: không được trùng mã với học sinh khác
+    const isDuplicate = Object.values(studentDatabase).some(clsList =>
+      Array.isArray(clsList) && clsList.some(st => st.id !== editingStudent.id && normalizeStudentCode(st.code) === newCode)
+    );
+    if (isDuplicate) {
+      showToast(`⚠️ Mã học sinh "${newCode}" đã tồn tại trong hệ thống! Vui lòng chọn mã khác.`, 'error');
+      return;
+    }
 
     const currentList = studentDatabase[selectedClass] || [];
     const updatedList = currentList.map((st) => {
       if (st.id === editingStudent.id) {
         return {
           ...st,
-          code: editForm.code,
+          code: newCode,
+          username: newCode,
           pin: editForm.pin,
-          name: editForm.name,
+          name: editForm.name.trim(),
+          fullName: editForm.name.trim(),
           dob: editForm.dob,
           gender: editForm.gender,
           avatar: editForm.avatar,
@@ -1351,10 +1415,18 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
       saveStudentsToLocalStorage(selectedClass, updatedList);
       syncClassStudentsToFirestore(selectedClass, updatedList);
 
+      // 2. Nếu đổi mã học sinh: Tự động đổi mã toàn bộ bài nộp, bản nháp, kết quả trên Firestore và LocalStorage
+      if (oldCode && newCode && oldCode !== newCode) {
+        showToast(`Đang đồng bộ dữ liệu cho mã mới ${newCode}...`, 'success');
+        const syncRes = await renameStudentCodeAcrossSystem(oldCode, newCode, editingStudent.id, editForm.name.trim());
+        showToast(`Cập nhật thành công! Đã đồng bộ ${syncRes.updatedCount} bản ghi liên quan (bài nộp, nháp, tiến độ, điểm) sang mã ${newCode}!`, 'success');
+      } else {
+        showToast('Cập nhật hồ sơ học sinh thành công (đã lưu LocalStorage & Firestore)!', 'success');
+      }
+
       setEditingStudent(null);
-      showToast('Cập nhật hồ sơ học sinh thành công (đã lưu LocalStorage & Firestore)!', "success");
     } catch (e) {
-      showToast("Lưu hồ sơ học sinh thất bại, vui lòng kiểm tra lại!", "error");
+      showToast('Lưu hồ sơ học sinh thất bại, vui lòng kiểm tra lại!', 'error');
     }
   };
 
@@ -1513,10 +1585,21 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
     const rawCode = addForm.code.trim() || generateStudentCode(selectedClass, nextStt);
     const normCode = normalizeStudentCode(rawCode);
 
+    // Kiểm tra tính duy nhất của Mã học sinh trên toàn hệ thống
+    const isDuplicate = Object.values(studentDatabase).some(clsList =>
+      Array.isArray(clsList) && clsList.some(st => normalizeStudentCode(st.code) === normCode)
+    );
+    if (isDuplicate) {
+      setToastMessage(`⚠️ Mã học sinh "${normCode}" đã tồn tại trong hệ thống! Vui lòng nhập mã học sinh khác.`);
+      setTimeout(() => setToastMessage(null), 4000);
+      return;
+    }
+
     const newStudent: StudentRecord = {
       id: `std-${Date.now()}`,
       stt: nextStt,
       code: normCode,
+      username: normCode,
       pin: addForm.pin || '123456',
       sddcn: addForm.sddcn.trim(),
       name: addForm.name.trim(),
@@ -2348,6 +2431,15 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
                         className="px-3.5 py-2 rounded-xl text-xs font-extrabold bg-sky-600 hover:bg-sky-700 text-white transition-all shadow-xs flex items-center gap-1.5 cursor-pointer active:scale-95"
                       >
                         <Upload className="w-3.5 h-3.5" /> 📤 Nhập từ Excel
+                      </button>
+                      <button
+                        onClick={handleOpenSyncMismatchModal}
+                        disabled={isScanningMismatches}
+                        className="px-3.5 py-2 rounded-xl text-xs font-extrabold bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white transition-all shadow-xs flex items-center gap-1.5 cursor-pointer active:scale-95"
+                        title="Rà soát và đồng bộ lại toàn bộ bài nộp theo Mã học sinh chuẩn"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isScanningMismatches ? 'animate-spin' : ''}`} />
+                        <span>Đồng bộ lại dữ liệu theo mã học sinh</span>
                       </button>
                       <button
                         onClick={handleOpenAddStudentModal}
@@ -4180,6 +4272,118 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
         isDeleting={isClearingAllStudents}
       />
 
+
+      {/* MODAL ĐỒNG BỘ DỮ LIỆU THEO MÃ HỌC SINH */}
+      {isSyncMismatchModalOpen && (
+        <div className="fixed inset-0 z-60 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-3xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[85vh] animate-in fade-in zoom-in duration-200 border border-slate-200">
+            <div className="p-5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <RefreshCw className="w-6 h-6 text-indigo-200 shrink-0" />
+                <div>
+                  <h3 className="text-base font-extrabold uppercase tracking-wide">
+                    Đồng Bộ Lại Dữ Liệu Theo Mã Học Sinh
+                  </h3>
+                  <p className="text-xs text-indigo-100 font-medium">
+                    Đối chiếu và gắn lại các bài nộp mang mã cũ theo Mã học sinh chuẩn hiện tại
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsSyncMismatchModalOpen(false)}
+                className="w-8 h-8 rounded-full bg-white/20 hover:bg-white/30 text-white flex items-center justify-center cursor-pointer transition-all"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-4 flex-1">
+              {detectedMismatches.length === 0 ? (
+                <div className="text-center py-12 space-y-3">
+                  <div className="w-16 h-16 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center mx-auto text-2xl font-bold">
+                    ✓
+                  </div>
+                  <h4 className="text-base font-extrabold text-slate-800">
+                    Toàn bộ dữ liệu đã được đồng bộ 100%!
+                  </h4>
+                  <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
+                    Tất cả bài nộp, bản nháp và bảng điểm trong cơ sở dữ liệu đã khớp hoàn toàn với Mã học sinh hiện tại. Không phát hiện bài nộp mồ côi.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>
+                      Hệ thống phát hiện <b>{detectedMismatches.length} bài nộp / bản nháp</b> mang mã cũ hoặc chưa liên kết đúng với Mã học sinh hiện tại. Thầy/Cô hãy kiểm tra danh sách dưới đây và nhấn xác nhận để hệ thống tự động cập nhật:
+                    </span>
+                  </div>
+
+                  <div className="border border-slate-200 rounded-2xl overflow-hidden max-h-80 overflow-y-auto">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead className="bg-slate-50 text-slate-700 font-extrabold uppercase text-[10px] sticky top-0 border-b border-slate-200">
+                        <tr>
+                          <th className="p-3">Học sinh</th>
+                          <th className="p-3">Lớp</th>
+                          <th className="p-3">Mã cũ / Trong bài</th>
+                          <th className="p-3">Mã chuẩn mới</th>
+                          <th className="p-3">Đề thi / Nguồn</th>
+                          <th className="p-3 text-center">Điểm</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                        {detectedMismatches.map((m, idx) => (
+                          <tr key={`${m.id}-${idx}`} className="hover:bg-indigo-50/40">
+                            <td className="p-3 font-bold text-slate-900">{m.targetStudentName}</td>
+                            <td className="p-3">{m.targetClass}</td>
+                            <td className="p-3">
+                              <span className="bg-rose-50 text-rose-700 px-2 py-0.5 rounded-md font-mono text-[11px] border border-rose-200">
+                                {m.currentCode}
+                              </span>
+                            </td>
+                            <td className="p-3">
+                              <span className="bg-emerald-50 text-emerald-800 px-2 py-0.5 rounded-md font-mono text-[11px] font-bold border border-emerald-200">
+                                {m.targetStudentCode}
+                              </span>
+                            </td>
+                            <td className="p-3 max-w-[200px] truncate" title={m.containerTitle}>
+                              {m.containerTitle}
+                            </td>
+                            <td className="p-3 text-center font-bold text-emerald-700">
+                              {m.score !== undefined ? m.score : '-'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-3">
+              <button
+                onClick={() => setIsSyncMismatchModalOpen(false)}
+                className="px-5 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-700 font-bold text-xs hover:bg-slate-100 transition-all cursor-pointer"
+              >
+                Đóng
+              </button>
+              {detectedMismatches.length > 0 && (
+                <button
+                  onClick={handleConfirmExecuteMigration}
+                  disabled={isMigratingBatch}
+                  className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-extrabold text-xs transition-all shadow-md cursor-pointer flex items-center gap-2 active:scale-95"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isMigratingBatch ? 'animate-spin' : ''}`} />
+                  <span>
+                    {isMigratingBatch ? 'Đang đồng bộ...' : `Xác nhận đồng bộ (${detectedMismatches.length} bản ghi)`}
+                  </span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* FLOATING SUCCESS TOAST NOTIFICATION */}
       {toastMessage && (

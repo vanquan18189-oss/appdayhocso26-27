@@ -36,9 +36,10 @@ import {
 } from './StudentExamModule';
 import { normalizeQuestionType, getQuestionTypeLabel } from '../../lib/constants';
 import { db } from '../../firebaseConfig';
-import { doc, setDoc, getDoc, runTransaction } from 'firebase/firestore';
+import { doc, setDoc, getDoc, runTransaction, deleteDoc } from 'firebase/firestore';
 import { getLocalCachedAssignments } from '../../services/assignmentStorageService';
 import { getLocalCachedExams } from '../../services/examStorageService';
+import { invalidateAllSubmissionsCache } from '../../services/hocBaDataService';
 
 export interface QuestionEvaluation {
   questionId: string;
@@ -513,12 +514,67 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
   const handleDeleteSubmission = async () => {
     if (!studentCode) return;
     try {
+      const examId = targetItem?.id || targetItem?.originalExamId || targetItem?.originalId || studentSubmission?.examId;
+      const subId = studentSubmission?.id;
+
+      if (db && examId) {
+        const docKeys = [subId, studentCode, studentSubmission?.studentId].filter(Boolean) as string[];
+        for (const docKey of docKeys) {
+          try {
+            await deleteDoc(doc(db, 'exams', examId, 'submissions', docKey));
+          } catch {}
+        }
+        try {
+          const masterRef = doc(db, 'exams', examId);
+          await runTransaction(db, async (tx) => {
+            const snap = await tx.get(masterRef);
+            if (snap.exists()) {
+              const d = snap.data();
+              if (Array.isArray(d.submissions)) {
+                const updated = d.submissions.filter((s: any) => {
+                  const sCode = (s.studentCode || s.code || s.maHs || s.studentId || '').trim().toLowerCase();
+                  return sCode !== studentCode.trim().toLowerCase();
+                });
+                tx.update(masterRef, { submissions: updated });
+              }
+            }
+          });
+        } catch {}
+      }
+      if (db && subId) {
+        try { await deleteDoc(doc(db, 'submissions', subId)); } catch {}
+      }
+
+      // LocalStorage cleanup
+      const keysToClean = [studentCode, studentSubmission?.studentId].filter(Boolean) as string[];
+      keysToClean.forEach(key => {
+        try {
+          const lsKey = `eduplay_student_exam_subs_${key}`;
+          const raw = localStorage.getItem(lsKey);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+              localStorage.setItem(lsKey, JSON.stringify(parsed.filter((s: any) => s.id !== subId && s.examId !== examId)));
+            }
+          }
+        } catch {}
+      });
+
+      // Dispatch real-time events & invalidate caches
+      try { invalidateAllSubmissionsCache(); } catch {}
+      window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
+      window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
+
       if (onDeleteSubmission) {
         await onDeleteSubmission(studentCode);
       }
-      onClose();
-    } catch (err) {
+      setSaveSuccessMsg('Đã xóa lịch sử bài làm thành công!');
+      setTimeout(() => {
+        onClose();
+      }, 700);
+    } catch (err: any) {
       console.error('Lỗi khi xoá bài làm:', err);
+      alert(`Không thể xóa lịch sử bài làm: ${err?.message || 'Lỗi kết nối cơ sở dữ liệu'}`);
     }
   };
 
