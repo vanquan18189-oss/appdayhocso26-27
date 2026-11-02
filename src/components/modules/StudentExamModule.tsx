@@ -1149,13 +1149,47 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     };
 
     syncExamHistory();
+
+    const handleSubmissionReset = (e: any) => {
+      const resetCode = e?.detail?.studentCode;
+      const resetExamId = e?.detail?.examId;
+      const candIds: string[] = e?.detail?.candDocIds || [];
+      if (!resetCode || normalizeStudentCode(resetCode) === normalizeStudentCode(authenticStudentCode)) {
+        if (resetExamId) {
+          // Immediately remove from activeDrafts so UI does not show "Đang làm dở"
+          setActiveDrafts(prev => {
+            const next = { ...prev };
+            delete next[resetExamId];
+            candIds.forEach(cid => { delete next[cid]; });
+            return next;
+          });
+          // Immediately remove from examHistory state so card turns into "Bắt đầu làm bài"
+          setExamHistory(prev => prev.filter(item => {
+            const key = getSubmissionExamKey(item);
+            const itemExamId = String(item.examId || item.exam?.id || '').toLowerCase();
+            const resetLower = resetExamId.toLowerCase();
+            if (key && (key.toLowerCase() === resetLower || candIds.some(cid => key.toLowerCase() === cid.toLowerCase()))) {
+              return false;
+            }
+            if (itemExamId === resetLower || candIds.some(cid => itemExamId === cid.toLowerCase())) {
+              return false;
+            }
+            return true;
+          }));
+        }
+        syncExamHistory();
+      }
+    };
+
     window.addEventListener('eduplay_exam_submissions_updated', syncExamHistory);
     window.addEventListener('eduplay_student_submissions_updated', syncExamHistory);
+    window.addEventListener('eduplay_submission_reset', handleSubmissionReset);
     window.addEventListener('storage', syncExamHistory);
     return () => {
       isCancelled = true;
       window.removeEventListener('eduplay_exam_submissions_updated', syncExamHistory);
       window.removeEventListener('eduplay_student_submissions_updated', syncExamHistory);
+      window.removeEventListener('eduplay_submission_reset', handleSubmissionReset);
       window.removeEventListener('storage', syncExamHistory);
     };
   }, [liveExams, authenticStudentCode, currentUserId, effectiveStudentName]);
@@ -1625,19 +1659,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
               console.error(`❌ Lỗi ghi trực tiếp subcollection exams/${officialExamId}/submissions:`, errSub);
             }
 
-            // Ghi đồng bộ theo studentCode để các component truy vấn trực tiếp tìm thấy
-            if (fixedDocId !== authenticStudentCode) {
-              try {
-                const scDocRef = doc(db, 'exams', officialExamId, 'submissions', authenticStudentCode);
-                await setDoc(scDocRef, removeUndefined({
-                  ...fullExamRecord,
-                  id: fixedDocId,
-                  examId: officialExamId,
-                  attemptNumber,
-                  updatedAt: new Date().toISOString()
-                }), { merge: true });
-              } catch {}
-            }
+            // Ghi duy nhất 1 document chuẩn ${studentCode}_${examId}_${attempt} (không ghi kép doc authenticStudentCode)
 
             // Cập nhật mảng submissions trên master document của đề kiểm tra (dùng slimExamRecord để không vượt quá giới hạn 1MB Firestore)
             const examRef = doc(db, 'exams', officialExamId);
@@ -2510,19 +2532,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
               console.error(`❌ Lỗi ghi trực tiếp Firestore subcollection exams/${officialExamId}/submissions:`, subErr);
             }
 
-            // Ghi đồng bộ theo authenticStudentCode để tương thích hoàn toàn
-            if (fixedDocId !== authenticStudentCode) {
-              try {
-                const scDocRef = doc(db, 'exams', officialExamId, 'submissions', authenticStudentCode);
-                await setDoc(scDocRef, removeUndefined({
-                  ...fullExamRecord,
-                  id: fixedDocId,
-                  examId: officialExamId,
-                  attemptNumber,
-                  updatedAt: new Date().toISOString()
-                }), { merge: true });
-              } catch {}
-            }
+            // Ghi duy nhất 1 document chuẩn ${studentCode}_${examId}_${attempt} (không ghi kép doc authenticStudentCode)
 
             // 2. Cập nhật mảng submissions trên master document của đề thi (dùng slimExamRecord chống vượt ngưỡng 1MB)
             const examRef = doc(db, 'exams', officialExamId);

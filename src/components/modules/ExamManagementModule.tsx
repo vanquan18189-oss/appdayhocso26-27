@@ -76,6 +76,23 @@ import { getLocalCachedQuestions, QUESTIONS_CACHE_KEY, saveQuestionsBatchToFires
 import { useScoreSort } from '../../lib/useScoreSort';
 import { ExamQuestionEditorCard, normalizeQuestionType } from './ExamQuestionEditorCard';
 import { StudentSubmissionDetailModal } from './StudentSubmissionDetailModal';
+import { 
+  resetOrDeleteStudentExamSubmission, 
+  deleteSingleUnmatchedSubmission, 
+  cleanAllUnmatchedExamSubmissions 
+} from '../../services/studentSubmissionResetService';
+import {
+  findAutoMatches,
+  executeAutoMatchSubmissions,
+  executeManualAssignSubmission,
+  detectDuplicateSubmissions,
+  executeCleanDuplicates,
+  calculateDryRunStats,
+  DryRunStats,
+  AutoMatchCandidate,
+  ManualMatchCandidate,
+  DuplicateGroup
+} from '../../services/unmatchedSubmissionsService';
 
 export interface TrackingSubmissionStudent {
   id: string;
@@ -151,6 +168,8 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const authEmail = (typeof window !== 'undefined' ? (auth?.currentUser?.email || localStorage.getItem('eduplay_teacher_email')) : null);
   const activeTeacherProfile = useMemo(() => resolveCurrentTeacherProfile(authEmail), [authEmail]);
   const isAdmin = userRole === 'admin' || activeTeacherProfile.userRole === 'admin' || (activeTeacherProfile.role || '').toLowerCase().includes('admin');
+  const hasDebug = typeof window !== 'undefined' && window.location.search.includes('debug=1');
+  const showUnmatchedTab = hasDebug;
 
   const isExamOwner = useCallback((exam: ExamPaper): boolean => {
     if (isAdmin) return true;
@@ -588,9 +607,33 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   // Tracking Modal State
   const [trackingExam, setTrackingExam] = useState<ExamPaper | null>(null);
   const [trackingFilter, setTrackingFilter] = useState<'all' | 'need_manual' | 'unmatched'>('all');
+
+  useEffect(() => {
+    if (!showUnmatchedTab && trackingFilter === 'unmatched') {
+      setTrackingFilter('all');
+    }
+  }, [showUnmatchedTab, trackingFilter]);
+
   const [trackingActionMenuId, setTrackingActionMenuId] = useState<string | null>(null);
   const [submissionsVersion, setSubmissionsVersion] = useState<number>(0);
   const [trackingFirestoreSubs, setTrackingFirestoreSubs] = useState<any[]>([]);
+  const [showCleanUnmatchedConfirm, setShowCleanUnmatchedConfirm] = useState<boolean>(false);
+  const [isCleaningUnmatched, setIsCleaningUnmatched] = useState<boolean>(false);
+  const [isDeletingSubmission, setIsDeletingSubmission] = useState<boolean>(false);
+
+  // Auto-Match & Manual Match & Duplicates states
+  const [showAutoMatchModal, setShowAutoMatchModal] = useState<boolean>(false);
+  const [autoMatchesList, setAutoMatchesList] = useState<AutoMatchCandidate[]>([]);
+  const [manualMatchList, setManualMatchList] = useState<ManualMatchCandidate[]>([]);
+  const [selectedAutoMatchIndices, setSelectedAutoMatchIndices] = useState<Set<number>>(new Set());
+  const [isApplyingAutoMatches, setIsApplyingAutoMatches] = useState<boolean>(false);
+
+  const [showDuplicatesModal, setShowDuplicatesModal] = useState<boolean>(false);
+  const [duplicateGroups, setDuplicateGroups] = useState<DuplicateGroup[]>([]);
+  const [isCleaningDuplicates, setIsCleaningDuplicates] = useState<boolean>(false);
+
+  const [manualSelectedStudents, setManualSelectedStudents] = useState<Record<string, string>>({});
+  const [isSavingManualSubId, setIsSavingManualSubId] = useState<string | null>(null);
 
   // Direct Firestore Count & Real-time Refresh states (Ground-Truth direct query)
   const [directStatsMap, setDirectStatsMap] = useState<Map<string, ExamCompletionStats>>(new Map());
@@ -645,6 +688,76 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     }
   };
 
+
+
+  const handleApplyAutoMatches = async () => {
+    if (!trackingExam || isApplyingAutoMatches) return;
+    const matchesToApply = autoMatchesList.filter((_, idx) => selectedAutoMatchIndices.has(idx));
+    if (matchesToApply.length === 0) {
+      alert('Vui lòng chọn ít nhất 1 bài nộp để cập nhật!');
+      return;
+    }
+
+    setIsApplyingAutoMatches(true);
+    try {
+      const res = await executeAutoMatchSubmissions(
+        trackingExam.id,
+        matchesToApply,
+        trackingExam.targetClass,
+        trackingExam.originalExamId
+      );
+
+      // Invalidate submissionsVersion & notify
+      setSubmissionsVersion(v => v + 1);
+      const remainingCount = manualMatchList.length + (autoMatchesList.length - matchesToApply.length);
+      setToast({
+        message: `Đã nối ${res.connectedCount} bài nộp, còn ${remainingCount} bài cần chọn tay!`,
+        type: 'success'
+      });
+      setShowAutoMatchModal(false);
+    } catch (err: any) {
+      setToast({ message: `Lỗi khi cập nhật bài nộp: ${err?.message || 'Lỗi mạng'}`, type: 'error' });
+    } finally {
+      setIsApplyingAutoMatches(false);
+    }
+  };
+
+  const handleStartDuplicateCheck = () => {
+    if (!trackingExam) return;
+    const candSubs = trackingFirestoreSubs.length > 0 ? trackingFirestoreSubs : (trackingExam.submissions || []);
+    const groups = detectDuplicateSubmissions(candSubs);
+    setDuplicateGroups(groups);
+    setShowDuplicatesModal(true);
+  };
+
+  const handleExecuteCleanDuplicates = async () => {
+    if (!trackingExam || isCleaningDuplicates) return;
+    const cleanableGroups = duplicateGroups.filter(g => g.isCleanable);
+    if (cleanableGroups.length === 0) {
+      alert('Không có bản ghi trùng lặp nào đủ điều kiện tự động dọn dẹp!');
+      return;
+    }
+
+    setIsCleaningDuplicates(true);
+    try {
+      const res = await executeCleanDuplicates(
+        trackingExam.id,
+        cleanableGroups,
+        trackingExam.originalExamId
+      );
+      setSubmissionsVersion(v => v + 1);
+      setToast({
+        message: `Đã dọn dẹp thành công ${res.deletedCount} bản ghi trùng lặp! Bảng điểm đã được chuẩn hóa.`,
+        type: 'success'
+      });
+      setShowDuplicatesModal(false);
+    } catch (err: any) {
+      setToast({ message: `Lỗi khi dọn dẹp bài trùng: ${err?.message || 'Lỗi mạng'}`, type: 'error' });
+    } finally {
+      setIsCleaningDuplicates(false);
+    }
+  };
+
   // Real-time synchronization when student submits exam
   useEffect(() => {
     const handleSubmissionsUpdated = () => {
@@ -686,6 +799,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     ].filter(Boolean) as string[]));
 
     const unsubList: (() => void)[] = [];
+    const subsPerDoc = new Map<string, any[]>();
 
     candDocIds.forEach((docId) => {
       try {
@@ -695,18 +809,16 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
           snapshot.forEach((docSnap) => {
             subs.push({ ...docSnap.data(), id: docSnap.id, docId: docSnap.id });
           });
-          setTrackingFirestoreSubs(prev => {
-            const map = new Map<string, any>();
-            prev.forEach(s => {
-              const key = s.docId || s.id || s.studentCode || s.maHs || s.studentId;
-              if (key) map.set(key, s);
+          subsPerDoc.set(docId, subs);
+
+          const aggregated = new Map<string, any>();
+          subsPerDoc.forEach((arr) => {
+            arr.forEach(s => {
+              const k = s.docId || s.id;
+              if (k) aggregated.set(k, s);
             });
-            subs.forEach(s => {
-              const key = s.docId || s.id || s.studentCode || s.maHs || s.studentId;
-              if (key) map.set(key, s);
-            });
-            return Array.from(map.values());
           });
+          setTrackingFirestoreSubs(Array.from(aggregated.values()));
         }, (err) => {
           console.warn(`Lỗi lắng nghe submissions từ Firestore exams/${docId}:`, err);
         });
@@ -906,9 +1018,10 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
           name: st.name || st.fullName || `Học sinh ${idx + 1}`,
           answers: Array.from({ length: questionCount }).map(() => 'none' as const),
           totalScore: null,
-          attempts: null,
-          submittedTime: 'CHỜ HỌC SINH',
-          status: 'waiting' as const
+          attempts: 0,
+          submittedTime: '—',
+          status: 'waiting' as const,
+          aiNote: undefined
         };
       }
     });
@@ -969,6 +1082,32 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     const candSubs = trackingFirestoreSubs.length > 0 ? trackingFirestoreSubs : trackingExam.submissions;
     return getExamCompletion(trackingExam.id, trackingExam.targetClass || 'Lớp 3C', candSubs);
   }, [trackingExam, submissionsVersion, trackingFirestoreSubs]);
+
+  // Dry Run Stats computation: Phân tích mô phỏng an toàn dữ liệu chưa khớp
+  const dryRunStats = useMemo(() => {
+    if (!trackingExam || trackingCompletion.unmatchedSubmissions.length === 0) return null;
+    const candSubs = trackingFirestoreSubs.length > 0 ? trackingFirestoreSubs : (trackingExam.submissions || []);
+    return calculateDryRunStats(
+      trackingCompletion.unmatchedSubmissions,
+      trackingStudentsList,
+      trackingExam.targetClass,
+      candSubs
+    );
+  }, [trackingExam, trackingCompletion.unmatchedSubmissions, trackingStudentsList, trackingFirestoreSubs]);
+
+  const handleStartAutoMatch = () => {
+    if (!trackingExam) return;
+    const unmatched = trackingCompletion.unmatchedSubmissions;
+    if (!unmatched || unmatched.length === 0) {
+      setToast({ message: 'Không có bài nộp nào chưa khớp để xử lý!', type: 'success' });
+      return;
+    }
+    const result = findAutoMatches(unmatched, trackingStudentsList, trackingExam.targetClass);
+    setAutoMatchesList(result.autoMatches);
+    setManualMatchList(result.manualCandidates);
+    setSelectedAutoMatchIndices(new Set(result.autoMatches.map((_, i) => i)));
+    setShowAutoMatchModal(true);
+  };
 
   const filteredTrackingSubmissions = useMemo(() => {
     if (trackingFilter === 'need_manual') {
@@ -4438,12 +4577,14 @@ return (
                   >
                     <AlertTriangle className="w-4 h-4" /> Cần chấm thủ công ({trackingStudentsList.filter(st => st.needManual).length})
                   </button>
-                  <button
-                    onClick={() => setTrackingFilter('unmatched')}
-                    className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-1.5 cursor-pointer ${trackingFilter === 'unmatched' ? 'bg-rose-50 text-rose-700 border-rose-200 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
-                  >
-                    <AlertCircle className="w-4 h-4 text-rose-500" /> Bài nộp chưa khớp ({trackingCompletion.unmatchedCount})
-                  </button>
+                  {showUnmatchedTab && (
+                    <button
+                      onClick={() => setTrackingFilter('unmatched')}
+                      className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-1.5 cursor-pointer ${trackingFilter === 'unmatched' ? 'bg-rose-50 text-rose-700 border-rose-200 shadow-sm' : 'text-slate-600 hover:text-slate-800'}`}
+                    >
+                      <AlertCircle className="w-4 h-4 text-rose-500" /> Bài nộp chưa khớp ({trackingCompletion.unmatchedCount})
+                    </button>
+                  )}
                 </div>
                 <div className="text-sm text-slate-500 font-medium">
                   Mẹo: Click vào nút <span className="font-bold text-slate-700">Thao tác</span> để Chấm bài thủ công hoặc Sửa điểm.
@@ -4451,42 +4592,227 @@ return (
               </div>
 
               {/* Table */}
-              {trackingFilter === 'unmatched' ? (
-                <div className="flex-1 overflow-x-auto overflow-y-auto max-h-[calc(85vh-200px)] bg-white border border-rose-200 rounded-2xl shadow-sm">
+              {trackingFilter === 'unmatched' && showUnmatchedTab ? (
+                <div className="flex-1 overflow-x-auto overflow-y-auto max-h-[calc(85vh-200px)] bg-white border border-rose-200 rounded-2xl shadow-sm flex flex-col">
+                  {/* Action header bar */}
+                  <div className="p-3.5 bg-rose-50/80 border-b border-rose-200 flex items-center justify-between gap-3 flex-wrap shrink-0">
+                    <div className="flex items-center gap-2 text-rose-800 text-xs font-bold">
+                      <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                      <span>Các bài nộp dưới đây không khớp mã học sinh trong danh sách {trackingStudentsList.length} học sinh của lớp.</span>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        onClick={handleStartAutoMatch}
+                        disabled={trackingCompletion.unmatchedSubmissions.length === 0}
+                        className="px-3.5 py-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                        title="Tự động tìm kiếm và so khớp bài nộp với học sinh theo tên/mã nội bộ"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>Tự động khớp bài nộp</span>
+                      </button>
+
+                      <button
+                        onClick={handleStartDuplicateCheck}
+                        className="px-3.5 py-2 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+                        title="Kiểm tra và dọn dẹp các bản ghi nộp bài bị trùng lặp"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Dọn dẹp trùng lặp</span>
+                      </button>
+
+                      {trackingCompletion.unmatchedSubmissions.length > 0 && (
+                        <button
+                          onClick={() => setShowCleanUnmatchedConfirm(true)}
+                          disabled={isCleaningUnmatched}
+                          className="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>{isCleaningUnmatched ? 'Đang dọn...' : `Dọn tất cả (${trackingCompletion.unmatchedSubmissions.length})`}</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Dry Run Preview Stats Summary Banner */}
+                  {dryRunStats && (
+                    <div className="p-3.5 bg-gradient-to-r from-slate-900 to-indigo-950 text-white border-b border-indigo-800/50 flex flex-col gap-2.5 shrink-0">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="flex items-center gap-2">
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-500/30 text-indigo-300 border border-indigo-400/30 flex items-center gap-1">
+                            <Sparkles className="w-3 h-3 text-indigo-400" />
+                            Chế độ xem trước Thống kê (Dry Run)
+                          </span>
+                          <span className="text-xs text-slate-300 font-medium">
+                            Phân tích an toàn • Chưa ghi bất kỳ dữ liệu nào xuống Firestore
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-300 font-medium">
+                          Phạm vi đối chiếu chuẩn lớp: <span className="font-bold text-amber-300">{trackingExam?.targetClass || 'Lớp của đề'}</span>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        <div className="bg-white/10 rounded-xl p-2.5 border border-white/10 backdrop-blur-xs">
+                          <div className="text-[10px] uppercase font-bold text-slate-300 tracking-wider">Tổng chưa khớp</div>
+                          <div className="text-base font-black text-rose-400 mt-0.5">
+                            {dryRunStats.totalUnmatched} <span className="text-xs font-normal text-slate-300">bản ghi</span>
+                          </div>
+                        </div>
+
+                        <div className="bg-white/10 rounded-xl p-2.5 border border-white/10 backdrop-blur-xs">
+                          <div className="text-[10px] uppercase font-bold text-slate-300 tracking-wider">Bản ghi trùng lặp</div>
+                          <div className="text-base font-black text-amber-400 mt-0.5">
+                            {dryRunStats.duplicateDocsCount} <span className="text-xs font-normal text-slate-300">({dryRunStats.duplicateGroupsCount} nhóm)</span>
+                          </div>
+                        </div>
+
+                        <div className="bg-white/10 rounded-xl p-2.5 border border-white/10 backdrop-blur-xs">
+                          <div className="text-[10px] uppercase font-bold text-slate-300 tracking-wider">Khớp tự động đúng lớp</div>
+                          <div className="text-base font-black text-emerald-400 mt-0.5">
+                            {dryRunStats.autoMatchCount} <span className="text-xs font-normal text-slate-300">bài thi</span>
+                          </div>
+                        </div>
+
+                        <div className="bg-white/10 rounded-xl p-2.5 border border-white/10 backdrop-blur-xs">
+                          <div className="text-[10px] uppercase font-bold text-slate-300 tracking-wider">Cần chọn tay / Khác lớp</div>
+                          <div className="text-base font-black text-indigo-300 mt-0.5">
+                            {dryRunStats.manualCandidatesCount} <span className="text-xs font-normal text-slate-300">{dryRunStats.crossClassCount > 0 ? `(${dryRunStats.crossClassCount} khác lớp)` : 'bài'}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   <table className="w-full text-left border-separate border-spacing-0 text-xs">
                     <thead>
                       <tr className="bg-rose-50 text-[10px] uppercase font-black text-rose-800 tracking-wider">
-                        <th className="p-4 border-b border-rose-200 text-center w-12">STT</th>
-                        <th className="p-4 border-b border-rose-200">Mã gửi / Định danh</th>
-                        <th className="p-4 border-b border-rose-200">Họ và tên gửi</th>
-                        <th className="p-4 border-b border-rose-200 text-center">Thời gian nộp</th>
-                        <th className="p-4 border-b border-rose-200 text-center">Điểm ghi nhận</th>
-                        <th className="p-4 border-b border-rose-200">Lý do chưa khớp danh sách lớp</th>
+                        <th className="p-3 border-b border-rose-200 text-center w-12">STT</th>
+                        <th className="p-3 border-b border-rose-200">Mã gửi / Định danh</th>
+                        <th className="p-3 border-b border-rose-200">Họ và tên gửi</th>
+                        <th className="p-3 border-b border-rose-200 text-center">Thời gian nộp</th>
+                        <th className="p-3 border-b border-rose-200 text-center">Điểm</th>
+                        <th className="p-3 border-b border-rose-200">Lý do chưa khớp</th>
+                        <th className="p-3 border-b border-rose-200 min-w-[260px]">Gán cho học sinh</th>
+                        <th className="p-3 border-b border-rose-200 text-center w-16">Xóa</th>
                       </tr>
                     </thead>
                     <tbody className="font-medium text-slate-700 divide-y divide-slate-100">
                       {trackingCompletion.unmatchedSubmissions.length === 0 ? (
                         <tr>
-                          <td colSpan={6} className="p-8 text-center text-slate-400 font-medium bg-white">
+                          <td colSpan={8} className="p-8 text-center text-slate-400 font-medium bg-white">
                             Không có bài nộp nào chưa khớp. Tất cả bài nộp đều khớp đúng danh sách lớp!
                           </td>
                         </tr>
                       ) : (
-                        trackingCompletion.unmatchedSubmissions.map((sub, uIdx) => (
-                          <tr key={uIdx} className="hover:bg-rose-50/30 transition-colors">
-                            <td className="p-4 text-center text-slate-500 font-bold">{uIdx + 1}</td>
-                            <td className="p-4 font-mono font-bold text-rose-700">{sub.rawIdentifier || '---'}</td>
-                            <td className="p-4 font-bold text-slate-800">{sub.studentName || sub.name || '---'}</td>
-                            <td className="p-4 text-center text-slate-500">{sub.submittedAt || sub.submittedTime || '---'}</td>
-                            <td className="p-4 text-center font-bold text-slate-700">{sub.score ?? sub.totalScore ?? '---'}</td>
-                            <td className="p-4 text-rose-600 font-medium">
-                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-50 border border-rose-200 text-xs font-semibold">
-                                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                                {sub.unmatchedReason || 'Không khớp mã học sinh trong danh sách lớp'}
-                              </span>
-                            </td>
-                          </tr>
-                        ))
+                        trackingCompletion.unmatchedSubmissions.map((sub, uIdx) => {
+                          const subDocId = sub.docId || sub.id || '';
+                          const selectedTargetCode = manualSelectedStudents[subDocId] || '';
+                          const isSavingThis = isSavingManualSubId === subDocId;
+
+                          return (
+                            <tr key={subDocId || uIdx} className="hover:bg-rose-50/30 transition-colors">
+                              <td className="p-3 text-center text-slate-500 font-bold">{uIdx + 1}</td>
+                              <td className="p-3 font-mono font-bold text-rose-700">{sub.rawIdentifier || '---'}</td>
+                              <td className="p-3 font-bold text-slate-800">{sub.studentName || sub.name || '---'}</td>
+                              <td className="p-3 text-center text-slate-600 font-medium whitespace-nowrap">
+                                {formatSubmissionDateTime(sub.submittedAt || sub.submittedTime || '')}
+                              </td>
+                              <td className="p-3 text-center">
+                                <span className="inline-block px-2 py-0.5 rounded-md font-bold text-slate-800 bg-slate-100 border border-slate-200">
+                                  {sub.score ?? sub.totalScore ?? '---'}
+                                </span>
+                              </td>
+                              <td className="p-3 text-rose-600 font-medium">
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-rose-50 border border-rose-200 text-[11px] font-semibold">
+                                  <AlertCircle className="w-3 h-3 shrink-0" />
+                                  {sub.unmatchedReason || 'Không khớp mã học sinh trong danh sách lớp'}
+                                </span>
+                              </td>
+                              <td className="p-3">
+                                <div className="flex items-center gap-1.5">
+                                  <select
+                                    value={selectedTargetCode}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setManualSelectedStudents(prev => ({ ...prev, [subDocId]: val }));
+                                    }}
+                                    disabled={isSavingThis}
+                                    className="flex-1 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                  >
+                                    <option value="">-- Chọn học sinh trong lớp --</option>
+                                    {trackingStudentsList.map((st) => (
+                                      <option key={st.id} value={st.id}>
+                                        {st.id} - {st.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <button
+                                    onClick={async () => {
+                                      if (!selectedTargetCode || !trackingExam) return;
+                                      const targetStudent = trackingStudentsList.find(st => st.id === selectedTargetCode);
+                                      if (!targetStudent) return;
+                                      
+                                      setIsSavingManualSubId(subDocId);
+                                      try {
+                                        await executeManualAssignSubmission(
+                                          trackingExam.id,
+                                          sub,
+                                          targetStudent,
+                                          trackingExam.targetClass,
+                                          trackingExam.originalExamId
+                                        );
+                                        setSubmissionsVersion(v => v + 1);
+                                        setToast({
+                                          message: `Đã gán bài nộp cho "${targetStudent.name}" (${targetStudent.id}) thành công!`,
+                                          type: 'success'
+                                        });
+                                      } catch (err: any) {
+                                        setToast({
+                                          message: `Lỗi gán bài nộp: ${err?.message || 'Lỗi mạng'}`,
+                                          type: 'error'
+                                        });
+                                      } finally {
+                                        setIsSavingManualSubId(null);
+                                      }
+                                    }}
+                                    disabled={!selectedTargetCode || isSavingThis}
+                                    className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-lg text-xs font-bold transition-colors flex items-center gap-1 shrink-0 cursor-pointer"
+                                    title="Lưu gán bài nộp cho học sinh đã chọn"
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                    <span>{isSavingThis ? '...' : 'Lưu'}</span>
+                                  </button>
+                                </div>
+                              </td>
+                              <td className="p-3 text-center">
+                                <button
+                                  onClick={async () => {
+                                    try {
+                                      if (!subDocId) return;
+                                      await deleteSingleUnmatchedSubmission(trackingExam.id, subDocId, sub.rawIdentifier);
+                                      if (trackingExam.originalExamId && trackingExam.originalExamId !== trackingExam.id) {
+                                        await deleteSingleUnmatchedSubmission(trackingExam.originalExamId, subDocId, sub.rawIdentifier).catch(() => {});
+                                      }
+                                      setTrackingFirestoreSubs(prev => prev.filter(s => (s.docId || s.id) !== subDocId));
+                                      setTrackingExam(prev => prev ? {
+                                        ...prev,
+                                        submissions: Array.isArray(prev.submissions) ? prev.submissions.filter((s: any) => s.id !== subDocId) : []
+                                      } : null);
+                                      setSubmissionsVersion(v => v + 1);
+                                      setToast({ message: 'Đã xóa bài nộp chưa khớp thành công!', type: 'success' });
+                                    } catch (err: any) {
+                                      setToast({ message: `Lỗi xóa bài: ${err?.message || 'Lỗi mạng'}`, type: 'error' });
+                                    }
+                                  }}
+                                  className="p-1.5 bg-white hover:bg-rose-100 text-rose-600 rounded-lg border border-rose-200 transition-colors cursor-pointer inline-flex items-center justify-center shadow-2xs"
+                                  title="Xóa bản ghi mồ côi này"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })
                       )}
                     </tbody>
                   </table>
@@ -4622,33 +4948,31 @@ return (
                               )}
                             </td>
                             <td className="p-4 text-center border-b border-slate-100">
-                              {st.attempts !== null ? (
+                              {!isWaiting && st.attempts ? (
                                 <span className="inline-flex w-6 h-6 rounded-full border-2 border-teal-200 bg-white items-center justify-center font-bold text-teal-700">
                                   {st.attempts}
                                 </span>
                               ) : (
-                                <span className="text-slate-300">-</span>
+                                <span className="text-slate-400 font-medium">0</span>
                               )}
                             </td>
                             <td className="p-4 text-center border-b border-slate-100">
-                              {!isWaiting ? (
+                              {!isWaiting && st.submittedTime && st.submittedTime !== '—' && st.submittedTime !== 'CHỜ HỌC SINH' ? (
                                 <div className="inline-flex items-center gap-1 text-sky-600 font-bold bg-sky-50 px-2 py-1 rounded-lg">
                                   <Clock className="w-3 h-3" /> {st.submittedTime}
                                 </div>
                               ) : (
-                                <span className="inline-flex px-2 py-1 bg-rose-50 text-rose-600 font-bold rounded-lg text-[10px] uppercase tracking-wider">
-                                  Chờ học sinh
-                                </span>
+                                <span className="text-slate-400 font-medium">—</span>
                               )}
                             </td>
                             <td className="p-4 border-b border-slate-100">
-                              {st.aiNote ? (
+                              {!isWaiting && st.aiNote ? (
                                 <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-2 max-w-[200px] whitespace-normal text-[10px] font-semibold flex gap-1.5 leading-snug">
                                   <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5 text-amber-600" />
                                   {st.aiNote}
                                 </div>
                               ) : (
-                                <span className="text-slate-300">-</span>
+                                <span className="text-slate-400 italic text-xs">Chưa làm bài</span>
                               )}
                             </td>
                             <td className="p-4 text-center relative border-b border-slate-100">
@@ -5246,22 +5570,76 @@ return (
             
             <div className="p-6">
               <p className="text-sm font-bold text-slate-700 leading-relaxed text-center">
-                Bạn có chắc chắn muốn cho học sinh <span className="text-indigo-600">{retakeStudent.name}</span> thi lại không?
+                Bạn có chắc chắn muốn cho học sinh <span className="text-indigo-600 font-extrabold">{retakeStudent.name}</span> thi lại không?
+              </p>
+              <p className="text-xs text-slate-500 mt-2 text-center">
+                Kết quả bài làm hiện tại sẽ được xóa và đặt lại trạng thái "Chưa làm bài" để học sinh làm lại từ đầu.
               </p>
             </div>
             
             <div className="p-4 border-t border-slate-100 flex items-center justify-center gap-3 bg-slate-50">
               <button
+                disabled={isDeletingSubmission}
                 onClick={() => setRetakeStudent(null)}
-                className="px-5 py-2 border border-slate-200 text-slate-600 hover:bg-slate-100 font-bold text-sm rounded-xl transition-colors shadow-sm bg-white"
+                className="px-5 py-2 border border-slate-200 text-slate-600 hover:bg-slate-100 font-bold text-sm rounded-xl transition-colors shadow-sm bg-white cursor-pointer disabled:opacity-50"
               >
                 Hủy bỏ
               </button>
               <button
-                onClick={() => { setRetakeStudent(null); alert('Đã cho phép học sinh thi lại'); }}
-                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm rounded-xl transition-colors shadow-sm"
+                disabled={isDeletingSubmission}
+                onClick={async () => {
+                  if (retakeStudent && trackingExam) {
+                    setIsDeletingSubmission(true);
+                    const stId = retakeStudent.id;
+                    const stName = retakeStudent.name;
+                    try {
+                      await resetOrDeleteStudentExamSubmission({
+                        studentCode: stId,
+                        studentName: stName,
+                        studentId: stId,
+                        examId: trackingExam.id,
+                        originalExamId: trackingExam.originalExamId,
+                        targetClass: trackingExam.targetClass
+                      });
+
+                      const normCode = normalizeStudentCode(stId);
+
+                      // Update local state immediately
+                      const filteredSubs = Array.isArray(trackingExam.submissions)
+                        ? trackingExam.submissions.filter((s: any) => normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || s.id || '') !== normCode)
+                        : [];
+                      setTrackingExam(prev => prev ? { ...prev, submissions: filteredSubs } : null);
+                      onSaveExam({ ...trackingExam, submissions: filteredSubs });
+
+                      setTrackingFirestoreSubs(prev => prev.filter((s: any) => {
+                        const code = normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || s.id || '');
+                        const idLower = String(s.id || '').toLowerCase();
+                        const codeLower = normCode.toLowerCase();
+                        return code !== normCode && !idLower.startsWith(`${codeLower}_`) && !idLower.includes(codeLower);
+                      }));
+
+                      setSubmissionsVersion(v => v + 1);
+                      setToast({ message: `Đã cho phép học sinh ${stName} thi lại thành công! Trạng thái đã được đặt về chưa làm bài.`, type: 'success' });
+                    } catch (err: any) {
+                      setToast({ message: `Không thể cập nhật cho thi lại: ${err?.message || 'Lỗi kết nối cơ sở dữ liệu'}`, type: 'error' });
+                    } finally {
+                      setIsDeletingSubmission(false);
+                      setRetakeStudent(null);
+                    }
+                  } else {
+                    setRetakeStudent(null);
+                  }
+                }}
+                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm rounded-xl transition-colors shadow-sm flex items-center gap-2 cursor-pointer disabled:opacity-50"
               >
-                Đồng ý
+                {isDeletingSubmission ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>Đang xử lý...</span>
+                  </>
+                ) : (
+                  <span>Đồng ý</span>
+                )}
               </button>
             </div>
           </div>
@@ -5292,47 +5670,486 @@ return (
       {/* Delete Student Submission Confirmation Modal */}
       <ConfirmDeleteModal
         isOpen={!!deleteStudent}
-        onClose={() => setDeleteStudent(null)}
+        onClose={() => !isDeletingSubmission && setDeleteStudent(null)}
         onConfirm={async () => {
-          if (deleteStudent) {
+          if (deleteStudent && trackingExam) {
+            setIsDeletingSubmission(true);
             const stId = deleteStudent.id;
-            const exId = trackingExam?.id;
+            const stName = deleteStudent.name;
             try {
-              if (db && exId && stId) {
-                try {
-                  await deleteDoc(doc(db, 'exams', exId, 'submissions', stId));
-                } catch {}
-                try {
-                  const masterRef = doc(db, 'exams', exId);
-                  await runTransaction(db, async (tx) => {
-                    const snap = await tx.get(masterRef);
-                    if (snap.exists()) {
-                      const d = snap.data();
-                      if (Array.isArray(d.submissions)) {
-                        const updated = d.submissions.filter((s: any) => {
-                          const sCode = (s.studentCode || s.code || s.maHs || s.studentId || '').trim().toLowerCase();
-                          return sCode !== stId.trim().toLowerCase() && s.id !== stId;
-                        });
-                        tx.update(masterRef, { submissions: updated });
-                      }
-                    }
-                  });
-                } catch {}
-              }
-              window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
-              window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
-              setToast({ message: `Đã xóa kết quả bài làm của học sinh ${deleteStudent.name} thành công!`, type: 'success' });
+              await resetOrDeleteStudentExamSubmission({
+                studentCode: stId,
+                studentName: stName,
+                studentId: stId,
+                examId: trackingExam.id,
+                originalExamId: trackingExam.originalExamId,
+                targetClass: trackingExam.targetClass
+              });
+
+              const normCode = normalizeStudentCode(stId);
+
+              // Update local state immediately
+              const filteredSubs = Array.isArray(trackingExam.submissions)
+                ? trackingExam.submissions.filter((s: any) => normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || s.id || '') !== normCode)
+                : [];
+              setTrackingExam(prev => prev ? { ...prev, submissions: filteredSubs } : null);
+              onSaveExam({ ...trackingExam, submissions: filteredSubs });
+
+              setTrackingFirestoreSubs(prev => prev.filter((s: any) => {
+                const code = normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || s.id || '');
+                const idLower = String(s.id || '').toLowerCase();
+                const codeLower = normCode.toLowerCase();
+                return code !== normCode && !idLower.startsWith(`${codeLower}_`) && !idLower.includes(codeLower);
+              }));
+
+              setSubmissionsVersion(v => v + 1);
+              setToast({ message: `Đã xóa kết quả bài làm của học sinh ${stName} thành công!`, type: 'success' });
             } catch (err: any) {
               setToast({ message: `Không thể xóa bài làm: ${err?.message || 'Lỗi kết nối cơ sở dữ liệu'}`, type: 'error' });
+            } finally {
+              setIsDeletingSubmission(false);
+              setDeleteStudent(null);
             }
+          } else {
+            setDeleteStudent(null);
           }
-          setDeleteStudent(null);
         }}
         title="Xác nhận xóa bài làm của học sinh"
         itemType="kết quả bài làm của học sinh"
         itemName={deleteStudent?.name}
         description={`Thầy/Cô có chắc chắn muốn xóa vĩnh viễn kết quả bài thi của học sinh "${deleteStudent?.name}" không? Dữ liệu điểm và câu trả lời sẽ không thể khôi phục.`}
       />
+
+      {/* Clean Unmatched Submissions Confirmation Modal */}
+      {showCleanUnmatchedConfirm && trackingExam && (
+        <ConfirmDeleteModal
+          isOpen={showCleanUnmatchedConfirm}
+          onClose={() => !isCleaningUnmatched && setShowCleanUnmatchedConfirm(false)}
+          onConfirm={async () => {
+            setIsCleaningUnmatched(true);
+            try {
+              const validRosterCodes = trackingStudentsList.map(st => st.id);
+              const extraIds = trackingExam.originalExamId && trackingExam.originalExamId !== trackingExam.id
+                ? [trackingExam.originalExamId]
+                : [];
+              const res = await cleanAllUnmatchedExamSubmissions(trackingExam.id, validRosterCodes, extraIds);
+              
+              const validSet = new Set(validRosterCodes.map(c => normalizeStudentCode(c)));
+              setTrackingFirestoreSubs(prev => prev.filter((s: any) => {
+                const code = normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || s.id || '');
+                return validSet.has(code);
+              }));
+              setTrackingExam(prev => prev ? {
+                ...prev,
+                submissions: Array.isArray(prev.submissions)
+                  ? prev.submissions.filter((s: any) => validSet.has(normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || s.id || '')))
+                  : []
+              } : null);
+              setSubmissionsVersion(v => v + 1);
+              setToast({ message: `Đã dọn dẹp thành công ${res.deletedCount} bài nộp chưa khớp!`, type: 'success' });
+            } catch (err: any) {
+              setToast({ message: `Không thể dọn dẹp bài nộp chưa khớp: ${err?.message || 'Lỗi kết nối cơ sở dữ liệu'}`, type: 'error' });
+            } finally {
+              setIsCleaningUnmatched(false);
+              setShowCleanUnmatchedConfirm(false);
+            }
+          }}
+          title="Xác nhận dọn dẹp toàn bộ bài nộp chưa khớp"
+          itemType="các bài nộp mồ côi không khớp danh sách lớp"
+          itemName={`${trackingCompletion.unmatchedCount} bài nộp`}
+          description={`Thầy/Cô có chắc chắn muốn dọn dẹp toàn bộ ${trackingCompletion.unmatchedCount} bản ghi bài nộp chưa khớp không thuộc danh sách lớp ${trackingExam.targetClass || ''}? Các bài nộp hợp lệ của học sinh trong lớp sẽ được bảo toàn nguyên vẹn 100%.`}
+        />
+      )}
+
+      {/* Auto Match Preview Modal */}
+      {showAutoMatchModal && trackingExam && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-5xl w-full max-h-[90vh] flex flex-col overflow-hidden animate-scale-up">
+            {/* Header */}
+            <div className="p-5 border-b border-slate-200 flex items-center justify-between bg-gradient-to-r from-indigo-50 to-purple-50">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-md">
+                  <Sparkles className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-800">
+                    Xem trước tự động khớp bài nộp với học sinh
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium">
+                    Hệ thống tự động tìm kiếm theo mã nội bộ & họ tên (bỏ dấu) để chuẩn hóa mã HS theo định dạng [Lớp]26-27-[STT].
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => !isApplyingAutoMatches && setShowAutoMatchModal(false)}
+                className="p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200/50 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Sub-header Stats & Controls */}
+            <div className="px-5 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-3 text-xs font-bold">
+                <span className="px-3 py-1 bg-emerald-100 text-emerald-800 rounded-lg border border-emerald-200 flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  Đề xuất tự động: {autoMatchesList.length} bài
+                </span>
+                {manualMatchList.length > 0 && (
+                  <span className="px-3 py-1 bg-amber-100 text-amber-800 rounded-lg border border-amber-200 flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    Cần chọn tay: {manualMatchList.length} bài
+                  </span>
+                )}
+              </div>
+
+              {autoMatchesList.length > 0 && (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setSelectedAutoMatchIndices(new Set(autoMatchesList.map((_, i) => i)))}
+                    className="text-xs font-bold text-indigo-600 hover:text-indigo-800 hover:underline cursor-pointer"
+                  >
+                    Chọn tất cả
+                  </button>
+                  <span className="text-slate-300">|</span>
+                  <button
+                    onClick={() => setSelectedAutoMatchIndices(new Set())}
+                    className="text-xs font-bold text-slate-500 hover:text-slate-700 hover:underline cursor-pointer"
+                  >
+                    Bỏ chọn
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Content: Tables */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-6">
+              {/* Auto Matches Section */}
+              <div>
+                <h4 className="text-xs font-black uppercase tracking-wider text-slate-600 mb-2 flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  Danh sách bài nộp có thể tự động ghép nối ({autoMatchesList.length})
+                </h4>
+
+                {autoMatchesList.length === 0 ? (
+                  <div className="p-6 text-center text-slate-400 text-xs bg-slate-50 rounded-xl border border-slate-200">
+                    Không tìm thấy bài nộp nào có thể tự động ghép nối 1-1 chính xác.
+                  </div>
+                ) : (
+                  <div className="border border-slate-200 rounded-xl overflow-hidden shadow-xs">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="bg-slate-100 text-[10px] font-black uppercase text-slate-600 tracking-wider">
+                          <th className="p-3 text-center w-10">
+                            <input
+                              type="checkbox"
+                              checked={selectedAutoMatchIndices.size === autoMatchesList.length && autoMatchesList.length > 0}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedAutoMatchIndices(new Set(autoMatchesList.map((_, i) => i)));
+                                } else {
+                                  setSelectedAutoMatchIndices(new Set());
+                                }
+                              }}
+                              className="rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                            />
+                          </th>
+                          <th className="p-3 text-center w-10">STT</th>
+                          <th className="p-3">Mã cũ / Định danh</th>
+                          <th className="p-3">Họ và tên gửi</th>
+                          <th className="p-3">Mã mới đề xuất & Học sinh khớp</th>
+                          <th className="p-3 text-center">Điểm</th>
+                          <th className="p-3 text-center">Thời gian nộp</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
+                        {autoMatchesList.map((m, idx) => {
+                          const isSelected = selectedAutoMatchIndices.has(idx);
+                          return (
+                            <tr
+                              key={idx}
+                              onClick={() => {
+                                const next = new Set(selectedAutoMatchIndices);
+                                if (next.has(idx)) next.delete(idx);
+                                else next.add(idx);
+                                setSelectedAutoMatchIndices(next);
+                              }}
+                              className={`cursor-pointer transition-colors ${isSelected ? 'bg-indigo-50/40 hover:bg-indigo-50/70' : 'hover:bg-slate-50'}`}
+                            >
+                              <td className="p-3 text-center" onClick={(e) => e.stopPropagation()}>
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={(e) => {
+                                    const next = new Set(selectedAutoMatchIndices);
+                                    if (e.target.checked) next.add(idx);
+                                    else next.delete(idx);
+                                    setSelectedAutoMatchIndices(next);
+                                  }}
+                                  className="rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                                />
+                              </td>
+                              <td className="p-3 text-center text-slate-400 font-bold">{idx + 1}</td>
+                              <td className="p-3 font-mono font-bold text-rose-600">{m.oldCode || '---'}</td>
+                              <td className="p-3 font-bold text-slate-800">{m.studentName || '---'}</td>
+                              <td className="p-3">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="font-mono font-black text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                                    {m.proposedStudent.code || m.proposedStudent.id}
+                                  </span>
+                                  <span className="font-bold text-slate-800">({m.proposedStudent.name})</span>
+                                </div>
+                              </td>
+                              <td className="p-3 text-center">
+                                <span className="inline-block px-2 py-0.5 rounded font-bold bg-slate-100 text-slate-800 border border-slate-200">
+                                  {m.score ?? '---'}
+                                </span>
+                              </td>
+                              <td className="p-3 text-center text-slate-500 font-medium whitespace-nowrap">
+                                {m.submittedTime || '---'}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Manual Candidates Section */}
+              {manualMatchList.length > 0 && (
+                <div>
+                  <h4 className="text-xs font-black uppercase tracking-wider text-amber-700 mb-2 flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 text-amber-600" />
+                    Danh sách bài nộp cần chọn tay ({manualMatchList.length})
+                  </h4>
+                  <p className="text-[11px] text-slate-500 mb-2">
+                    Các bài nộp dưới đây bị trùng tên với nhiều học sinh trong lớp hoặc không tìm thấy tên phù hợp. Thầy/Cô hãy chọn học sinh thủ công tại bảng bài nộp chưa khớp.
+                  </p>
+
+                  <div className="border border-amber-200 rounded-xl overflow-hidden shadow-xs bg-amber-50/20">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="bg-amber-100/70 text-[10px] font-black uppercase text-amber-800 tracking-wider">
+                          <th className="p-3 text-center w-10">STT</th>
+                          <th className="p-3">Mã cũ / Định danh</th>
+                          <th className="p-3">Họ và tên gửi</th>
+                          <th className="p-3 text-center">Điểm</th>
+                          <th className="p-3 text-center">Thời gian nộp</th>
+                          <th className="p-3">Lý do cần chọn tay</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-amber-100 font-medium text-slate-700">
+                        {manualMatchList.map((m, idx) => (
+                          <tr key={idx} className="hover:bg-amber-50/40">
+                            <td className="p-3 text-center text-amber-600 font-bold">{idx + 1}</td>
+                            <td className="p-3 font-mono font-bold text-slate-700">{m.oldCode || '---'}</td>
+                            <td className="p-3 font-bold text-slate-800">{m.studentName || '---'}</td>
+                            <td className="p-3 text-center font-bold">{m.score ?? '---'}</td>
+                            <td className="p-3 text-center text-slate-500 whitespace-nowrap">{m.submittedTime || '---'}</td>
+                            <td className="p-3 text-amber-800 text-[11px] font-medium">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                {m.isCrossClass && (
+                                  <span className="px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-200 shrink-0">
+                                    Nghi vấn khác lớp {m.suggestedClass ? `(${m.suggestedClass})` : ''}
+                                  </span>
+                                )}
+                                <span>{m.reason}</span>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+              <div className="text-xs text-slate-500 font-medium">
+                Đã chọn: <span className="font-bold text-indigo-600">{selectedAutoMatchIndices.size}</span> / {autoMatchesList.length} bài nộp
+              </div>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setShowAutoMatchModal(false)}
+                  disabled={isApplyingAutoMatches}
+                  className="px-4 py-2 border border-slate-200 hover:bg-slate-100 text-slate-600 text-xs font-bold rounded-xl transition-colors cursor-pointer"
+                >
+                  Hủy bỏ
+                </button>
+                <button
+                  onClick={handleApplyAutoMatches}
+                  disabled={isApplyingAutoMatches || selectedAutoMatchIndices.size === 0}
+                  className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-md transition-all flex items-center gap-2 cursor-pointer"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  <span>
+                    {isApplyingAutoMatches
+                      ? 'Đang cập nhật...'
+                      : `Xác nhận & Cập nhật Firestore (${selectedAutoMatchIndices.size} bài)`}
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate Submissions Modal */}
+      {showDuplicatesModal && trackingExam && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-4xl w-full max-h-[90vh] flex flex-col overflow-hidden animate-scale-up">
+            {/* Header */}
+            <div className="p-5 border-b border-slate-200 flex items-center justify-between bg-gradient-to-r from-amber-50 to-orange-50">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shadow-md">
+                  <Copy className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-800">
+                    Kiểm tra & Dọn dẹp bài nộp trùng lặp
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium">
+                    Phát hiện các bài nộp của cùng một học sinh trong cùng đề thi (do lưu kép document hoặc thi nhiều lần liên tiếp).
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => !isCleaningDuplicates && setShowDuplicatesModal(false)}
+                className="p-2 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200/50 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Summary */}
+            <div className="px-5 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-3 text-xs font-bold">
+                <span className="px-3 py-1 bg-slate-200 text-slate-800 rounded-lg">
+                  Tổng nhóm bài trùng: {duplicateGroups.length}
+                </span>
+                <span className="px-3 py-1 bg-emerald-100 text-emerald-800 rounded-lg border border-emerald-200">
+                  Đủ điều kiện tự động dọn: {duplicateGroups.filter(g => g.isCleanable).length}
+                </span>
+                <span className="px-3 py-1 bg-amber-100 text-amber-800 rounded-lg border border-amber-200">
+                  Cần giáo viên xem xét: {duplicateGroups.filter(g => !g.isCleanable).length}
+                </span>
+              </div>
+            </div>
+
+            {/* Groups Content */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-4">
+              {duplicateGroups.length === 0 ? (
+                <div className="p-8 text-center text-slate-400 text-xs bg-slate-50 rounded-xl border border-slate-200">
+                  Tuyệt vời! Không phát hiện bài nộp nào bị trùng lặp trong đề thi này.
+                </div>
+              ) : (
+                duplicateGroups.map((group, gIdx) => (
+                  <div
+                    key={gIdx}
+                    className={`border rounded-xl p-4 transition-all ${group.isCleanable ? 'border-emerald-200 bg-emerald-50/20' : 'border-amber-200 bg-amber-50/20'}`}
+                  >
+                    <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono font-bold text-xs bg-white px-2.5 py-1 rounded-md border border-slate-200 text-slate-700">
+                          {group.studentCode}
+                        </span>
+                        <span className="font-black text-sm text-slate-800">{group.studentName}</span>
+                        <span className="text-xs px-2 py-0.5 rounded font-bold bg-slate-100 text-slate-700">
+                          Điểm: {group.score}
+                        </span>
+                      </div>
+                      <div>
+                        {group.isCleanable ? (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-lg">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            Đủ điều kiện tự động dọn dẹp
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-700 bg-amber-100 px-2.5 py-1 rounded-lg">
+                            <AlertTriangle className="w-3.5 h-3.5" />
+                            Cần xem xét (Điểm khác hoặc thời gian &gt; 10s)
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <p className="text-xs text-slate-500 mb-2">{group.reason}</p>
+
+                    {/* Submissions list in this group */}
+                    <div className="bg-white rounded-lg border border-slate-200 divide-y divide-slate-100 text-xs">
+                      {/* Primary */}
+                      <div className="p-2.5 flex items-center justify-between bg-emerald-50/30">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-[11px] font-bold text-slate-700">
+                            {group.primarySub.id || group.primarySub.docId}
+                          </span>
+                          <span className="text-[10px] px-2 py-0.5 rounded font-black bg-emerald-600 text-white">
+                            Bản ghi chính (Giữ lại)
+                          </span>
+                        </div>
+                        <div className="text-slate-500 text-[11px]">
+                          {formatSubmissionDateTime(group.primarySub.submittedAt || group.primarySub.submittedTime || '')}
+                        </div>
+                      </div>
+
+                      {/* Duplicate subs */}
+                      {group.duplicateSubs.map((dup, dIdx) => (
+                        <div key={dIdx} className="p-2.5 flex items-center justify-between bg-rose-50/20">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-[11px] text-slate-600">
+                              {dup.id || dup.docId}
+                            </span>
+                            <span className="text-[10px] px-2 py-0.5 rounded font-bold bg-rose-100 text-rose-700">
+                              Bản ghi thừa (Sẽ xóa)
+                            </span>
+                          </div>
+                          <div className="text-slate-500 text-[11px]">
+                            {formatSubmissionDateTime(dup.submittedAt || dup.submittedTime || '')}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+              <div className="text-xs text-slate-500 font-medium">
+                {duplicateGroups.filter(g => g.isCleanable).length > 0
+                  ? `Sẽ xóa ${duplicateGroups.filter(g => g.isCleanable).reduce((sum, g) => sum + g.duplicateSubs.length, 0)} bản ghi thừa`
+                  : 'Không có bản ghi trùng nào cần dọn tự động'}
+              </div>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setShowDuplicatesModal(false)}
+                  disabled={isCleaningDuplicates}
+                  className="px-4 py-2 border border-slate-200 hover:bg-slate-100 text-slate-600 text-xs font-bold rounded-xl transition-colors cursor-pointer"
+                >
+                  Đóng
+                </button>
+                <button
+                  onClick={handleExecuteCleanDuplicates}
+                  disabled={isCleaningDuplicates || duplicateGroups.filter(g => g.isCleanable).length === 0}
+                  className="px-5 py-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-md transition-all flex items-center gap-2 cursor-pointer"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>
+                    {isCleaningDuplicates
+                      ? 'Đang dọn dẹp...'
+                      : `Dọn dẹp ${duplicateGroups.filter(g => g.isCleanable).reduce((sum, g) => sum + g.duplicateSubs.length, 0)} bản ghi trùng`}
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {toast && (
         <div className={`fixed bottom-6 right-6 z-[100] text-white px-5 py-3.5 rounded-2xl shadow-2xl border flex items-center gap-3 animate-slide-up backdrop-blur-md bg-slate-950/95 ${toast.type === 'error' ? 'border-rose-500/50 text-rose-50' : 'border-emerald-500/50 text-emerald-50'}`}>

@@ -2,7 +2,8 @@ import { StudentRecord, StudentEnrollmentRecord } from '../types';
 import { db } from './firebase';
 import { doc, getDoc, onSnapshot, collection, query, where, getDocs } from 'firebase/firestore';
 import { trackedSetDoc, trackedDeleteDoc, trackedWriteBatch } from './firestoreWriteTracker';
-import { formatStandardStudentCode } from './studentCode';
+import { formatStandardStudentCode, normalizeStudentCode } from './studentCode';
+import { propagateStudentCodeChange } from './unmatchedSubmissionsService';
 
 const PRIMARY_SCHOOL_SUBJECTS = [
   'Toán', 'Tiếng Việt', 'Đạo Đức', 'Tự nhiên và Xã hội', 'Khoa học',
@@ -548,6 +549,12 @@ export function addOrUpdateStudentInClass(className: string, student: StudentRec
 
   let updatedList: StudentRecord[];
   if (existingIdx >= 0) {
+    const existingStudent = currentList[existingIdx];
+    const oldCode = existingStudent.code;
+    const newCode = student.code;
+    if (oldCode && newCode && normalizeStudentCode(oldCode) !== normalizeStudentCode(newCode)) {
+      propagateStudentCodeChange(oldCode, newCode, stdName).catch(() => {});
+    }
     updatedList = [...currentList];
     updatedList[existingIdx] = { ...updatedList[existingIdx], ...student, className: stdName };
   } else {
