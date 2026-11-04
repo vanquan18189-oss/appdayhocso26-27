@@ -44,7 +44,8 @@ import { getStudentGameProfile, resolveAuthenticStudentId } from '../../services
 import { studentResultService } from '../../services/studentResultService';
 import { normalizeStudentCode } from '../../services/studentCode';
 import { db } from '../../services/firebase';
-import { collection, getDocs, doc, writeBatch } from 'firebase/firestore';
+import { collection, getDocs, getDoc, doc, writeBatch } from 'firebase/firestore';
+import { getStudentsFromLocalStorage, generateDefaultClassRoster } from '../../services/studentStorageService';
 import { ShareContentModal } from './ShareContentModal';
 import { StudentGameStoreTab } from './StudentGameStoreTab';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
@@ -427,16 +428,25 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
   };
 
 
-  // Leaderboard modal state & real student results
+  // Leaderboard modal state & real student results using class roster (reduced reads)
   const [selectedLeaderboardGame, setSelectedLeaderboardGame] = useState<GameItem | null>(null);
   const [leaderboardResults, setLeaderboardResults] = useState<any[]>([]);
   const [isLeaderboardLoading, setIsLeaderboardLoading] = useState<boolean>(false);
   const [leaderboardSearch, setLeaderboardSearch] = useState<string>('');
+  const [debugTeacherInfo, setDebugTeacherInfo] = useState<{
+    roomId: string;
+    readCount: number;
+    docsFound: number;
+    rosterSize: number;
+    studentDetails: Array<{ code: string; name: string; status: string; reason: string }>;
+    misplacedGames: Array<{ studentCode: string; gameKey: string; roomTitle?: string }>;
+  }>({ roomId: '', readCount: 0, docsFound: 0, rosterSize: 0, studentDetails: [], misplacedGames: [] });
 
   useEffect(() => {
     if (!selectedLeaderboardGame) {
       setLeaderboardResults([]);
       setLeaderboardSearch('');
+      setDebugTeacherInfo({ roomId: '', readCount: 0, docsFound: 0, rosterSize: 0, studentDetails: [], misplacedGames: [] });
       return;
     }
     async function fetchLeaderboard() {
@@ -446,30 +456,71 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
           setIsLeaderboardLoading(false);
           return;
         }
-        const snap = await getDocs(collection(db, 'student_results'));
+        const targetClass = selectedLeaderboardGame.classInfo || 'Lớp 3D';
+        const cleanClass = targetClass.replace(/^Lớp\s*/i, '').trim().toUpperCase();
+        const roster = getStudentsFromLocalStorage(targetClass) || getStudentsFromLocalStorage(cleanClass) || generateDefaultClassRoster(targetClass, 38);
+
         const results: any[] = [];
-        snap.forEach(docSnap => {
-          const docData = docSnap.data();
-          if (!docData || !docData.studentCode) return;
-          const gamesObj = docData.games || {};
-          const gameResult = gamesObj[selectedLeaderboardGame.id] ||
-                             Object.values(gamesObj).find((g: any) => g && (g.roomId === selectedLeaderboardGame.id || g.roomTitle === selectedLeaderboardGame.title));
-          if (gameResult) {
-            results.push({
-              studentCode: normalizeStudentCode(docData.studentCode || gameResult.studentCode),
-              studentName: docData.studentName || gameResult.studentName || docData.studentCode,
-              className: docData.className || gameResult.className || selectedLeaderboardGame.classInfo || '',
-              score: gameResult.score !== undefined ? gameResult.score : 0,
-              maxScore: gameResult.maxScore || ((selectedLeaderboardGame.questions?.length || 1) * 100),
-              completed: gameResult.completed !== undefined ? gameResult.completed : true,
-              questionsAnswered: gameResult.questionsAnswered || selectedLeaderboardGame.questions?.length || 1,
-              totalQuestions: gameResult.totalQuestions || selectedLeaderboardGame.questions?.length || 1,
-              submittedAt: gameResult.submittedAt || gameResult.updatedAt || new Date().toISOString(),
-              rank: gameResult.rank || 'unranked'
-            });
+        const studentDetails: any[] = [];
+        const misplacedGames: any[] = [];
+        let readCount = 0;
+        let docsFound = 0;
+
+        for (const st of roster) {
+          const sCode = normalizeStudentCode((st as any).code || (st as any).studentCode || (st as any).maHs || (st as any).id);
+          const sName = st.fullName || st.name || sCode;
+          if (!sCode) continue;
+
+          readCount++;
+          const docRef = doc(db, 'student_results', sCode);
+          const docSnap = await getDoc(docRef);
+
+          if (docSnap.exists()) {
+            docsFound++;
+            const data = docSnap.data();
+            const gamesObj = data.games || {};
+            
+            // Strict match by roomId (selectedLeaderboardGame.id)
+            const exactMatch = gamesObj[selectedLeaderboardGame.id];
+            if (exactMatch) {
+              results.push({
+                studentCode: sCode,
+                studentName: sName,
+                className: targetClass,
+                score: exactMatch.score !== undefined ? exactMatch.score : 0,
+                maxScore: exactMatch.maxScore || ((selectedLeaderboardGame.questions?.length || 1) * 100),
+                completed: exactMatch.completed !== undefined ? exactMatch.completed : true,
+                questionsAnswered: exactMatch.questionsAnswered || selectedLeaderboardGame.questions?.length || 1,
+                totalQuestions: exactMatch.totalQuestions || selectedLeaderboardGame.questions?.length || 1,
+                submittedAt: exactMatch.submittedAt || exactMatch.updatedAt || new Date().toISOString(),
+                rank: exactMatch.rank || 'unranked'
+              });
+              studentDetails.push({ code: sCode, name: sName, status: 'Đã tham gia', reason: 'Khớp chính xác roomId' });
+            } else {
+              let foundMisplaced = false;
+              for (const [gKey, gVal] of Object.entries(gamesObj)) {
+                const gRes = gVal as any;
+                if (gRes && selectedLeaderboardGame.title && gRes.roomTitle && gRes.roomTitle.trim().toLowerCase() === selectedLeaderboardGame.title.trim().toLowerCase()) {
+                  misplacedGames.push({ studentCode: sCode, gameKey: gKey, roomTitle: gRes.roomTitle });
+                  foundMisplaced = true;
+                }
+              }
+              studentDetails.push({ code: sCode, name: sName, status: 'Chưa tham gia', reason: foundMisplaced ? 'Có bài nộp nhưng lệch roomId' : 'Chưa có bản ghi kết quả' });
+            }
+          } else {
+            studentDetails.push({ code: sCode, name: sName, status: 'Chưa tham gia', reason: 'Chưa có tài liệu trên server' });
           }
-        });
+        }
+
         setLeaderboardResults(results);
+        setDebugTeacherInfo({
+          roomId: selectedLeaderboardGame.id,
+          readCount,
+          docsFound,
+          rosterSize: roster.length,
+          studentDetails,
+          misplacedGames
+        });
       } catch (err) {
         console.warn('Lỗi tải bảng xếp hạng game:', err);
       } finally {
@@ -590,6 +641,15 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
     setGameMode('countdown');
   };
 
+  const [debugSaveResult, setDebugSaveResult] = useState<{
+    status: 'idle' | 'saving' | 'success' | 'error';
+    path?: string;
+    studentCode?: string;
+    roomId?: string;
+    serverData?: any;
+    errorMsg?: string;
+  }>({ status: 'idle' });
+
   const finishGameAndAward = async (finalScore: number) => {
     if (!activeGame) return;
     setGameMode('result');
@@ -615,6 +675,11 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
       awardArenaReward(effectiveStudentCode, activeGame.id, activeGame.title || 'Đấu Trường', rank);
     }
 
+    const pathStr = `student_results/${effectiveStudentCode} → games.${activeGame.id}`;
+    if (typeof window !== 'undefined' && window.location.search.includes('debug=1')) {
+      setDebugSaveResult({ status: 'saving', path: pathStr, studentCode: effectiveStudentCode, roomId: activeGame.id });
+    }
+
     try {
       await studentResultService.saveGameResult(effectiveStudentCode, activeGame.id, {
         score: finalScore,
@@ -629,8 +694,36 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
         roomId: activeGame.id,
         roomTitle: activeGame.title
       });
-    } catch (err) {
+
+      if (db) {
+        const verifyDocRef = doc(db, 'student_results', effectiveStudentCode);
+        const snap = await getDoc(verifyDocRef);
+        if (snap.exists()) {
+          const dat = snap.data();
+          if (typeof window !== 'undefined' && window.location.search.includes('debug=1')) {
+            setDebugSaveResult({
+              status: 'success',
+              path: pathStr,
+              studentCode: effectiveStudentCode,
+              roomId: activeGame.id,
+              serverData: dat.games?.[activeGame.id] || dat
+            });
+          }
+        } else {
+          throw new Error('Tài liệu không tồn tại trên máy chủ sau khi ghi');
+        }
+      }
+    } catch (err: any) {
       console.warn('Lỗi lưu kết quả game vào student_results:', err);
+      if (typeof window !== 'undefined' && window.location.search.includes('debug=1')) {
+        setDebugSaveResult({
+          status: 'error',
+          path: pathStr,
+          studentCode: effectiveStudentCode,
+          roomId: activeGame.id,
+          errorMsg: err.message || String(err)
+        });
+      }
     }
   };
 
@@ -2728,6 +2821,36 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
               })()}
             </div>
 
+            {/* Student Debug Panel if ?debug=1 */}
+            {typeof window !== 'undefined' && window.location.search.includes('debug=1') && (
+              <div className="p-4 bg-slate-900/90 border border-amber-400/40 rounded-2xl text-left text-xs space-y-2 relative z-10 font-mono">
+                <div className="flex items-center justify-between text-amber-300 font-bold border-b border-slate-700 pb-1">
+                  <span>[DEBUG STUDENT RESULT]</span>
+                  <span className={debugSaveResult.status === 'success' ? 'text-emerald-400' : debugSaveResult.status === 'error' ? 'text-rose-400' : 'text-amber-400'}>
+                    {debugSaveResult.status === 'success' ? 'Đã lưu kết quả (Verified)' : debugSaveResult.status === 'error' ? 'Lỗi lưu kết quả' : 'Đang lưu...'}
+                  </span>
+                </div>
+                <div><strong>Đường dẫn:</strong> {debugSaveResult.path || 'Chưa ghi'}</div>
+                <div><strong>Mã HS:</strong> {debugSaveResult.studentCode} | <strong>Room ID:</strong> {debugSaveResult.roomId}</div>
+                {debugSaveResult.status === 'success' && (
+                  <div className="text-emerald-300">
+                    <strong>Đọc lại từ server:</strong> Thành công! Điểm: {debugSaveResult.serverData?.score}
+                  </div>
+                )}
+                {debugSaveResult.status === 'error' && (
+                  <div className="space-y-2">
+                    <div className="text-rose-300"><strong>Lỗi:</strong> {debugSaveResult.errorMsg}</div>
+                    <button
+                      onClick={() => finishGameAndAward(score)}
+                      className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg cursor-pointer"
+                    >
+                      Thử lại (Retry)
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="flex flex-col sm:flex-row justify-center gap-2.5 relative z-10 pt-2">
               <button
                 onClick={() => handleStartGame(activeGame)}
@@ -2852,6 +2975,35 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                 </button>
               )}
             </div>
+
+            {/* Teacher Debug Panel if ?debug=1 */}
+            {typeof window !== 'undefined' && window.location.search.includes('debug=1') && (
+              <div className="mx-6 mt-3 p-4 bg-slate-900/90 border border-amber-400/40 rounded-2xl text-xs space-y-2 relative z-10 font-mono">
+                <div className="text-amber-300 font-bold border-b border-slate-700 pb-1 flex items-center justify-between">
+                  <span>[DEBUG TEACHER LEADERBOARD SCAN]</span>
+                  <span>Tổng số lượt đọc: {debugTeacherInfo.readCount}</span>
+                </div>
+                <div><strong>Room ID hiện tại:</strong> {debugTeacherInfo.roomId}</div>
+                <div><strong>Sĩ số lớp (Roster):</strong> {debugTeacherInfo.rosterSize} học sinh | <strong>Tài liệu đọc được:</strong> {debugTeacherInfo.docsFound}</div>
+                <div className="max-h-32 overflow-y-auto space-y-1 pt-1 border-t border-slate-800 text-[11px]">
+                  <strong>Chi tiết khớp theo Mã HS:</strong>
+                  {debugTeacherInfo.studentDetails.map((st, i) => (
+                    <div key={i} className="flex items-center justify-between gap-2 text-slate-300">
+                      <span>• {st.code} ({st.name})</span>
+                      <span className={st.status === 'Đã tham gia' ? 'text-emerald-400 font-bold' : 'text-slate-400'}>{st.status}: {st.reason}</span>
+                    </div>
+                  ))}
+                </div>
+                {debugTeacherInfo.misplacedGames.length > 0 && (
+                  <div className="pt-1 border-t border-slate-800 text-rose-300 text-[11px]">
+                    <strong>Khóa games lạc mã (cùng tiêu đề khác roomId):</strong>
+                    {debugTeacherInfo.misplacedGames.map((mg, i) => (
+                      <div key={i}>• {mg.studentCode}: {mg.roomTitle} (Key: {mg.gameKey})</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Leaderboard Table / Empty State */}
             <div className="p-6 overflow-y-auto flex-1 relative z-10">
