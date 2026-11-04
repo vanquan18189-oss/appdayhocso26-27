@@ -48,7 +48,8 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
-  GripVertical
+  GripVertical,
+  Settings
 } from 'lucide-react';
 import { SUBJECTS, GRADES, CLASSES_BY_GRADE, ALL_CLASSES, QUESTION_TYPES, normalizeQuestionType, getDefaultAnswerSchemaByType, sanitizeQuestionForFirestore, getQuestionTypeLabel, isGradeMatching, extractGradeDigit } from '../../lib/constants';
 import { useClassesList } from '../../services/classStorageService';
@@ -551,18 +552,149 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
 
   const { classes: allRealClasses, getClassesForGrade: fetchClassesForGrade } = useClassesList();
 
+  // Helper to parse date string into timestamp (supporting dd/mm/yyyy HH:mm, MM/DD/YYYY hh:mm A, and ISO)
+  const parseCustomDateTimeToMs = (dateStr?: string): number => {
+    if (!dateStr) return 0;
+    const isoMatch = dateStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})[T\s](\d{1,2}):(\d{1,2})/);
+    if (isoMatch) {
+      return new Date(
+        parseInt(isoMatch[1], 10),
+        parseInt(isoMatch[2], 10) - 1,
+        parseInt(isoMatch[3], 10),
+        parseInt(isoMatch[4], 10),
+        parseInt(isoMatch[5], 10)
+      ).getTime();
+    }
+    const match = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{1,2})(?:\s*(AM|PM))?)?/i);
+    if (match) {
+      const p1 = parseInt(match[1], 10);
+      const p2 = parseInt(match[2], 10);
+      const y = parseInt(match[3], 10);
+      let h = match[4] ? parseInt(match[4], 10) : 0;
+      const min = match[5] ? parseInt(match[5], 10) : 0;
+      const ampm = match[6] ? match[6].toUpperCase() : null;
+
+      let d = p1;
+      let m = p2 - 1;
+      if (p1 <= 12 && p2 > 12 && ampm) {
+        m = p1 - 1;
+        d = p2;
+      }
+      if (ampm === 'PM' && h < 12) h += 12;
+      if (ampm === 'AM' && h === 12) h = 0;
+      return new Date(y, m, d, h, min).getTime();
+    }
+    const d = new Date(dateStr);
+    return isNaN(d.getTime()) ? 0 : d.getTime();
+  };
+
+  const formatToDdMmYyyyHhMm = (dateInput?: string | Date): string => {
+    if (!dateInput) {
+      const now = new Date();
+      const dd = String(now.getDate()).padStart(2, '0');
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const yyyy = now.getFullYear();
+      const hh = String(now.getHours()).padStart(2, '0');
+      const min = String(now.getMinutes()).padStart(2, '0');
+      return `${dd}/${mm}/${yyyy} ${hh}:${min}`;
+    }
+    if (typeof dateInput === 'string') {
+      const ms = parseCustomDateTimeToMs(dateInput);
+      if (ms > 0) {
+        const d = new Date(ms);
+        const dd = String(d.getDate()).padStart(2, '0');
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const yyyy = d.getFullYear();
+        const hh = String(d.getHours()).padStart(2, '0');
+        const min = String(d.getMinutes()).padStart(2, '0');
+        return `${dd}/${mm}/${yyyy} ${hh}:${min}`;
+      }
+      return dateInput;
+    }
+    const dd = String(dateInput.getDate()).padStart(2, '0');
+    const mm = String(dateInput.getMonth() + 1).padStart(2, '0');
+    const yyyy = dateInput.getFullYear();
+    const hh = String(dateInput.getHours()).padStart(2, '0');
+    const min = String(dateInput.getMinutes()).padStart(2, '0');
+    return `${dd}/${mm}/${yyyy} ${hh}:${min}`;
+  };
+
+  const getHomeworkRootId = (as: HomeworkAssignment): string => {
+    return as.originalAssignmentId || (as as any).groupId || as.id.replace(/-class-.*$/, '');
+  };
+
+  const getGroupAssignments = (as: HomeworkAssignment, allAssignments: HomeworkAssignment[]): HomeworkAssignment[] => {
+    const rootId = getHomeworkRootId(as);
+    const cleanAsTitle = (as.title || '').trim().toLowerCase().replace(/^bài tập tự luyện:\s*/i, '').replace(/^bài tập:\s*/i, '');
+    return allAssignments.filter(item => {
+      if (item.id === as.id) return true;
+      const itemRootId = getHomeworkRootId(item);
+      if (rootId && itemRootId && rootId === itemRootId) return true;
+      const cleanItemTitle = (item.title || '').trim().toLowerCase().replace(/^bài tập tự luyện:\s*/i, '').replace(/^bài tập:\s*/i, '');
+      if (cleanItemTitle === cleanAsTitle && item.grade === as.grade && item.subject === as.subject) return true;
+      return false;
+    });
+  };
+
+  const findExistingAssignmentForClass = (as: HomeworkAssignment, targetClassName: string): HomeworkAssignment | undefined => {
+    const rootId = getHomeworkRootId(as);
+    const cleanAsTitle = (as.title || '').trim().toLowerCase().replace(/^bài tập tự luyện:\s*/i, '').replace(/^bài tập:\s*/i, '');
+    const normTargetClass = (targetClassName || '').trim().toLowerCase().replace(/\s+/g, '');
+
+    return assignments.find(item => {
+      const itemClasses = (item.targetClasses || (item.targetClass ? item.targetClass.split(',') : [])).map(c => c.trim().toLowerCase().replace(/\s+/g, ''));
+      const itemTargetClass = (item.targetClass || '').trim().toLowerCase().replace(/\s+/g, '');
+      const matchesClass = itemClasses.includes(normTargetClass) || itemTargetClass === normTargetClass || item.id.includes(`-lp${normTargetClass}`);
+      if (!matchesClass) return false;
+
+      const itemRootId = getHomeworkRootId(item);
+      if (rootId && itemRootId && rootId === itemRootId) return true;
+      const cleanItemTitle = (item.title || '').trim().toLowerCase().replace(/^bài tập tự luyện:\s*/i, '').replace(/^bài tập:\s*/i, '');
+      return cleanItemTitle === cleanAsTitle && item.grade === as.grade;
+    });
+  };
+
   // Modal state for "🚀 Giao Bài Tập"
   const [assigningConfigAssignment, setAssigningConfigAssignment] = useState<HomeworkAssignment | null>(null);
   const [assignTitle, setAssignTitle] = useState<string>('');
   const [selectedAssignClasses, setSelectedAssignClasses] = useState<string[]>([]);
-  const [assignStartDate, setAssignStartDate] = useState<string>('09/05/2026 08:00 AM');
-  const [assignDueDate, setAssignDueDate] = useState<string>('09/12/2026 11:59 PM');
+  const [assignStartDate, setAssignStartDate] = useState<string>('');
+  const [assignDueDate, setAssignDueDate] = useState<string>('');
   const [assignMaxAttempts, setAssignMaxAttempts] = useState<string>('Không giới hạn số lần luyện tập');
   const [assignShuffleQuestions, setAssignShuffleQuestions] = useState<boolean>(true);
   const [assignShuffleOptions, setAssignShuffleOptions] = useState<boolean>(true);
   const [assignTargetType, setAssignTargetType] = useState<'all' | 'specific'>('all');
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
   const [assignRealtimeLeaderboard, setAssignRealtimeLeaderboard] = useState<boolean>(false);
+
+  // Modal state for "⚙️ Sửa cài đặt giao bài"
+  const [editingConfigAssignment, setEditingConfigAssignment] = useState<HomeworkAssignment | null>(null);
+  const [editConfigStartDate, setEditConfigStartDate] = useState<string>('');
+  const [editConfigDueDate, setEditConfigDueDate] = useState<string>('');
+  const [editConfigMaxAttempts, setEditConfigMaxAttempts] = useState<string>('Không giới hạn số lần luyện tập');
+  const [editConfigShuffleQuestions, setEditConfigShuffleQuestions] = useState<boolean>(true);
+  const [editConfigShuffleOptions, setEditConfigShuffleOptions] = useState<boolean>(true);
+  const [editConfigRealtimeLeaderboard, setEditConfigRealtimeLeaderboard] = useState<boolean>(false);
+  const [editConfigLeaderboardScope, setEditConfigLeaderboardScope] = useState<'all' | 'since_enabled'>('all');
+  const [editConfigApplyToGroup, setEditConfigApplyToGroup] = useState<boolean>(true);
+  const [editConfigDateError, setEditConfigDateError] = useState<string | null>(null);
+
+  // Conflict warning modal state
+  const [conflictAssignData, setConflictAssignData] = useState<{
+    conflicts: { className: string; submittedCount: number; totalCount: number; existingAssignment: HomeworkAssignment }[];
+    newTitle: string;
+    selectedClasses: string[];
+    startDate: string;
+    dueDate: string;
+    maxAttempts: string;
+    shuffleQuestions: boolean;
+    shuffleOptions: boolean;
+    realtimeLeaderboard: boolean;
+  } | null>(null);
+
+  // Duplicate Scanner tool state (Debug mode: ?debug=1)
+  const isDebugMode = typeof window !== 'undefined' && window.location.search.includes('debug=1');
+  const [isScanDuplicatesModalOpen, setIsScanDuplicatesModalOpen] = useState(false);
 
   const getClassesForGrade = useCallback((gradeRaw?: string): string[] => {
     return fetchClassesForGrade(gradeRaw).map(c => c.name);
@@ -572,20 +704,216 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     setAssigningConfigAssignment(as);
     setAssignTitle(as.title || '');
     
-    const availableClasses = getClassesForGrade(as.grade);
     const initialClasses = as.targetClass
       ? as.targetClass.split(',').map(c => c.trim()).filter(Boolean)
       : [];
       
     setSelectedAssignClasses(initialClasses);
-    setAssignStartDate('09/05/2026 08:00 AM');
-    setAssignDueDate(as.dueDate || '09/12/2026 11:59 PM');
+    const now = new Date();
+    setAssignStartDate(formatToDdMmYyyyHhMm(now));
+
+    const nowPlus7 = new Date(now);
+    nowPlus7.setDate(nowPlus7.getDate() + 7);
+    nowPlus7.setHours(23, 59, 0, 0);
+    setAssignDueDate(as.dueDate ? formatToDdMmYyyyHhMm(as.dueDate) : formatToDdMmYyyyHhMm(nowPlus7));
+
     setAssignMaxAttempts('Không giới hạn số lần luyện tập');
     setAssignShuffleQuestions(true);
     setAssignShuffleOptions(true);
     setAssignTargetType('all');
     setSelectedStudentIds(CLASS_3A_STUDENTS.map(s => s.code));
     setAssignRealtimeLeaderboard(as.enableRealtimeLeaderboard === true);
+  };
+
+  const handleOpenEditConfig = (as: HomeworkAssignment) => {
+    setEditingConfigAssignment(as);
+    const now = new Date();
+    const defaultStart = formatToDdMmYyyyHhMm(as.startDate || as.assignedDate || now);
+    
+    let defaultDue = as.dueDate ? formatToDdMmYyyyHhMm(as.dueDate) : '';
+    if (!defaultDue) {
+      const d = new Date(now);
+      d.setDate(d.getDate() + 7);
+      d.setHours(23, 59, 0, 0);
+      defaultDue = formatToDdMmYyyyHhMm(d);
+    }
+
+    setEditConfigStartDate(defaultStart);
+    setEditConfigDueDate(defaultDue);
+    setEditConfigMaxAttempts(as.maxAttempts || (as.allowRepeat === false ? '1 lần' : 'Không giới hạn số lần luyện tập'));
+    setEditConfigShuffleQuestions(as.shuffleQuestions !== false);
+    setEditConfigShuffleOptions(as.shuffleOptions !== false);
+    setEditConfigRealtimeLeaderboard(as.enableRealtimeLeaderboard === true);
+    setEditConfigLeaderboardScope(as.leaderboardScope === 'since_enabled' ? 'since_enabled' : 'all');
+    setEditConfigApplyToGroup(true);
+    setEditConfigDateError(null);
+  };
+
+  const handleSaveEditConfig = async () => {
+    if (!editingConfigAssignment) return;
+
+    const startMs = parseCustomDateTimeToMs(editConfigStartDate);
+    const dueMs = parseCustomDateTimeToMs(editConfigDueDate);
+
+    if (startMs > 0 && dueMs > 0 && dueMs <= startMs) {
+      setEditConfigDateError('Thời điểm hết hạn làm bài phải sau thời điểm bắt đầu giao bài!');
+      return;
+    }
+
+    try {
+      const groupList = getGroupAssignments(editingConfigAssignment, assignments);
+      const targetDocs = editConfigApplyToGroup && groupList.length > 0 ? groupList : [editingConfigAssignment];
+
+      const patch: any = {
+        startDate: editConfigStartDate,
+        assignedDate: editConfigStartDate,
+        dueDate: editConfigDueDate,
+        maxAttempts: editConfigMaxAttempts,
+        allowRepeat: editConfigMaxAttempts === 'Không giới hạn số lần luyện tập' || editConfigMaxAttempts !== '1 lần',
+        shuffleQuestions: editConfigShuffleQuestions,
+        shuffleOptions: editConfigShuffleOptions,
+        enableRealtimeLeaderboard: editConfigRealtimeLeaderboard,
+        leaderboardScope: editConfigRealtimeLeaderboard ? editConfigLeaderboardScope : 'all',
+        updatedAt: new Date().toISOString()
+      };
+
+      if (editConfigRealtimeLeaderboard && !editingConfigAssignment.enableRealtimeLeaderboard) {
+        patch.leaderboardEnabledAt = new Date().toISOString();
+      }
+
+      for (const targetDoc of targetDocs) {
+        if (db && targetDoc.id) {
+          const docRef = doc(db, 'assignments', targetDoc.id);
+          await trackedSetDoc(docRef, patch, { merge: true });
+        }
+        onSaveAssignment({
+          ...targetDoc,
+          ...patch
+        });
+      }
+
+      showToast(`✅ Đã cập nhật cài đặt giao bài thành công cho ${targetDocs.length} lớp!`);
+      setEditingConfigAssignment(null);
+    } catch (err: any) {
+      console.error('Lỗi lưu cài đặt bài tập:', err);
+      showToast(`⚠️ Không thể lưu cài đặt: ${err?.message || String(err)}`);
+    }
+  };
+
+  const executeAssignStandard = async (
+    mode: 'create_or_update' | 'update_existing' | 'create_new_round',
+    finalTitle: string,
+    classesToAssign: string[]
+  ) => {
+    if (!assigningConfigAssignment) return;
+
+    try {
+      const rootId = assigningConfigAssignment.originalAssignmentId || assigningConfigAssignment.id.replace(/-class-.*$/, '');
+
+      if (mode === 'update_existing') {
+        for (const cls of classesToAssign) {
+          const existing = findExistingAssignmentForClass(assigningConfigAssignment, cls);
+          if (existing && existing.id) {
+            const patch: any = {
+              title: finalTitle,
+              startDate: assignStartDate,
+              assignedDate: assignStartDate,
+              dueDate: assignDueDate,
+              maxAttempts: assignMaxAttempts,
+              allowRepeat: assignMaxAttempts === 'Không giới hạn số lần luyện tập' || assignMaxAttempts !== '1 lần',
+              shuffleQuestions: assignShuffleQuestions,
+              shuffleOptions: assignShuffleOptions,
+              enableRealtimeLeaderboard: assignRealtimeLeaderboard,
+              updatedAt: new Date().toISOString()
+            };
+            if (db) {
+              await trackedSetDoc(doc(db, 'assignments', existing.id), patch, { merge: true });
+            }
+            onSaveAssignment({
+              ...existing,
+              ...patch
+            });
+          } else {
+            const singleClassId = `${rootId}-class-${cls.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+            const classRoster = getStudentsFromLocalStorage(cls) || generateDefaultClassRoster(cls, 38);
+            const newDoc: HomeworkAssignment = {
+              ...assigningConfigAssignment,
+              id: singleClassId,
+              originalAssignmentId: rootId,
+              title: finalTitle,
+              targetClass: cls,
+              targetClasses: [cls],
+              startDate: assignStartDate,
+              assignedDate: assignStartDate,
+              dueDate: assignDueDate,
+              maxAttempts: assignMaxAttempts,
+              allowRepeat: assignMaxAttempts === 'Không giới hạn số lần luyện tập' || assignMaxAttempts !== '1 lần',
+              shuffleQuestions: assignShuffleQuestions,
+              shuffleOptions: assignShuffleOptions,
+              enableRealtimeLeaderboard: assignRealtimeLeaderboard,
+              totalStudents: classRoster.length || 38,
+              completedCount: 0,
+              submissions: []
+            };
+            if (db) {
+              await trackedSetDoc(doc(db, 'assignments', singleClassId), newDoc);
+            }
+            onSaveAssignment(newDoc);
+          }
+        }
+        showToast(`✅ Đã cập nhật cài đặt bài đã giao cho các lớp (${classesToAssign.join(', ')}) thành công!`);
+        confetti({ particleCount: 50, spread: 60, origin: { y: 0.6 } });
+        setAssigningConfigAssignment(null);
+        setConflictAssignData(null);
+        return;
+      }
+
+      let assignTitleResolved = finalTitle;
+      let newRoundBaseId = rootId;
+      if (mode === 'create_new_round') {
+        const roundMatch = finalTitle.match(/\(Lượt (\d+)\)$/i);
+        const nextRound = roundMatch ? parseInt(roundMatch[1], 10) + 1 : 2;
+        assignTitleResolved = roundMatch ? finalTitle.replace(/\(Lượt \d+\)$/i, `(Lượt ${nextRound})`) : `${finalTitle} (Lượt 2)`;
+        newRoundBaseId = `${rootId}-round-${Date.now()}`;
+      }
+
+      for (const cls of classesToAssign) {
+        const singleClassId = `${newRoundBaseId}-class-${cls.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+        const classRoster = getStudentsFromLocalStorage(cls) || generateDefaultClassRoster(cls, 38);
+        const newAssignmentDoc: HomeworkAssignment = {
+          ...assigningConfigAssignment,
+          id: singleClassId,
+          originalAssignmentId: newRoundBaseId,
+          title: assignTitleResolved,
+          targetClass: cls,
+          targetClasses: [cls],
+          startDate: assignStartDate,
+          assignedDate: assignStartDate,
+          dueDate: assignDueDate,
+          maxAttempts: assignMaxAttempts,
+          allowRepeat: assignMaxAttempts === 'Không giới hạn số lần luyện tập' || assignMaxAttempts !== '1 lần',
+          shuffleQuestions: assignShuffleQuestions,
+          shuffleOptions: assignShuffleOptions,
+          enableRealtimeLeaderboard: assignRealtimeLeaderboard,
+          totalStudents: classRoster.length || 38,
+          completedCount: 0,
+          submissions: []
+        };
+        if (db) {
+          await trackedSetDoc(doc(db, 'assignments', singleClassId), newAssignmentDoc);
+        }
+        onSaveAssignment(newAssignmentDoc);
+      }
+
+      confetti({ particleCount: 60, spread: 70, origin: { y: 0.6 } });
+      showToast(`🚀 Đã giao bài tập thành công cho các lớp (${classesToAssign.join(', ')})!`);
+    } catch (err: any) {
+      console.error('Lỗi khi giao bài tập:', err);
+      showToast(`⚠️ Không thể lưu giao bài tập lên máy chủ: ${err?.message || String(err)}`);
+    } finally {
+      setAssigningConfigAssignment(null);
+      setConflictAssignData(null);
+    }
   };
 
   const handleConfirmAssignConfig = () => {
@@ -596,46 +924,45 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
       return;
     }
 
-    try {
-      const rootId = assigningConfigAssignment.originalAssignmentId || assigningConfigAssignment.id.replace(/-class-.*$/, '');
-
-      let totalStudentsSum = 0;
-      selectedAssignClasses.forEach((cls) => {
-        const classRoster = getStudentsFromLocalStorage(cls) || generateDefaultClassRoster(cls, 38);
-        totalStudentsSum += classRoster && classRoster.length > 0 ? classRoster.length : 35;
-      });
-
-      const firstCls = selectedAssignClasses[0];
-      const targetDigit = extractGradeDigit(firstCls) || extractGradeDigit(assigningConfigAssignment.grade) || '5';
-      const normalizedGrade = `Khối ${targetDigit}`;
-
-      // BẮT BUỘC CHỈ TẠO ĐÚNG 1 DOCUMENT duy nhất trên Firestore theo Yêu cầu 1
-      const masterAssignment: HomeworkAssignment = {
-        ...assigningConfigAssignment,
-        id: assigningConfigAssignment.id || rootId,
-        originalAssignmentId: rootId,
-        title: assignTitle.trim() || assigningConfigAssignment.title,
-        grade: normalizedGrade,
-        targetClass: selectedAssignClasses.join(', '),
-        targetClasses: selectedAssignClasses,
-        assignedDate: new Date().toLocaleDateString('vi-VN'),
-        dueDate: assignDueDate || assigningConfigAssignment.dueDate,
-        totalStudents: totalStudentsSum,
-        completedCount: assigningConfigAssignment.completedCount || 0,
-        submissions: assigningConfigAssignment.submissions || [],
-        enableRealtimeLeaderboard: assignRealtimeLeaderboard
-      };
-
-      onSaveAssignment(masterAssignment);
-
-      confetti({ particleCount: 60, spread: 70, origin: { y: 0.6 } });
-      showToast(`🚀 Đã giao bài tập thành công cho các lớp (${selectedAssignClasses.join(', ')}) với ĐÚNG 1 document duy nhất!`);
-    } catch (err: any) {
-      console.error('Lỗi khi giao bài tập:', err);
-      showToast(`⚠️ Không thể lưu giao bài tập lên máy chủ: ${err?.message || String(err)}`);
-    } finally {
-      setAssigningConfigAssignment(null);
+    const startMs = parseCustomDateTimeToMs(assignStartDate);
+    const dueMs = parseCustomDateTimeToMs(assignDueDate);
+    if (startMs > 0 && dueMs > 0 && dueMs <= startMs) {
+      alert('Thời điểm hết hạn làm bài phải sau thời điểm bắt đầu giao bài!');
+      return;
     }
+
+    // Check conflict: classes that were already assigned this homework
+    const conflicts: { className: string; submittedCount: number; totalCount: number; existingAssignment: HomeworkAssignment }[] = [];
+    selectedAssignClasses.forEach(cls => {
+      const existing = findExistingAssignmentForClass(assigningConfigAssignment, cls);
+      if (existing) {
+        const subs = Array.isArray(existing.submissions) ? existing.submissions.length : (existing.completedCount || 0);
+        const total = existing.totalStudents || getClassStudentCount(cls) || 40;
+        conflicts.push({
+          className: cls,
+          submittedCount: subs,
+          totalCount: total,
+          existingAssignment: existing
+        });
+      }
+    });
+
+    if (conflicts.length > 0) {
+      setConflictAssignData({
+        conflicts,
+        newTitle: assignTitle.trim() || assigningConfigAssignment.title,
+        selectedClasses: [...selectedAssignClasses],
+        startDate: assignStartDate,
+        dueDate: assignDueDate,
+        maxAttempts: assignMaxAttempts,
+        shuffleQuestions: assignShuffleQuestions,
+        shuffleOptions: assignShuffleOptions,
+        realtimeLeaderboard: assignRealtimeLeaderboard
+      });
+      return;
+    }
+
+    executeAssignStandard('create_or_update', assignTitle.trim() || assigningConfigAssignment.title, selectedAssignClasses);
   };
 
   // Local state for shared assignment IDs, persisted in localStorage
@@ -1194,6 +1521,16 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
           </h3>
 
           <div className="flex items-center gap-2 flex-wrap">
+            {isDebugMode && (
+              <button
+                onClick={() => setIsScanDuplicatesModalOpen(true)}
+                className="px-3.5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-sm transition-all"
+                title="Quét các bài tập giao trùng lặp và xem trước phương án gộp"
+              >
+                <Search className="w-4 h-4" />
+                <span>Quét bài giao trùng (Debug)</span>
+              </button>
+            )}
             <button
               onClick={() => setIsBankAssignmentModalOpen(true)}
               className="px-4 py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer shadow-sm transition-all"
@@ -1500,6 +1837,18 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                               {isAssignmentOwner(as) ? (
                                 <>
                                   <div className="py-1">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleOpenEditConfig(as);
+                                        setOpenActionMenuId(null);
+                                      }}
+                                      className="w-full px-3.5 py-2 text-left hover:bg-indigo-50 flex items-center gap-2.5 font-bold text-indigo-900 cursor-pointer"
+                                      title="Chỉnh sửa hạn nộp, lịch giao, tráo đề hoặc bật/tắt thi đấu trực tiếp"
+                                    >
+                                      <Settings className="w-4 h-4 text-indigo-600" /> ⚙️ Sửa cài đặt giao bài
+                                    </button>
+
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
@@ -3329,31 +3678,42 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                       </button>
                     </div>
 
-                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5 p-3.5 bg-slate-50 rounded-2xl border border-slate-200">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5 p-3.5 bg-slate-50 rounded-2xl border border-slate-200">
                       {currentGradeClasses.map((clsName) => {
                         const isChecked = selectedAssignClasses.includes(clsName);
+                        const existingForCls = assigningConfigAssignment ? findExistingAssignmentForClass(assigningConfigAssignment, clsName) : null;
+                        const existingSubs = existingForCls ? (Array.isArray(existingForCls.submissions) ? existingForCls.submissions.length : (existingForCls.completedCount || 0)) : 0;
+                        const existingTotal = existingForCls ? (existingForCls.totalStudents || getClassStudentCount(clsName) || 40) : 0;
+
                         return (
                           <label
                             key={clsName}
-                            className={`flex items-center gap-2 p-2.5 rounded-xl border text-xs font-bold cursor-pointer transition-all ${
+                            className={`flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 p-2.5 rounded-xl border text-xs font-bold cursor-pointer transition-all ${
                               isChecked
                                 ? 'bg-indigo-50 border-indigo-300 text-indigo-900 shadow-2xs'
                                 : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
                             }`}
                           >
-                            <input
-                              type="checkbox"
-                              checked={isChecked}
-                              onChange={(e) => {
-                                if (e.target.checked) {
-                                  setSelectedAssignClasses([...selectedAssignClasses, clsName]);
-                                } else {
-                                  setSelectedAssignClasses(selectedAssignClasses.filter((c) => c !== clsName));
-                                }
-                              }}
-                              className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
-                            />
-                            <span>{clsName}</span>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedAssignClasses([...selectedAssignClasses, clsName]);
+                                  } else {
+                                    setSelectedAssignClasses(selectedAssignClasses.filter((c) => c !== clsName));
+                                  }
+                                }}
+                                className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                              />
+                              <span>{clsName}</span>
+                            </div>
+                            {existingForCls && (
+                              <span className="text-[10px] bg-amber-100 text-amber-900 font-extrabold px-1.5 py-0.5 rounded border border-amber-300 shrink-0">
+                                Đã giao ({existingSubs}/{existingTotal} đã làm)
+                              </span>
+                            )}
                           </label>
                         );
                       })}
@@ -3372,7 +3732,8 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                   <DateTimePicker
                     value={assignStartDate}
                     onChange={setAssignStartDate}
-                    placeholder="MM/DD/YYYY hh:mm A"
+                    placeholder="DD/MM/YYYY HH:mm"
+                    format="dd/mm/yyyy HH:mm"
                   />
                   <p className="text-[11px] text-slate-400 font-medium">Thời điểm bài tập bắt đầu hiển thị cho học sinh</p>
                 </div>
@@ -3385,7 +3746,8 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                   <DateTimePicker
                     value={assignDueDate}
                     onChange={setAssignDueDate}
-                    placeholder="MM/DD/YYYY hh:mm A"
+                    placeholder="DD/MM/YYYY HH:mm"
+                    format="dd/mm/yyyy HH:mm"
                   />
                   <p className="text-[11px] text-slate-400 font-medium">Thời điểm hết hạn nộp bài rèn luyện</p>
                 </div>
@@ -3564,6 +3926,537 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
               >
                 <Send className="w-4 h-4" />
                 <span>Xác nhận Giao Bài</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: SỬA CÀI ĐẶT GIAO BÀI TẬP */}
+      {editingConfigAssignment && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-2xl w-full shadow-2xl border border-slate-200 overflow-hidden my-8 animate-in fade-in zoom-in-95 duration-150">
+            {/* Header */}
+            <div className="p-5 bg-gradient-to-r from-indigo-900 via-indigo-800 to-indigo-900 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-white/10 backdrop-blur-md flex items-center justify-center text-xl shadow-inner border border-white/20">
+                  ⚙️
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-white font-heading tracking-wide">
+                    Sửa Cài Đặt Giao Bài Tập
+                  </h3>
+                  <p className="text-xs text-indigo-200 font-medium">
+                    {editingConfigAssignment.title} • {editingConfigAssignment.grade || 'Khối 4'} • Môn {editingConfigAssignment.subject}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setEditingConfigAssignment(null)}
+                className="p-2 rounded-xl hover:bg-white/10 text-white/80 hover:text-white transition-all cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-6 space-y-5 max-h-[75vh] overflow-y-auto">
+              {/* Thống kê bài nộp hiện có */}
+              {(() => {
+                const groupList = getGroupAssignments(editingConfigAssignment, assignments);
+                const groupStats = groupList.map((item) => {
+                  const subsCount = Array.isArray(item.submissions) ? item.submissions.length : (item.completedCount || 0);
+                  const total = item.totalStudents || getClassStudentCount(item.targetClass || '') || 40;
+                  return {
+                    cls: item.targetClass || 'Chưa rõ',
+                    submitted: subsCount,
+                    total
+                  };
+                });
+                const totalSubmitted = groupStats.reduce((sum, s) => sum + s.submitted, 0);
+
+                return (
+                  <div className="p-4 bg-sky-50 border border-sky-200 rounded-2xl space-y-2 text-xs text-sky-950">
+                    <div className="flex items-center gap-2 font-bold text-sky-900">
+                      <Sparkles className="w-4 h-4 text-sky-600" />
+                      <span>Thông tin tiến độ nộp bài của học sinh ({totalSubmitted} bài đã nộp)</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      {groupStats.map((st, idx) => (
+                        <span key={idx} className="px-2.5 py-1 bg-white border border-sky-300 rounded-lg font-black text-sky-800 shadow-2xs">
+                          {st.cls}: {st.submitted}/{st.total} đã làm
+                        </span>
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-sky-700 font-medium">
+                      🔒 Toàn bộ nội dung câu hỏi, danh sách bài làm và điểm số của học sinh được bảo lưu 100% khi cập nhật cài đặt.
+                    </p>
+                  </div>
+                );
+              })()}
+
+              {/* Lên lịch & Đặt hạn làm bài */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-extrabold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                    <Clock className="w-4 h-4 text-emerald-600" />
+                    <span>Lên lịch giao bài</span>
+                  </label>
+                  <DateTimePicker
+                    value={editConfigStartDate}
+                    onChange={(val) => {
+                      setEditConfigStartDate(val);
+                      setEditConfigDateError(null);
+                    }}
+                    placeholder="DD/MM/YYYY HH:mm"
+                    format="dd/mm/yyyy HH:mm"
+                  />
+                  <p className="text-[11px] text-slate-400 font-medium">Thời điểm bài bắt đầu hiển thị</p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-extrabold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 text-amber-600" />
+                    <span>Đặt hạn làm bài</span>
+                  </label>
+                  <DateTimePicker
+                    value={editConfigDueDate}
+                    onChange={(val) => {
+                      setEditConfigDueDate(val);
+                      setEditConfigDateError(null);
+                    }}
+                    placeholder="DD/MM/YYYY HH:mm"
+                    format="dd/mm/yyyy HH:mm"
+                  />
+                  <p className="text-[11px] text-slate-400 font-medium">Thời điểm hết hạn nộp bài</p>
+                </div>
+              </div>
+
+              {editConfigDateError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs font-bold flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>{editConfigDateError}</span>
+                </div>
+              )}
+
+              {/* Quy chế luyện tập */}
+              <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+                <div className="text-xs font-extrabold text-slate-900 uppercase tracking-wider flex items-center gap-2">
+                  <RotateCcw className="w-4 h-4 text-indigo-600" />
+                  <span>Quy Chế Luyện Tập & Tráo Đề</span>
+                </div>
+
+                <div className="space-y-3 pt-1">
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-700 block">
+                      Số lần làm bài tối đa
+                    </label>
+                    <select
+                      value={editConfigMaxAttempts}
+                      onChange={(e) => setEditConfigMaxAttempts(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-white text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                    >
+                      <option value="Không giới hạn số lần luyện tập">Không giới hạn số lần luyện tập</option>
+                      <option value="1 lần">1 lần</option>
+                      <option value="2 lần">2 lần</option>
+                      <option value="3 lần">3 lần</option>
+                      <option value="5 lần">5 lần</option>
+                      <option value="10 lần">10 lần</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-2 pt-1">
+                    <label className="flex items-start gap-2.5 cursor-pointer text-xs font-bold text-slate-800 select-none">
+                      <input
+                        type="checkbox"
+                        checked={editConfigShuffleQuestions}
+                        onChange={(e) => setEditConfigShuffleQuestions(e.target.checked)}
+                        className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 cursor-pointer mt-0.5"
+                      />
+                      <div>
+                        <span>Tráo đổi thứ tự câu hỏi</span>
+                        <p className="text-[11px] text-slate-500 font-normal">Xáo trộn câu hỏi tự động đối với mỗi lượt làm</p>
+                      </div>
+                    </label>
+
+                    <label className="flex items-start gap-2.5 cursor-pointer text-xs font-bold text-slate-800 select-none">
+                      <input
+                        type="checkbox"
+                        checked={editConfigShuffleOptions}
+                        onChange={(e) => setEditConfigShuffleOptions(e.target.checked)}
+                        className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 cursor-pointer mt-0.5"
+                      />
+                      <div>
+                        <span>Tráo đổi thứ tự phương án chọn</span>
+                        <p className="text-[11px] text-slate-500 font-normal">Xáo trộn thứ tự các đáp án A, B, C, D</p>
+                      </div>
+                    </label>
+
+                    <label className="flex items-start gap-2.5 cursor-pointer text-xs font-bold text-slate-800 select-none">
+                      <input
+                        type="checkbox"
+                        checked={editConfigRealtimeLeaderboard}
+                        onChange={(e) => setEditConfigRealtimeLeaderboard(e.target.checked)}
+                        className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300 cursor-pointer mt-0.5"
+                      />
+                      <div>
+                        <span>Bật chế độ thi đấu trực tiếp (Real-time Leaderboard)</span>
+                        <p className="text-[11px] text-slate-500 font-normal">Hiển thị bảng xếp hạng trực tiếp cho học sinh</p>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              {/* Phạm vi xếp hạng Real-time Leaderboard */}
+              {editConfigRealtimeLeaderboard && (
+                <div className="p-4 rounded-2xl bg-amber-50/80 border border-amber-200 space-y-2.5 text-xs text-amber-950">
+                  <div className="font-extrabold uppercase tracking-wide flex items-center gap-1.5 text-amber-900">
+                    <Trophy className="w-4 h-4 text-amber-600" />
+                    <span>Phạm vi tính điểm Bảng Xếp Hạng:</span>
+                  </div>
+                  <div className="space-y-2 pl-1">
+                    <label className="flex items-center gap-2 cursor-pointer font-bold">
+                      <input
+                        type="radio"
+                        name="leaderboardScope"
+                        value="all"
+                        checked={editConfigLeaderboardScope === 'all'}
+                        onChange={() => setEditConfigLeaderboardScope('all')}
+                        className="w-4 h-4 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                      />
+                      <span>Tất cả các lượt nộp từ trước đến nay (Lấy điểm cao nhất của mỗi học sinh)</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer font-bold">
+                      <input
+                        type="radio"
+                        name="leaderboardScope"
+                        value="since_enabled"
+                        checked={editConfigLeaderboardScope === 'since_enabled'}
+                        onChange={() => setEditConfigLeaderboardScope('since_enabled')}
+                        className="w-4 h-4 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                      />
+                      <span>Chỉ tính các lượt nộp bài sau khi bật chế độ này</span>
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              {/* Áp dụng cho cả nhóm bài tập nếu có nhiều lớp */}
+              {(() => {
+                const groupList = getGroupAssignments(editingConfigAssignment, assignments);
+                if (groupList.length <= 1) return null;
+                const classesInGroup = groupList.map((g) => g.targetClass).filter(Boolean).join(', ');
+
+                return (
+                  <div className="p-3.5 bg-indigo-50 rounded-2xl border border-indigo-200">
+                    <label className="flex items-center gap-2.5 cursor-pointer text-xs font-bold text-indigo-950 select-none">
+                      <input
+                        type="checkbox"
+                        checked={editConfigApplyToGroup}
+                        onChange={(e) => setEditConfigApplyToGroup(e.target.checked)}
+                        className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-indigo-300 cursor-pointer"
+                      />
+                      <span>
+                        Áp dụng cài đặt này đồng bộ cho tất cả các lớp trong đợt giao ({classesInGroup})
+                      </span>
+                    </label>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setEditingConfigAssignment(null)}
+                className="px-4 py-2.5 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-200 transition-all cursor-pointer"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveEditConfig}
+                className="px-6 py-2.5 rounded-xl text-xs font-extrabold bg-indigo-600 hover:bg-indigo-700 text-white transition-all shadow-md shadow-indigo-200 flex items-center gap-2 cursor-pointer active:scale-95"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Lưu Cài Đặt</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: CẢNH BÁO XUNG ĐỘT GIAO BÀI ĐÃ TỒN TẠI */}
+      {conflictAssignData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl max-w-lg w-full shadow-2xl border border-amber-200 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            {/* Header */}
+            <div className="p-5 bg-gradient-to-r from-amber-600 to-amber-700 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-white/20 backdrop-blur-md flex items-center justify-center text-xl">
+                  ⚠️
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-white font-heading">
+                    Cảnh Báo: Lớp Đã Được Giao Bài Tập Này
+                  </h3>
+                  <p className="text-xs text-amber-100 font-medium">Phát hiện bài giao đã tồn tại trong hệ thống</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setConflictAssignData(null)}
+                className="p-1.5 rounded-xl hover:bg-white/20 text-white/80 hover:text-white transition-all cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-6 space-y-4 text-xs">
+              <div className="text-slate-700 font-medium leading-relaxed">
+                Các lớp sau đã được giao bài tập này từ trước:
+              </div>
+
+              <div className="space-y-2">
+                {conflictAssignData.conflicts.map((c, idx) => (
+                  <div key={idx} className="p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-center justify-between">
+                    <span className="font-extrabold text-amber-950">{c.className}</span>
+                    <span className="px-2.5 py-1 bg-white border border-amber-300 rounded-lg font-black text-amber-800 shadow-2xs">
+                      {c.submittedCount}/{c.totalCount} học sinh đã làm
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <p className="text-slate-600 leading-relaxed">
+                Để bảo vệ điểm số và không gây trùng bài trên màn hình học sinh, vui lòng chọn hướng xử lý:
+              </p>
+
+              {/* 3 Choices */}
+              <div className="space-y-2.5 pt-1">
+                <button
+                  onClick={() => executeAssignStandard('update_existing', conflictAssignData.newTitle, conflictAssignData.selectedClasses)}
+                  className="w-full p-3.5 rounded-xl border-2 border-indigo-600 bg-indigo-50/70 hover:bg-indigo-100 text-left transition-all cursor-pointer group flex items-start gap-3"
+                >
+                  <div className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">
+                    1
+                  </div>
+                  <div>
+                    <div className="font-extrabold text-indigo-950 group-hover:text-indigo-800">
+                      Cập nhật cài đặt bài đã giao (Khuyến nghị)
+                    </div>
+                    <div className="text-[11px] text-slate-500 font-normal mt-0.5">
+                      Cập nhật hạn nộp và cài đặt trực tiếp vào bài đã giao, bảo lưu 100% bài làm hiện có của học sinh.
+                    </div>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => executeAssignStandard('create_new_round', conflictAssignData.newTitle, conflictAssignData.selectedClasses)}
+                  className="w-full p-3.5 rounded-xl border border-slate-200 hover:border-indigo-300 hover:bg-slate-50 text-left transition-all cursor-pointer group flex items-start gap-3"
+                >
+                  <div className="w-5 h-5 rounded-full bg-slate-200 text-slate-700 flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">
+                    2
+                  </div>
+                  <div>
+                    <div className="font-extrabold text-slate-900 group-hover:text-indigo-900">
+                      Giao thêm một lượt mới
+                    </div>
+                    <div className="text-[11px] text-slate-500 font-normal mt-0.5">
+                      Tạo bài giao đợt mới độc lập (tự động gắn thêm "(Lượt 2)" vào tiêu đề).
+                    </div>
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setConflictAssignData(null)}
+                className="px-5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-200 transition-all cursor-pointer"
+              >
+                Hủy bỏ
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: QUÉT BÀI GIAO TRÙNG LẶP (DEBUG TOOL: ?debug=1) */}
+      {isScanDuplicatesModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-4xl w-full shadow-2xl border border-slate-200 overflow-hidden my-8 animate-in fade-in zoom-in-95 duration-150">
+            {/* Header */}
+            <div className="p-5 bg-gradient-to-r from-rose-900 via-rose-800 to-rose-900 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-white/10 backdrop-blur-md flex items-center justify-center text-xl border border-white/20">
+                  🔍
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-white font-heading tracking-wide">
+                    Quét Bài Giao Trùng Lặp & Xem Trước Phương Án Gộp
+                  </h3>
+                  <p className="text-xs text-rose-200 font-medium">
+                    Chế độ xem trước (Dry-run preview) • An toàn tuyệt đối không ghi đè dữ liệu
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsScanDuplicatesModalOpen(false)}
+                className="p-2 rounded-xl hover:bg-white/10 text-white/80 hover:text-white transition-all cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
+              {(() => {
+                // Nhóm bài tập theo chữ ký ngữ nghĩa (Tiêu đề + Môn + Khối)
+                const groupsMap = new Map<string, HomeworkAssignment[]>();
+                assignments.forEach((as) => {
+                  const cleanTitle = (as.title || '')
+                    .trim()
+                    .toLowerCase()
+                    .replace(/^bài tập tự luyện:\s*/i, '')
+                    .replace(/^bài tập:\s*/i, '')
+                    .replace(/\s+/g, ' ');
+                  const key = `${cleanTitle}::${(as.grade || '').trim().toLowerCase()}::${(as.subject || '').trim().toLowerCase()}`;
+                  if (!groupsMap.has(key)) groupsMap.set(key, []);
+                  groupsMap.get(key)!.push(as);
+                });
+
+                const duplicateGroups = Array.from(groupsMap.entries()).filter(([_, list]) => list.length > 1);
+
+                if (duplicateGroups.length === 0) {
+                  return (
+                    <div className="p-8 text-center space-y-3">
+                      <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto text-xl">
+                        ✓
+                      </div>
+                      <h4 className="font-extrabold text-slate-800 text-sm">Hệ thống bài tập hoàn toàn sạch sẽ!</h4>
+                      <p className="text-xs text-slate-500">Không tìm thấy bài tập nào bị trùng lặp.</p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="space-y-6">
+                    <p className="text-xs text-slate-600 font-medium">
+                      Tìm thấy <strong className="text-rose-600 font-bold">{duplicateGroups.length} nhóm bài tập</strong> có nhiều bản ghi song song trong Firestore:
+                    </p>
+
+                    {duplicateGroups.map(([groupKey, docList], gIdx) => {
+                      const firstDoc = docList[0];
+                      // Phân loại: bản ghi đơn lớp vs bản ghi đa lớp
+                      const singleClassDocs = docList.filter((d) => d.targetClass && !d.targetClass.includes(','));
+                      const multiClassDocs = docList.filter((d) => d.targetClass && d.targetClass.includes(','));
+
+                      return (
+                        <div key={gIdx} className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-4">
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-2">
+                            <div>
+                              <h4 className="font-extrabold text-sm text-slate-900">{firstDoc.title}</h4>
+                              <p className="text-[11px] text-slate-500 font-medium">
+                                {firstDoc.grade} • Môn {firstDoc.subject} • Tổng cộng {docList.length} bản ghi Firestore
+                              </p>
+                            </div>
+                            <span className="px-2.5 py-1 bg-amber-100 text-amber-800 font-black text-[11px] rounded-lg border border-amber-300 w-fit">
+                              Trùng lặp ({docList.length} docs)
+                            </span>
+                          </div>
+
+                          {/* Table of documents */}
+                          <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                            <table className="w-full text-left text-xs">
+                              <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
+                                <tr>
+                                  <th className="py-2.5 px-3">Mã Document ID</th>
+                                  <th className="py-2.5 px-3">Lớp Mục Tiêu</th>
+                                  <th className="py-2.5 px-3 text-center">Số bài đã nộp</th>
+                                  <th className="py-2.5 px-3 text-center">Real-time Leaderboard</th>
+                                  <th className="py-2.5 px-3">Hạn nộp</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100">
+                                {docList.map((docItem) => {
+                                  const subsCount = Array.isArray(docItem.submissions) ? docItem.submissions.length : (docItem.completedCount || 0);
+                                  const isMulti = docItem.targetClass && docItem.targetClass.includes(',');
+
+                                  return (
+                                    <tr key={docItem.id} className={isMulti ? 'bg-amber-50/50' : ''}>
+                                      <td className="py-2.5 px-3 font-mono text-[11px] text-slate-600 font-bold">
+                                        {docItem.id}
+                                      </td>
+                                      <td className="py-2.5 px-3 font-bold text-slate-800">
+                                        <span className={`px-2 py-0.5 rounded text-[11px] ${
+                                          isMulti ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-indigo-50 text-indigo-900 border border-indigo-200'
+                                        }`}>
+                                          {docItem.targetClass || '-'}
+                                        </span>
+                                      </td>
+                                      <td className="py-2.5 px-3 text-center font-extrabold text-slate-900">
+                                        {subsCount} bài
+                                      </td>
+                                      <td className="py-2.5 px-3 text-center font-bold">
+                                        {docItem.enableRealtimeLeaderboard ? (
+                                          <span className="text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded text-[10px]">Bật</span>
+                                        ) : (
+                                          <span className="text-slate-400 bg-slate-100 px-2 py-0.5 rounded text-[10px]">Tắt</span>
+                                        )}
+                                      </td>
+                                      <td className="py-2.5 px-3 text-slate-600 font-medium text-[11px]">
+                                        {docItem.dueDate || '-'}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+
+                          {/* Dry-run Merge Preview */}
+                          <div className="p-3.5 bg-emerald-50/80 border border-emerald-200 rounded-xl space-y-1.5 text-xs">
+                            <div className="font-extrabold text-emerald-950 flex items-center gap-1.5">
+                              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                              <span>Phương án chuẩn hóa đề xuất (Dry-run preview):</span>
+                            </div>
+                            <ul className="list-disc pl-5 space-y-1 text-slate-700 text-[11px]">
+                              {singleClassDocs.map((sc) => (
+                                <li key={sc.id}>
+                                  Giữ lại bản ghi chuẩn lớp <strong className="text-slate-900">{sc.targetClass}</strong>: mã <code className="text-indigo-800 font-mono">{sc.id}</code> ({Array.isArray(sc.submissions) ? sc.submissions.length : sc.completedCount || 0} bài nộp).
+                                </li>
+                              ))}
+                              {multiClassDocs.map((mc) => (
+                                <li key={mc.id} className="text-amber-800">
+                                  Bản ghi lai ghép nhiều lớp <code className="font-mono">{mc.id}</code>: Đã được phía học sinh tự động khử trùng lặp (không hiển thị thừa cho học sinh).
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+              <span className="text-[11px] text-slate-500 font-medium">
+                ℹ️ Công cụ chỉ hiển thị bản xem trước chẩn đoán, không tự ý xóa dữ liệu máy chủ.
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsScanDuplicatesModalOpen(false)}
+                className="px-6 py-2 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-900 text-white transition-all cursor-pointer"
+              >
+                Đóng
               </button>
             </div>
           </div>

@@ -339,20 +339,51 @@ export function isTargetingStudent(
     return isSameGrade;
   }
 
-  const normCurrent = normalizeClassKey(resolvedCls); // e.g. "3d"
-  const rawCurrent = (resolvedCls || '').trim().toLowerCase().replace(/\s+/g, ''); // e.g. "lớp3d"
+  const normCurrent = normalizeClassKey(resolvedCls); // e.g. "3d", "4c"
+  const rawCurrent = (resolvedCls || '').trim().toLowerCase().replace(/\s+/g, ''); // e.g. "lớp3d", "lớp4c"
 
+  // Kiểm tra xem danh sách mục tiêu có chỉ định lớp cụ thể hay không (ví dụ "4C", "3D", "Lớp 4C")
+  const isSpecificClassCandidate = (c: string) => {
+    const norm = normalizeClassKey(c);
+    if (/^[1-5][a-z0-9]+/i.test(norm)) return true;
+    const raw = c.trim().toLowerCase().replace(/\s+/g, '');
+    if (/lớp[1-5][a-z0-9]+/i.test(raw)) return true;
+    return false;
+  };
+
+  const hasSpecificClassInCandidates = validCandidates.some(isSpecificClassCandidate);
+
+  // Nếu bài đã có lớp mục tiêu cụ thể: TUYỆT ĐỐI KHÔNG dự phòng theo khối, chỉ khớp đúng lớp học sinh
+  if (hasSpecificClassInCandidates) {
+    for (const candidate of validCandidates) {
+      const normTarget = normalizeClassKey(candidate);
+      const rawTarget = candidate.trim().toLowerCase().replace(/\s+/g, '');
+
+      // 1. So khớp chuẩn hóa chính xác (ví dụ "4c" === "4c" hoặc "lớp 4c" === "4c")
+      if (normTarget && normCurrent && normTarget === normCurrent) {
+        return true;
+      }
+
+      // 2. So khớp trực tiếp chuỗi lớp
+      if (rawTarget === rawCurrent || rawTarget === `lớp${normCurrent}` || `lớp${normTarget}` === rawCurrent) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Trường hợp bài tập giao cho toàn khối hoặc không có lớp cụ thể:
   for (const candidate of validCandidates) {
-    const normTarget = normalizeClassKey(candidate); // e.g. "3d"
-    const rawTarget = candidate.trim().toLowerCase().replace(/\s+/g, ''); // e.g. "lớp3d"
+    const normTarget = normalizeClassKey(candidate);
+    const rawTarget = candidate.trim().toLowerCase().replace(/\s+/g, '');
 
-    // 1. So khớp chuẩn hóa chính xác (ví dụ "3d" === "3d" hoặc "lớp 3d" === "3d")
+    // 1. So khớp chuẩn hóa chính xác
     if (normTarget && normCurrent && normTarget === normCurrent) {
       return true;
     }
 
-    // 2. So khớp trực tiếp chuỗi hoặc bao hàm
-    if (rawTarget === rawCurrent || rawTarget.includes(rawCurrent) || rawCurrent.includes(rawTarget)) {
+    // 2. So khớp trực tiếp chuỗi
+    if (rawTarget === rawCurrent) {
       return true;
     }
 
@@ -375,7 +406,7 @@ export function isTargetingStudent(
   if (isSameGrade) {
     for (const candidate of validCandidates) {
       const rawTarget = candidate.trim().toLowerCase().replace(/\s+/g, '');
-      if (rawTarget.includes('khối') || rawTarget.includes('khoi') || rawTarget.includes('k') || rawTarget === '') {
+      if (rawTarget.includes('khối') || rawTarget.includes('khoi') || rawTarget === '') {
         return true;
       }
     }

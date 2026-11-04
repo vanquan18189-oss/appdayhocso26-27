@@ -239,6 +239,14 @@ export interface HomeworkAssignment {
   createdAt: string;
   originalAssignmentId?: string;
   enableRealtimeLeaderboard?: boolean;
+  startDate?: string;
+  maxAttempts?: string;
+  allowRepeat?: boolean;
+  shuffleQuestions?: boolean;
+  shuffleOptions?: boolean;
+  leaderboardScope?: 'all' | 'since_enabled';
+  leaderboardEnabledAt?: string;
+  groupId?: string;
 }
 
 export type GameType = 'golden_bell' | 'speed_quiz' | 'lucky_wheel' | 'flashcards';

@@ -7,6 +7,7 @@ interface DateTimePickerProps {
   placeholder?: string;
   className?: string;
   disabled?: boolean;
+  format?: 'dd/mm/yyyy HH:mm' | 'MM/DD/YYYY hh:mm A';
 }
 
 const MONTH_NAMES_EN = [
@@ -22,14 +23,15 @@ const MONTH_NAMES_VI = [
 export const DateTimePicker: React.FC<DateTimePickerProps> = ({
   value,
   onChange,
-  placeholder = 'MM/DD/YYYY hh:mm A',
+  placeholder = 'DD/MM/YYYY HH:mm',
   className = '',
-  disabled = false
+  disabled = false,
+  format = 'dd/mm/yyyy HH:mm'
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Parse initial date from string value like "09/03/2026 12:45 PM"
+  // Parse initial date from string value like "09/03/2026 12:45 PM" or "23/11/2026 14:00" or ISO
   const parseDateString = (valStr: string) => {
     if (!valStr) {
       const now = new Date();
@@ -43,17 +45,62 @@ export const DateTimePicker: React.FC<DateTimePickerProps> = ({
       };
     }
 
-    // Try parsing format "MM/DD/YYYY hh:mm A" or "MM/DD/YYYY hh:mm:ss"
+    // 1. Check ISO format "YYYY-MM-DDTHH:mm"
+    const isoMatch = valStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})[T\s](\d{1,2}):(\d{1,2})/);
+    if (isoMatch) {
+      const y = parseInt(isoMatch[1], 10);
+      const m = parseInt(isoMatch[2], 10) - 1;
+      const d = parseInt(isoMatch[3], 10);
+      let h24 = parseInt(isoMatch[4], 10);
+      const min = parseInt(isoMatch[5], 10);
+      const p = h24 >= 12 ? 'PM' : 'AM';
+      let h = h24 % 12 || 12;
+      return { year: y, month: Math.max(0, Math.min(11, m)), day: d, hour: h, minute: min, period: p };
+    }
+
+    // 2. Check format "DD/MM/YYYY HH:mm" or "MM/DD/YYYY hh:mm A"
     const match = valStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{1,2})(?:\s*(AM|PM))?)?/i);
     if (match) {
-      const m = parseInt(match[1], 10) - 1;
-      const d = parseInt(match[2], 10);
+      const p1 = parseInt(match[1], 10);
+      const p2 = parseInt(match[2], 10);
       const y = parseInt(match[3], 10);
-      let h = match[4] ? parseInt(match[4], 10) : 12;
+      let rawH = match[4] ? parseInt(match[4], 10) : 12;
       const min = match[5] ? parseInt(match[5], 10) : 0;
-      const p = match[6] ? match[6].toUpperCase() : (h >= 12 ? 'PM' : 'AM');
-      if (h > 12) h = h % 12 || 12;
-      return { year: y, month: Math.max(0, Math.min(11, m)), day: d, hour: Math.max(1, Math.min(12, h)), minute: Math.max(0, Math.min(59, min)), period: p === 'PM' ? 'PM' : 'AM' };
+      const hasAmPm = Boolean(match[6]);
+      const ampm = match[6] ? match[6].toUpperCase() : null;
+
+      // Determine day and month
+      let d = p1;
+      let m = p2 - 1;
+      if (format === 'MM/DD/YYYY hh:mm A' && p1 <= 12 && p2 > 12) {
+        m = p1 - 1;
+        d = p2;
+      } else if (p1 > 12 && p2 <= 12) {
+        d = p1;
+        m = p2 - 1;
+      } else if (format === 'MM/DD/YYYY hh:mm A') {
+        m = p1 - 1;
+        d = p2;
+      }
+
+      let p: 'AM' | 'PM' = 'AM';
+      let h = rawH;
+      if (hasAmPm) {
+        p = ampm === 'PM' ? 'PM' : 'AM';
+        if (h > 12) h = h % 12 || 12;
+      } else {
+        p = rawH >= 12 ? 'PM' : 'AM';
+        h = rawH % 12 || 12;
+      }
+
+      return {
+        year: y,
+        month: Math.max(0, Math.min(11, m)),
+        day: d,
+        hour: Math.max(1, Math.min(12, h)),
+        minute: Math.max(0, Math.min(59, min)),
+        period: p
+      };
     }
 
     // Fallback standard Date
@@ -121,8 +168,18 @@ export const DateTimePicker: React.FC<DateTimePickerProps> = ({
     const mm = String(m + 1).padStart(2, '0');
     const dd = String(d).padStart(2, '0');
     const yyyy = String(y);
-    const hh = String(h).padStart(2, '0');
     const minStr = String(min).padStart(2, '0');
+
+    if (format === 'dd/mm/yyyy HH:mm') {
+      let h24 = h;
+      if (p === 'PM' && h < 12) h24 = h + 12;
+      if (p === 'AM' && h === 12) h24 = 0;
+      const h24Str = String(h24).padStart(2, '0');
+      onChange(`${dd}/${mm}/${yyyy} ${h24Str}:${minStr}`);
+      return;
+    }
+
+    const hh = String(h).padStart(2, '0');
     const formatted = `${mm}/${dd}/${yyyy} ${hh}:${minStr} ${p}`;
     onChange(formatted);
   };

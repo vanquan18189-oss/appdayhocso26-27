@@ -531,7 +531,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
 
   // Phân loại dữ liệu độc lập: loại trừ các bài giảng E-Learning, lọc theo lớp học và khử trùng lặp triệt để
   const todoAssignments = useMemo(() => {
-    // 1. Loại trừ e-learning và lọc theo lớp học
+    // 1. Loại trừ e-learning và lọc theo đúng lớp học sinh
     const filtered = (liveAssignments || []).filter((as) => {
       if (!as || !as.id) return false;
       const itemType = ((as as any).type || (as as any).category || (as as any).contentType || '').toLowerCase();
@@ -539,18 +539,47 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
         return false;
       }
 
-      if (!isPreviewMode && !isTargetingStudent(as.targetClass, as.grade, studentClass, studentGrade)) {
+      if (!isPreviewMode && !isTargetingStudent(as.targetClass, as.grade, studentClass, studentGrade, {
+        targetClasses: (as as any).targetClasses,
+        classId: (as as any).classId,
+        classes: (as as any).classes,
+        assignedClasses: (as as any).assignedClasses
+      })) {
         return false;
       }
       return true;
     });
 
-    // 2. Khử trùng lặp theo ID và chữ ký ngữ nghĩa (title + subject + grade + class + dueDate)
+    // Sắp xếp bài tập ưu tiên bài khớp chính xác với lớp học sinh hoặc bài học sinh đã nộp
+    const sortedFiltered = [...filtered].sort((a, b) => {
+      // Ưu tiên bài mà học sinh hiện tại đã có bài nộp
+      const aHasSub = Array.isArray(a.submissions) && a.submissions.some((s: any) => 
+        (effectiveUserId && (s.studentId === effectiveUserId || s.code === effectiveUserId || s.studentCode === effectiveUserId))
+      );
+      const bHasSub = Array.isArray(b.submissions) && b.submissions.some((s: any) => 
+        (effectiveUserId && (s.studentId === effectiveUserId || s.code === effectiveUserId || s.studentCode === effectiveUserId))
+      );
+      if (aHasSub && !bHasSub) return -1;
+      if (!aHasSub && bHasSub) return 1;
+
+      // Ưu tiên bài gán chính xác duy nhất lớp học sinh hơn là gán chuỗi nhiều lớp
+      const aIsExactClass = (a.targetClass || '').trim().toLowerCase() === (studentClass || '').trim().toLowerCase();
+      const bIsExactClass = (b.targetClass || '').trim().toLowerCase() === (studentClass || '').trim().toLowerCase();
+      if (aIsExactClass && !bIsExactClass) return -1;
+      if (!aIsExactClass && bIsExactClass) return 1;
+
+      // Ưu tiên bài có completedCount hoặc submissions nhiều hơn
+      const aSubs = (a.submissions?.length || a.completedCount || 0);
+      const bSubs = (b.submissions?.length || b.completedCount || 0);
+      return bSubs - aSubs;
+    });
+
+    // 2. Khử trùng lặp theo ID và nhóm bài tập (root ID hoặc chữ ký tiêu đề + môn + khối)
     const seenIds = new Set<string>();
     const seenKeys = new Set<string>();
     const cleanList: HomeworkAssignment[] = [];
 
-    filtered.forEach(as => {
+    sortedFiltered.forEach(as => {
       if (seenIds.has(as.id)) return;
       const cleanTitle = (as.title || '')
         .trim()
@@ -558,18 +587,20 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
         .replace(/^bài tập tự luyện:\s*/i, '')
         .replace(/^bài tập:\s*/i, '')
         .replace(/\s+/g, ' ');
-      const clsKey = (as.targetClass || '').trim().toLowerCase().replace(/\s+/g, '');
-      const semanticKey = `${cleanTitle}__${as.subject || ''}__${as.grade || ''}__${clsKey}__${as.dueDate || ''}`;
+      
+      const rootId = as.originalAssignmentId || (as as any).groupId || as.id.replace(/-class-.*$/, '');
+      const semanticKey = `${cleanTitle}__${(as.subject || '').trim().toLowerCase()}__${(as.grade || '').trim().toLowerCase()}`;
+      const groupKey = rootId && rootId !== as.id ? `root::${rootId}` : `semantic::${semanticKey}`;
 
-      if (seenKeys.has(semanticKey)) return;
+      if (seenKeys.has(groupKey)) return;
 
       seenIds.add(as.id);
-      seenKeys.add(semanticKey);
+      seenKeys.add(groupKey);
       cleanList.push(as);
     });
 
     return cleanList;
-  }, [liveAssignments, studentClass, studentGrade, isPreviewMode]);
+  }, [liveAssignments, studentClass, studentGrade, isPreviewMode, effectiveUserId]);
 
   const historySubmissions = useMemo(() => {
     const list = (assignmentHistory || []).filter((sub) => {
