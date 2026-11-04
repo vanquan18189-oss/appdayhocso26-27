@@ -816,17 +816,17 @@ export function exportExamToExcel(exam: ExamPaper) {
     questionHeaders.push(`Câu ${i}`);
   }
 
-  const headers = [
+  const headersPage1 = [
     'STT',
-    'Mã Học Sinh',
-    'Tên Học Sinh',
-    'Lớp',
-    'Ngày Sinh',
-    'Trạng Thái',
+    'Mã HS',
+    'Họ và tên',
+    'Trạng thái',
     ...questionHeaders,
-    'Tổng điểm',
+    'Điểm',
+    'Điểm tối đa',
     'Số lần làm',
-    'Thời gian nộp'
+    'Thời gian nộp',
+    'Ghi chú chấm'
   ];
 
   const targetClasses = exam.targetClass ? exam.targetClass.split(',').map(c => c.trim()).filter(Boolean) : ['Lớp 3C'];
@@ -840,15 +840,13 @@ export function exportExamToExcel(exam: ExamPaper) {
       stt: st.stt || (idx + 1),
       code: formatStandardStudentCode(st.code, cleanClass, st.stt || (idx + 1)),
       name: st.name || st.fullName || `Học sinh ${idx + 1}`,
-      fullName: st.fullName || st.name || `Học sinh ${idx + 1}`,
-      dob: st.dob || st.birthday || ''
+      fullName: st.fullName || st.name || `Học sinh ${idx + 1}`
     }));
     const classRoster = sortStudentsByName(unSortedRoster, 'asc').map((st, idx) => ({
       ...st,
       stt: idx + 1
     }));
 
-    // Retrieve authentic completion stats using unified getExamCompletion
     const completionStats = getExamCompletion(exam.id, className);
     const subMap = new Map<string, any>();
     completionStats.validSubmissions.forEach(sub => {
@@ -856,7 +854,34 @@ export function exportExamToExcel(exam: ExamPaper) {
       if (codeKey) subMap.set(codeKey, sub);
     });
 
-    const sheetData: any[][] = [headers];
+    const sheetDataPage1: any[][] = [headersPage1];
+
+    const headersPage2 = [
+      'STT',
+      'Mã HS',
+      'Họ và tên',
+      ...questionHeaders
+    ];
+
+    const correctAnswersRow = ['', '', 'Đáp án đúng'];
+    (exam.questions || []).forEach((q: any) => {
+      if (q.correctAnswer !== undefined) {
+        correctAnswersRow.push(String(q.correctAnswer));
+      } else if (q.matchingPairs && Array.isArray(q.matchingPairs)) {
+        correctAnswersRow.push(q.matchingPairs.map((p: any) => `${p.left || p.term} → ${p.right || p.definition}`).join('; '));
+      } else {
+        correctAnswersRow.push('A');
+      }
+    });
+
+    const sheetDataPage2: any[][] = [
+      headersPage2,
+      correctAnswersRow
+    ];
+
+    let totalClassScore = 0;
+    let submittedCount = 0;
+    const questionCorrectCounts = Array(numQuestions).fill(0);
 
     classRoster.forEach((student, index) => {
       const stt = student.stt || (index + 1);
@@ -864,52 +889,111 @@ export function exportExamToExcel(exam: ExamPaper) {
       const sub = subMap.get(studentCode.toUpperCase());
       const isSubmitted = Boolean(sub);
 
-      const rowData: any[] = [
+      const rowPage1: any[] = [
         stt,
         studentCode,
         student.fullName,
-        stdClassName,
-        student.dob || '',
-        isSubmitted ? 'Đã nộp bài' : 'Chưa nộp bài'
+        isSubmitted ? 'Đã nộp bài' : 'Chưa làm'
       ];
 
+      const rowPage2: any[] = [
+        stt,
+        studentCode,
+        student.fullName
+      ];
+
+      let studentScore = 0;
       for (let i = 0; i < numQuestions; i++) {
+        const qItem = exam.questions && exam.questions[i];
         if (isSubmitted && sub?.answers) {
           const ans = sub.answers[i];
-          if (ans !== undefined && ans !== null) {
-            rowData.push(typeof ans === 'object' ? JSON.stringify(ans) : String(ans));
+          let isCorrect = false;
+
+          if (ans !== undefined && ans !== null && qItem) {
+            const correctAnsStr = String(qItem.correctAnswer || '').trim().toUpperCase();
+            if (typeof ans === 'number') {
+              const letter = ['A', 'B', 'C', 'D'][ans] || String(ans);
+              rowPage2.push(letter);
+              const correctIdx = ['A', 'B', 'C', 'D'].indexOf(correctAnsStr);
+              isCorrect = letter === correctAnsStr || (correctIdx !== -1 && Number(ans) === correctIdx);
+            } else if (typeof ans === 'string') {
+              rowPage2.push(ans);
+              isCorrect = ans.trim().toUpperCase() === correctAnsStr;
+            } else if (qItem.matchingPairs) {
+              if (typeof ans === 'object' && ans !== null) {
+                const parts = Object.entries(ans).map(([k, v]) => `${k} → ${v}`).join('; ');
+                rowPage2.push(parts);
+              } else {
+                rowPage2.push(String(ans));
+              }
+              isCorrect = true;
+            } else {
+              rowPage2.push(String(ans));
+              isCorrect = Boolean(ans);
+            }
           } else {
-            rowData.push('Đã làm');
+            rowPage2.push('');
+          }
+
+          if (isCorrect) {
+            rowPage1.push('✓');
+            questionCorrectCounts[i]++;
+            studentScore += 1;
+          } else {
+            rowPage1.push('✗');
           }
         } else {
-          rowData.push('Chưa làm');
+          rowPage1.push('');
+          rowPage2.push('Chưa làm');
         }
       }
 
-      const rawScore = isSubmitted ? (sub.score !== undefined ? sub.score : sub.totalScore) : null;
-      let displayScore = 'Chưa thi';
-      if (rawScore !== null && rawScore !== undefined) {
-        displayScore = typeof rawScore === 'number' ? formatTotalScore(rawScore) : String(rawScore);
+      const rawScore = isSubmitted ? (sub.score !== undefined ? sub.score : studentScore) : 0;
+      if (isSubmitted) {
+        totalClassScore += rawScore;
+        submittedCount++;
       }
 
-      rowData.push(
-        displayScore,
+      rowPage1.push(
+        rawScore,
+        numQuestions,
         isSubmitted ? (sub.attempts || 1) : 0,
-        isSubmitted ? formatSubmissionDateTime(sub.submittedAt || sub.submittedTime || '') : ''
+        isSubmitted ? formatSubmissionDateTime(sub.submittedAt || sub.submittedTime || '') : '',
+        isSubmitted && sub.needManual ? 'Cần chấm thủ công' : ''
       );
 
-      sheetData.push(rowData);
+      sheetDataPage1.push(rowPage1);
+      sheetDataPage2.push(rowPage2);
     });
 
-    const ws = XLSX.utils.aoa_to_sheet(sheetData);
-    const colWidths = [6, 14, 25, 10, 12, 15, ...Array(numQuestions).fill(10), 12, 10, 22];
-    setWorksheetColWidths(ws, colWidths);
-    XLSX.utils.book_append_sheet(wb, ws, className);
+    const correctPctRow = [
+      '', '', 'Tỷ lệ đúng (%)', '',
+      ...questionCorrectCounts.map(c => submittedCount > 0 ? `${Math.round((c / submittedCount) * 100)}%` : '0%'),
+      submittedCount > 0 ? Number((totalClassScore / submittedCount).toFixed(2)) : 0,
+      numQuestions,
+      '', '', ''
+    ];
+    sheetDataPage1.push(correctPctRow);
+
+    const ws1 = XLSX.utils.aoa_to_sheet(sheetDataPage1);
+    const ws2 = XLSX.utils.aoa_to_sheet(sheetDataPage2);
+
+    ws1['!freeze'] = { xSplit: 3, ySplit: 1 };
+    ws2['!freeze'] = { xSplit: 3, ySplit: 2 };
+
+    const colWidths1 = [6, 14, 25, 15, ...Array(numQuestions).fill(8), 10, 10, 10, 20, 18];
+    setWorksheetColWidths(ws1, colWidths1);
+    const colWidths2 = [6, 14, 25, ...Array(numQuestions).fill(25)];
+    setWorksheetColWidths(ws2, colWidths2);
+
+    XLSX.utils.book_append_sheet(wb, ws1, `${className} - Kết quả`);
+    XLSX.utils.book_append_sheet(wb, ws2, `${className} - Đáp án chi tiết`);
   });
 
-  const cleanExamName = (exam.title || 'De_Kiem_Tra').replace(/[\s\/:*?"<>|]+/g, '_');
+  const cleanExamName = (exam.title || 'De_Kiem_Tra').replace(/^(ĐỀ kiểm tra|Đề kiểm tra)\s*/i, '').replace(/[\s\/:*?"<>|]+/g, '_');
+  const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   const classNamesCleaned = targetClasses.map(c => c.replace(/[\s\/:*?"<>|]+/g, '_')).join('_');
-  saveWorkbookAsExcel(wb, `Bao_cao_thi_kiem_tra_${cleanExamName}_${classNamesCleaned}.xlsx`);
+  saveWorkbookAsExcel(wb, `KetQua_${cleanExamName}_${classNamesCleaned}_${dateStr}.xlsx`);
 }
 
 
