@@ -1,4 +1,4 @@
-import { QuestionItem } from '../types';
+import JSZip from 'jszip';
 import { 
   formatScore, 
   isSubjectWithScore, 
@@ -38,10 +38,26 @@ export interface GenerateSubmissionWordOptions {
 }
 
 /**
- * Tạo tên file Word theo đúng định dạng chuẩn:
- * BaiLam_[MãHS]_[TênHS]_[Môn]_[Lớp].docx
+ * Loại bỏ dấu tiếng Việt để đặt tên file an toàn
  */
-export function buildSubmissionWordFileName(options: {
+export function removeVietnameseAccents(str: string): string {
+  if (!str) return '';
+  return str
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .replace(/[\/\s\\:\*\?"<>\|]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .trim();
+}
+
+/**
+ * Tạo tên file Word theo đúng định dạng chuẩn:
+ * BaiLam_<MãHS>_<TênKhôngDấu>_<Môn>_<Lớp>.docx
+ */
+export function buildSubmissionDocxFileName(options: {
   studentCode?: string;
   studentName?: string;
   subject?: string;
@@ -49,10 +65,7 @@ export function buildSubmissionWordFileName(options: {
 }): string {
   const sanitize = (val?: string) => {
     if (!val) return '';
-    return val
-      .trim()
-      .replace(/[\/\s\\:\*\?"<>\|]+/g, '')
-      .replace(/_+/g, '_');
+    return removeVietnameseAccents(val);
   };
 
   const code = sanitize(options.studentCode) || 'HS';
@@ -62,6 +75,9 @@ export function buildSubmissionWordFileName(options: {
 
   return `BaiLam_${code}_${name}_${subject}_${cls}.docx`;
 }
+
+// Giữ lại alias để tương thích các component cũ
+export const buildSubmissionWordFileName = buildSubmissionDocxFileName;
 
 /**
  * Trích xuất tiêu đề tự động dòng 1 theo yêu cầu:
@@ -100,20 +116,39 @@ export function resolveExamHeaderTitle(targetItem: any, mode: 'assignment' | 'ex
   return 'ĐỀ KIỂM TRA';
 }
 
+function escapeXml(unsafe: any): string {
+  if (unsafe === undefined || unsafe === null) return '';
+  const str = String(unsafe);
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function wpRuns(runs: { text: string; bold?: boolean; color?: string; size?: number }[], options?: { align?: 'center' | 'left' | 'right'; spaceAfter?: number }): string {
+  const alignXml = options?.align ? `<w:jc w:val="${options.align}"/>` : '';
+  const spacingXml = options?.spaceAfter !== undefined ? `<w:spacing w:after="${options.spaceAfter}"/>` : '<w:spacing w:after="80"/>';
+  
+  const runsXml = runs.map(r => {
+    const boldXml = r.bold ? '<w:b/>' : '';
+    const colorXml = r.color ? `<w:color w:val="${r.color}"/>` : '';
+    const sizeXml = r.size ? `<w:sz w:val="${r.size}"/>` : '<w:sz w:val="24"/>';
+    return `<w:r><w:rPr>${boldXml}${colorXml}${sizeXml}</w:rPr><w:t xml:space="preserve">${escapeXml(r.text)}</w:t></w:r>`;
+  }).join('');
+
+  return `<w:p><w:pPr>${alignXml}${spacingXml}</w:pPr>${runsXml}</w:p>`;
+}
+
 /**
- * Tạo Blob chứa nội dung file Word (.doc/.docx chuẩn HTML)
+ * Sinh cấu trúc gói OpenXML (.docx) chuẩn 100% bằng JSZip,
+ * đảm bảo mở được hoàn hảo trên mọi phiên bản Microsoft Word (0 lỗi format / corrupt).
  */
-export function generateSubmissionWordBlob(options: GenerateSubmissionWordOptions): Blob {
+export async function generateSubmissionDocxBlob(options: GenerateSubmissionWordOptions): Promise<Blob> {
   const { targetItem, studentName, studentCode, submittedTime, attempts, evaluations, stats, mode } = options;
 
   const resolvedClass = options.className || targetItem?.targetClass || '';
-  const fileName = buildSubmissionWordFileName({
-    studentCode,
-    studentName,
-    subject: targetItem?.subject,
-    className: resolvedClass
-  });
-
   const line1Title = resolveExamHeaderTitle(targetItem, mode);
 
   const line2Parts: string[] = [];
@@ -129,200 +164,389 @@ export function generateSubmissionWordBlob(options: GenerateSubmissionWordOption
   if (duration) line3Parts.push(`Thời gian làm bài: ${duration} phút`);
   const line3Text = line3Parts.join(' - ');
 
-  const studentInfoItems: { label: string; value: string }[] = [];
-  if (studentName) studentInfoItems.push({ label: 'Họ và tên học sinh', value: studentName });
-  if (studentCode) studentInfoItems.push({ label: 'Mã số học sinh', value: studentCode });
-  if (resolvedClass) studentInfoItems.push({ label: 'Lớp', value: resolvedClass });
-  if (submittedTime) studentInfoItems.push({ label: 'Thời gian nộp bài', value: formatSubmissionDateTime(submittedTime) });
-  if (attempts !== undefined && attempts !== null && attempts !== '') {
-    studentInfoItems.push({ label: 'Số lần làm bài', value: `${attempts} lần` });
+  const bodyElements: string[] = [];
+
+  // 1. Tiêu đề trường & tiêu đề đề thi
+  bodyElements.push(wpRuns([
+    { text: 'HỆ THỐNG DẠY VÀ HỌC SỐ PK TRỰC KHANG', bold: true, color: '4F46E5', size: 20 }
+  ], { align: 'center', spaceAfter: 60 }));
+
+  bodyElements.push(wpRuns([
+    { text: line1Title, bold: true, color: '111827', size: 30 }
+  ], { align: 'center', spaceAfter: 60 }));
+
+  if (line2Text) {
+    bodyElements.push(wpRuns([
+      { text: line2Text, bold: true, color: '374151', size: 24 }
+    ], { align: 'center', spaceAfter: 40 }));
   }
 
-  const htmlContent = `
-    <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
-    <head>
-      <meta charset="utf-8">
-      <title>${fileName}</title>
-      <style>
-        body { font-family: 'Times New Roman', Times, serif; font-size: 13pt; color: #000000; line-height: 1.6; margin: 20px; }
-        h1 { text-align: center; font-size: 16pt; font-weight: bold; text-transform: uppercase; margin-bottom: 5px; }
-        h2 { text-align: center; font-size: 12pt; font-weight: bold; margin-bottom: 4px; color: #333; }
-        .sub-header { text-align: center; font-size: 11pt; color: #555; margin-bottom: 20px; }
-        .box { border: 1px solid #ccc; background-color: #f9f9f9; padding: 12px 16px; margin-bottom: 15px; border-radius: 6px; }
-        .box-title { font-weight: bold; font-size: 11.5pt; margin-bottom: 6px; color: #111; text-transform: uppercase; }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 15px; }
-        th, td { border: 1px solid #999; padding: 6px 8px; text-align: center; font-size: 11pt; }
-        th { background-color: #f2f2f2; font-weight: bold; }
-        .question-card { border: 1px solid #ddd; background-color: #fff; padding: 12px 16px; margin-bottom: 12px; border-radius: 6px; }
-        .correct { color: #047857; font-weight: bold; }
-        .incorrect { color: #be123c; font-weight: bold; }
-        .explanation { background-color: #fefce8; border: 1px solid #fde047; padding: 8px 12px; margin-top: 8px; font-size: 11pt; color: #713f12; }
-      </style>
-    </head>
-    <body>
-      <div style="text-align: center; font-size: 10pt; font-weight: bold; color: #4f46e5; text-transform: uppercase; margin-bottom: 5px;">
-        HỆ THỐNG DẠY VÀ HỌC SỐ PK TRỰC KHANG
-      </div>
-      <h1>${line1Title}</h1>
-      ${line2Text ? `<h2>${line2Text}</h2>` : ''}
-      ${line3Text ? `<div class="sub-header">${line3Text}</div>` : ''}
+  if (line3Text) {
+    bodyElements.push(wpRuns([
+      { text: line3Text, color: '4B5563', size: 22 }
+    ], { align: 'center', spaceAfter: 180 }));
+  }
 
-      <!-- Thông tin học sinh -->
-      <div class="box">
-        <div class="box-title">Thông tin học sinh</div>
-        <table style="border: none; margin: 0;">
-          ${studentInfoItems.map((item, idx) => {
-            if (idx % 2 === 0) {
-              const nextItem = studentInfoItems[idx + 1];
-              return `
-                <tr style="border: none;">
-                  <td style="border: none; text-align: left; padding: 4px 0;"><strong>${item.label}:</strong> ${item.value}</td>
-                  <td style="border: none; text-align: left; padding: 4px 0;">${nextItem ? `<strong>${nextItem.label}:</strong> ${nextItem.value}` : ''}</td>
-                </tr>
-              `;
-            }
-            return '';
+  // 2. Bảng Thông tin học sinh (Bordered Table)
+  const studentInfoRows = [
+    [
+      { label: 'Họ và tên học sinh:', val: studentName },
+      { label: 'Lớp:', val: resolvedClass || '---' }
+    ],
+    [
+      { label: 'Mã số học sinh:', val: studentCode || '---' },
+      { label: 'Thời gian nộp bài:', val: submittedTime ? formatSubmissionDateTime(submittedTime) : '---' }
+    ],
+    [
+      { label: 'Số lần làm bài:', val: attempts ? `${attempts} lần` : '1 lần' },
+      { label: 'Môn học:', val: targetItem?.subject || '---' }
+    ]
+  ];
+
+  const studentInfoTableXml = `
+    <w:tbl>
+      <w:tblPr>
+        <w:tblW w:w="5000" w:type="pct"/>
+        <w:tblBorders>
+          <w:top w:val="single" w:sz="6" w:space="0" w:color="CBD5E1"/>
+          <w:left w:val="single" w:sz="6" w:space="0" w:color="CBD5E1"/>
+          <w:bottom w:val="single" w:sz="6" w:space="0" w:color="CBD5E1"/>
+          <w:right w:val="single" w:sz="6" w:space="0" w:color="CBD5E1"/>
+          <w:insideH w:val="single" w:sz="4" w:space="0" w:color="E2E8F0"/>
+          <w:insideV w:val="none"/>
+        </w:tblBorders>
+      </w:tblPr>
+      ${studentInfoRows.map(row => `
+        <w:tr>
+          <w:tc>
+            <w:tcPr>
+              <w:tcW w:w="2500" w:type="pct"/>
+              <w:shd w:val="clear" w:color="auto" w:fill="F8FAFC"/>
+              <w:tcMar><w:top w:w="120" w:type="dxa"/><w:bottom w:w="120" w:type="dxa"/><w:left w:w="160" w:type="dxa"/><w:right w:w="160" w:type="dxa"/></w:tcMar>
+            </w:tcPr>
+            ${wpRuns([
+              { text: row[0].label + ' ', bold: true, color: '1E293B', size: 22 },
+              { text: row[0].val, bold: true, color: '0F172A', size: 22 }
+            ], { spaceAfter: 0 })}
+          </w:tc>
+          <w:tc>
+            <w:tcPr>
+              <w:tcW w:w="2500" w:type="pct"/>
+              <w:shd w:val="clear" w:color="auto" w:fill="F8FAFC"/>
+              <w:tcMar><w:top w:w="120" w:type="dxa"/><w:bottom w:w="120" w:type="dxa"/><w:left w:w="160" w:type="dxa"/><w:right w:w="160" w:type="dxa"/></w:tcMar>
+            </w:tcPr>
+            ${wpRuns([
+              { text: row[1].label + ' ', bold: true, color: '1E293B', size: 22 },
+              { text: row[1].val, color: '0F172A', size: 22 }
+            ], { spaceAfter: 0 })}
+          </w:tc>
+        </w:tr>
+      `).join('')}
+    </w:tbl>
+  `;
+  bodyElements.push(studentInfoTableXml);
+  bodyElements.push(wpRuns([{ text: '' }], { spaceAfter: 120 }));
+
+  // 3. Khung Kết quả tổng quan
+  const isScored = isSubjectWithScore(targetItem?.subject);
+  const qualitativeLabel = getQualitativeLabel(stats.correctCount, stats.totalCount);
+
+  const resultsTableXml = `
+    <w:tbl>
+      <w:tblPr>
+        <w:tblW w:w="5000" w:type="pct"/>
+        <w:tblBorders>
+          <w:top w:val="single" w:sz="10" w:space="0" w:color="4F46E5"/>
+          <w:left w:val="single" w:sz="10" w:space="0" w:color="4F46E5"/>
+          <w:bottom w:val="single" w:sz="10" w:space="0" w:color="4F46E5"/>
+          <w:right w:val="single" w:sz="10" w:space="0" w:color="4F46E5"/>
+        </w:tblBorders>
+      </w:tblPr>
+      <w:tr>
+        <w:tc>
+          <w:tcPr>
+            <w:shd w:val="clear" w:color="auto" w:fill="EEF2FF"/>
+            <w:tcMar><w:top w:w="160" w:type="dxa"/><w:bottom w:w="160" w:type="dxa"/><w:left w:w="200" w:type="dxa"/><w:right w:w="200" w:type="dxa"/></w:tcMar>
+          </w:tcPr>
+          ${wpRuns([
+            { text: 'KẾT QUẢ BÀI LÀM: ', bold: true, color: '3730A3', size: 24 },
+            { text: `${stats.correctCount}/${stats.totalCount} câu đúng`, bold: true, color: '047857', size: 24 },
+            { text: isScored ? `  |  Điểm số: ${stats.scoreOutOf10}/10 điểm` : `  |  Mức đánh giá: ${qualitativeLabel}`, bold: true, color: 'BE123C', size: 26 }
+          ], { spaceAfter: 0 })}
+        </w:tc>
+      </w:tr>
+    </w:tbl>
+  `;
+  bodyElements.push(resultsTableXml);
+  bodyElements.push(wpRuns([{ text: '' }], { spaceAfter: 140 }));
+
+  // 4. Bảng điểm tổng hợp theo từng câu
+  bodyElements.push(wpRuns([
+    { text: 'BẢNG TỔNG HỢP KẾT QUẢ TỪNG CÂU HỎI', bold: true, color: '1E293B', size: 22 }
+  ], { spaceAfter: 60 }));
+
+  const summaryHeaderRow = ['Câu hỏi', ...evaluations.map((_, i) => String(i + 1))];
+  const summaryScoreRow = ['Điểm', ...evaluations.map(e => e.isCorrect ? formatScore(e.points) : '0')];
+  const summaryResultRow = ['Kết quả', ...evaluations.map(e => e.isCorrect ? '✓' : '✗')];
+
+  const summaryTableXml = `
+    <w:tbl>
+      <w:tblPr>
+        <w:tblW w:w="5000" w:type="pct"/>
+        <w:tblBorders>
+          <w:top w:val="single" w:sz="4" w:space="0" w:color="94A3B8"/>
+          <w:left w:val="single" w:sz="4" w:space="0" w:color="94A3B8"/>
+          <w:bottom w:val="single" w:sz="4" w:space="0" w:color="94A3B8"/>
+          <w:right w:val="single" w:sz="4" w:space="0" w:color="94A3B8"/>
+          <w:insideH w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>
+          <w:insideV w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>
+        </w:tblBorders>
+      </w:tblPr>
+      ${[summaryHeaderRow, summaryScoreRow, summaryResultRow].map((row, rIdx) => `
+        <w:tr>
+          ${row.map((cellText, cIdx) => {
+            const isHeader = rIdx === 0 || cIdx === 0;
+            const isPass = cellText === '✓';
+            const isFail = cellText === '✗';
+            const color = isPass ? '047857' : isFail ? 'BE123C' : '0F172A';
+            return `
+              <w:tc>
+                <w:tcPr>
+                  <w:shd w:val="clear" w:color="auto" w:fill="${isHeader ? 'F1F5F9' : 'FFFFFF'}"/>
+                  <w:tcMar><w:top w:w="100" w:type="dxa"/><w:bottom w:w="100" w:type="dxa"/><w:left w:w="80" w:type="dxa"/><w:right w:w="80" w:type="dxa"/></w:tcMar>
+                </w:tcPr>
+                ${wpRuns([{ text: cellText, bold: isHeader || isPass || isFail, color, size: 20 }], { align: 'center', spaceAfter: 0 })}
+              </w:tc>
+            `;
           }).join('')}
-        </table>
-      </div>
+        </w:tr>
+      `).join('')}
+    </w:tbl>
+  `;
+  bodyElements.push(summaryTableXml);
+  bodyElements.push(wpRuns([{ text: '' }], { spaceAfter: 160 }));
 
-      <!-- Kết quả tổng quan -->
-      <div class="box" style="background-color: #fff1f2; border-color: #fecdd3;">
-        <div class="box-title" style="color: #881337;">Kết quả bài làm</div>
-        <p style="margin: 4px 0;"><strong>Số câu đúng:</strong> <span class="correct">${stats.correctCount}/${stats.totalCount} câu</span></p>
-        <p style="margin: 4px 0;"><strong>Tổng số câu hỏi:</strong> ${stats.totalCount} câu</p>
-        ${isSubjectWithScore(targetItem?.subject) ? `
-          <p style="margin: 4px 0;"><strong>Điểm ${mode === 'assignment' ? 'bài tập' : 'bài thi'}:</strong> <span class="incorrect">${stats.calculatedScore}</span></p>
-          <p style="margin: 4px 0;"><strong>Điểm thang 10:</strong> <span class="incorrect" style="font-size: 13pt;">${stats.scoreOutOf10}</span></p>
-        ` : `
-          <p style="margin: 4px 0;"><strong>Mức đánh giá:</strong> <span class="correct">${getQualitativeLabel(stats.correctCount, stats.totalCount)}</span></p>
-        `}
-      </div>
+  // 5. Chi tiết từng câu hỏi trong đề
+  bodyElements.push(wpRuns([
+    { text: `CHI TIẾT TỪNG CÂU HỎI TRONG BÀI (${evaluations.length} CÂU)`, bold: true, color: '4338CA', size: 24 }
+  ], { spaceAfter: 100 }));
 
-      <!-- Bảng điểm tóm tắt -->
-      <div style="font-weight: bold; font-size: 11pt; text-transform: uppercase; margin-bottom: 6px;">Bảng điểm tổng hợp theo từng câu</div>
-      <table>
-        <tr>
-          <th style="text-align: left; width: 100px;">Câu hỏi</th>
-          ${evaluations.map(e => `<th>${e.questionIndex + 1}</th>`).join('')}
-        </tr>
-        <tr>
-          <td style="text-align: left; font-weight: bold;">Điểm</td>
-          ${evaluations.map(e => `<td>${e.isCorrect ? formatScore(e.points) : '0'}</td>`).join('')}
-        </tr>
-        <tr>
-          <td style="text-align: left; font-weight: bold;">Kết quả</td>
-          ${evaluations.map(e => `<td>${e.isCorrect ? '✓ Đúng' : '✗ Sai'}</td>`).join('')}
-        </tr>
-      </table>
+  evaluations.forEach((evalItem) => {
+    const q = evalItem.question;
+    const qIdx = evalItem.questionIndex;
+    const qType = normalizeQuestionType(q.type);
+    const isPass = evalItem.isCorrect;
+    const studentChoice = evalItem.studentChoice;
+    const isAnswered = evalItem.isAnswered;
 
-      <br/>
-      <div style="font-weight: bold; font-size: 12pt; text-transform: uppercase; border-bottom: 2px solid #4f46e5; padding-bottom: 4px; margin-bottom: 15px;">
-        Chi tiết từng câu hỏi trong bài (${evaluations.length} câu)
-      </div>
+    // Header câu hỏi
+    bodyElements.push(wpRuns([
+      { text: `Câu ${qIdx + 1} (${formatScore(evalItem.points)} điểm) - `, bold: true, color: isPass ? '047857' : 'BE123C', size: 22 },
+      { text: isPass ? 'ĐÚNG' : 'SAI', bold: true, color: isPass ? '047857' : 'BE123C', size: 22 },
+      { text: `  [${getQuestionTypeLabel(q.type)}]`, color: '64748B', size: 20 }
+    ], { spaceAfter: 40 }));
 
-      ${evaluations.map((evalItem) => {
-        const q = evalItem.question;
-        const qIdx = evalItem.questionIndex;
-        const qType = normalizeQuestionType(q.type);
-        const isPass = evalItem.isCorrect;
-        const studentChoice = evalItem.studentChoice;
-        const isAnswered = evalItem.isAnswered;
+    // Nội dung câu hỏi
+    bodyElements.push(wpRuns([
+      { text: q.content || `Nội dung câu hỏi ${qIdx + 1}`, bold: true, color: '0F172A', size: 22 }
+    ], { spaceAfter: 60 }));
 
-        let answersHtml = '';
+    // Cảnh báo chưa làm nếu có
+    if (!isAnswered) {
+      bodyElements.push(wpRuns([
+        { text: '⚠️ Học sinh chưa trả lời câu hỏi này.', bold: true, color: 'D97706', size: 20 }
+      ], { spaceAfter: 40 }));
+    }
 
-        if (qType === 'multiple_choice' && q.options && q.options.length > 0) {
-          const letters = ['A', 'B', 'C', 'D', 'E', 'F'];
-          answersHtml = q.options.map((optText, oIdx) => {
-            const letter = letters[oIdx] || String.fromCharCode(65 + oIdx);
-            const isCorrectOpt = String(q.correctAnswer || '').trim().toUpperCase() === letter ||
-                                 String(q.correctAnswer || '').trim().toLowerCase() === String(optText).trim().toLowerCase();
+    // Các lựa chọn đáp án
+    if (qType === 'multiple_choice' && q.options && q.options.length > 0) {
+      const letters = ['A', 'B', 'C', 'D', 'E', 'F'];
+      q.options.forEach((optText, oIdx) => {
+        const letter = letters[oIdx] || String.fromCharCode(65 + oIdx);
+        const isCorrectOpt = String(q.correctAnswer || '').trim().toUpperCase() === letter ||
+                             String(q.correctAnswer || '').trim().toLowerCase() === String(optText).trim().toLowerCase();
 
-            let isSelected = false;
-            if (typeof studentChoice === 'number') {
-              isSelected = studentChoice === oIdx;
-            } else if (typeof studentChoice === 'string') {
-              isSelected = studentChoice.trim().toUpperCase() === letter ||
-                           studentChoice.trim().toLowerCase() === String(optText).trim().toLowerCase();
-            }
-
-            let styleMark = '';
-            if (isSelected && isCorrectOpt) {
-              styleMark = '<strong>[✓ Đúng / Học sinh chọn]</strong>';
-            } else if (isSelected && !isCorrectOpt) {
-              styleMark = '<strong style="color: #be123c;">[✗ Học sinh chọn]</strong>';
-            } else if (!isSelected && isCorrectOpt) {
-              styleMark = '<strong style="color: #047857;">[Đáp án đúng]</strong>';
-            }
-
-            return `<div style="margin: 4px 0;"><strong>${letter}.</strong> ${optText} ${styleMark}</div>`;
-          }).join('');
-        } else if (qType === 'true_false') {
-          if (q.statements && q.statements.length > 0) {
-            answersHtml = q.statements.map((stmt: any, sIdx: number) => {
-              const studentStmtChoice = (typeof studentChoice === 'object' && studentChoice !== null) ? studentChoice[sIdx] : undefined;
-              const isStmtCorrect = studentStmtChoice === stmt.isCorrect;
-              return `<div style="margin: 4px 0;">- ${stmt.text || stmt.content} | Đáp án: <strong>${stmt.isCorrect ? 'Đúng' : 'Sai'}</strong> | HS chọn: <strong style="${isStmtCorrect ? 'color:#047857;' : 'color:#be123c;'}">${studentStmtChoice === undefined ? 'Chưa chọn' : (studentStmtChoice ? 'Đúng' : 'Sai')}</strong></div>`;
-            }).join('');
-          } else {
-            answersHtml = `<div>Đáp án đúng: <strong>${String(q.correctAnswer)}</strong> | Học sinh chọn: <strong style="${isPass ? 'color:#047857;' : 'color:#be123c;'}">${String(studentChoice ?? 'Chưa trả lời')}</strong></div>`;
-          }
-        } else if (qType === 'matching' && q.matchingPairs && q.matchingPairs.length > 0) {
-          answersHtml = q.matchingPairs.map((pair: any, pIdx: number) => {
-            const studentMatched = (typeof studentChoice === 'object' && studentChoice !== null)
-              ? (studentChoice[pIdx] !== undefined ? studentChoice[pIdx] : studentChoice[pair.left])
-              : undefined;
-            const isPairMatch = studentMatched && String(studentMatched).trim().toLowerCase() === String(pair.right).trim().toLowerCase();
-            return `<div style="margin: 4px 0;">- ${pair.left} ➔ Đúng: ${pair.right} | HS nối: <strong style="${isPairMatch ? 'color:#047857;' : 'color:#be123c;'}">${studentMatched || 'Chưa nối'}</strong></div>`;
-          }).join('');
-        } else {
-          answersHtml = `<div>Đáp án chuẩn: <strong>${q.correctAnswer || 'Giáo viên tự chấm'}</strong> | Câu trả lời của HS: <strong style="${isPass ? 'color:#047857;' : 'color:#be123c;'}">${studentChoice !== undefined && studentChoice !== '' ? String(studentChoice) : 'Chưa nhập'}</strong></div>`;
+        let isSelected = false;
+        if (typeof studentChoice === 'number') {
+          isSelected = studentChoice === oIdx;
+        } else if (typeof studentChoice === 'string') {
+          isSelected = studentChoice.trim().toUpperCase() === letter ||
+                       studentChoice.trim().toLowerCase() === String(optText).trim().toLowerCase();
         }
 
-        return `
-          <div class="question-card">
-            <div style="display: flex; justify-content: space-between; font-weight: bold; margin-bottom: 6px;">
-              <span style="color: ${isPass ? '#047857' : '#be123c'};">Câu ${qIdx + 1} (${formatScore(evalItem.points)}đ) - ${isPass ? 'ĐÚNG' : 'SAI'}</span>
-              <span style="color: #666; font-size: 10pt;">${getQuestionTypeLabel(q.type)}</span>
-            </div>
-            <div style="font-weight: bold; margin-bottom: 8px;">${q.content}</div>
-            ${!isAnswered ? '<div style="color: #d97706; margin-bottom: 6px;">⚠️ Học sinh chưa trả lời câu hỏi này.</div>' : ''}
-            <div style="margin-bottom: 6px;">${answersHtml}</div>
-            ${q.explanation ? `<div class="explanation"><strong>Giải thích / Gợi ý:</strong> ${q.explanation}</div>` : ''}
-          </div>
-        `;
-      }).join('')}
-    </body>
-    </html>
-  `;
+        const runs: { text: string; bold?: boolean; color?: string; size?: number }[] = [
+          { text: `${letter}. ${optText} `, bold: isSelected || isCorrectOpt, color: '1E293B', size: 22 }
+        ];
 
-  return new Blob(['\ufeff' + htmlContent], {
-    type: 'application/msword'
+        if (isSelected && isCorrectOpt) {
+          runs.push({ text: '[✓ Đúng / Học sinh chọn]', bold: true, color: '047857', size: 20 });
+        } else if (isSelected && !isCorrectOpt) {
+          runs.push({ text: '[✗ Học sinh chọn]', bold: true, color: 'BE123C', size: 20 });
+        } else if (!isSelected && isCorrectOpt) {
+          runs.push({ text: '[Đáp án đúng]', bold: true, color: '047857', size: 20 });
+        }
+
+        bodyElements.push(wpRuns(runs, { spaceAfter: 30 }));
+      });
+    } else if (qType === 'true_false') {
+      if (q.statements && q.statements.length > 0) {
+        q.statements.forEach((stmt: any, sIdx: number) => {
+          const studentStmtChoice = (typeof studentChoice === 'object' && studentChoice !== null) ? studentChoice[sIdx] : undefined;
+          const isStmtCorrect = studentStmtChoice === stmt.isCorrect;
+          bodyElements.push(wpRuns([
+            { text: `- ${stmt.text || stmt.content} | Đáp án: `, size: 20 },
+            { text: stmt.isCorrect ? 'Đúng' : 'Sai', bold: true, size: 20 },
+            { text: ' | HS chọn: ', size: 20 },
+            { 
+              text: studentStmtChoice === undefined ? 'Chưa chọn' : (studentStmtChoice ? 'Đúng' : 'Sai'), 
+              bold: true, 
+              color: isStmtCorrect ? '047857' : 'BE123C', 
+              size: 20 
+            }
+          ], { spaceAfter: 30 }));
+        });
+      } else {
+        bodyElements.push(wpRuns([
+          { text: `Đáp án chuẩn: ${String(q.correctAnswer)} | Học sinh chọn: `, size: 20 },
+          { text: String(studentChoice ?? 'Chưa trả lời'), bold: true, color: isPass ? '047857' : 'BE123C', size: 20 }
+        ], { spaceAfter: 40 }));
+      }
+    } else if (qType === 'matching' && q.matchingPairs && q.matchingPairs.length > 0) {
+      q.matchingPairs.forEach((pair: any, pIdx: number) => {
+        const studentMatched = (typeof studentChoice === 'object' && studentChoice !== null)
+          ? (studentChoice[pIdx] !== undefined ? studentChoice[pIdx] : studentChoice[pair.left])
+          : undefined;
+        const isPairMatch = studentMatched && String(studentMatched).trim().toLowerCase() === String(pair.right).trim().toLowerCase();
+        bodyElements.push(wpRuns([
+          { text: `- ${pair.left} ➔ Đúng: ${pair.right} | HS nối: `, size: 20 },
+          { text: studentMatched || 'Chưa nối', bold: true, color: isPairMatch ? '047857' : 'BE123C', size: 20 }
+        ], { spaceAfter: 30 }));
+      });
+    } else {
+      bodyElements.push(wpRuns([
+        { text: `Đáp án chuẩn: ${q.correctAnswer || 'Giáo viên tự chấm'} | Câu trả lời của HS: `, size: 20 },
+        { 
+          text: studentChoice !== undefined && studentChoice !== '' ? String(studentChoice) : 'Chưa nhập', 
+          bold: true, 
+          color: isPass ? '047857' : 'BE123C', 
+          size: 20 
+        }
+      ], { spaceAfter: 40 }));
+    }
+
+    // Lời giải thích / gợi ý
+    if (q.explanation) {
+      bodyElements.push(wpRuns([
+        { text: 'Gợi ý / Giải thích: ', bold: true, color: '854D0E', size: 20 },
+        { text: String(q.explanation), color: '854D0E', size: 20 }
+      ], { spaceAfter: 60 }));
+    }
+
+    bodyElements.push(wpRuns([{ text: '' }], { spaceAfter: 100 }));
+  });
+
+  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    ${bodyElements.join('\n')}
+    <w:sectPr>
+      <w:pgSz w:w="11906" w:h="16838"/>
+      <w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="720" w:footer="720" w:gutter="0"/>
+    </w:sectPr>
+  </w:body>
+</w:document>`;
+
+  const contentTypesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`;
+
+  const relsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`;
+
+  const docRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
+
+  const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:docDefaults>
+    <w:rPrDefault>
+      <w:rPr>
+        <w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"/>
+        <w:sz w:val="24"/>
+        <w:szCs w:val="24"/>
+        <w:lang w:val="vi-VN"/>
+      </w:rPr>
+    </w:rPrDefault>
+    <w:pPrDefault>
+      <w:pPr>
+        <w:spacing w:line="276" w:lineRule="auto" w:after="80"/>
+      </w:pPr>
+    </w:pPrDefault>
+  </w:docDefaults>
+</w:styles>`;
+
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', contentTypesXml);
+  zip.file('_rels/.rels', relsXml);
+  zip.file('word/_rels/document.xml.rels', docRelsXml);
+  zip.file('word/styles.xml', stylesXml);
+  zip.file('word/document.xml', documentXml);
+
+  return await zip.generateAsync({
+    type: 'blob',
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
   });
 }
 
 /**
- * Tạo và tải file Word (.doc) bài làm học sinh
+ * Tải file Word (.docx) bài làm học sinh khi tải riêng
  */
 export async function downloadStudentSubmissionWord(options: GenerateSubmissionWordOptions): Promise<void> {
   const { studentCode, studentName, targetItem } = options;
   const resolvedClass = options.className || targetItem?.targetClass || '';
-  const fileName = buildSubmissionWordFileName({
+  const fileName = buildSubmissionDocxFileName({
     studentCode,
     studentName,
     subject: targetItem?.subject,
     className: resolvedClass
   });
 
-  const blob = generateSubmissionWordBlob(options);
+  const blob = await generateSubmissionDocxBlob(options);
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = fileName.replace(/\.docx$/, '.doc');
+  a.download = fileName;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   setTimeout(() => {
     URL.revokeObjectURL(url);
   }, 1000);
+}
+
+/**
+ * Hàm dự phòng đồng bộ cho code cũ nếu cần
+ */
+export function generateSubmissionWordBlob(options: GenerateSubmissionWordOptions): Blob {
+  // Trả về HTML blob dự phòng nếu được gọi đồng bộ
+  const { studentCode, studentName, targetItem } = options;
+  const resolvedClass = options.className || targetItem?.targetClass || '';
+  const fileName = buildSubmissionDocxFileName({
+    studentCode,
+    studentName,
+    subject: targetItem?.subject,
+    className: resolvedClass
+  });
+
+  const html = `<html><head><meta charset="utf-8"><title>${fileName}</title></head><body><h1>${resolveExamHeaderTitle(targetItem, options.mode)}</h1></body></html>`;
+  return new Blob(['\ufeff' + html], { type: 'application/msword' });
 }

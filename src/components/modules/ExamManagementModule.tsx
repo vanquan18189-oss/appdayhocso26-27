@@ -656,12 +656,14 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const [zipAttemptMode, setZipAttemptMode] = useState<'highest_score' | 'latest'>('highest_score');
   const [isZipping, setIsZipping] = useState<boolean>(false);
   const [zipProgressText, setZipProgressText] = useState<string>('');
+  const [zipProgressPercent, setZipProgressPercent] = useState<number>(0);
 
   const handleBulkZipDownload = async () => {
     if (!trackingExam || isZipping) return;
     try {
       setIsZipping(true);
-      setZipProgressText('Đang chuẩn bị dữ liệu...');
+      setZipProgressPercent(0);
+      setZipProgressText('Đang chuẩn bị dữ liệu bài làm...');
 
       const studentsToExport = zipScope === 'filtered' ? filteredTrackingSubmissions : trackingStudentsList;
 
@@ -670,7 +672,8 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
         studentsList: studentsToExport,
         scope: zipScope,
         attemptMode: zipAttemptMode,
-        onProgress: (current, total, name) => {
+        onProgress: (current, total, name, percent) => {
+          setZipProgressPercent(percent);
           setZipProgressText(`Đang tạo file... (${current}/${total}) - ${name}`);
         }
       });
@@ -687,6 +690,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     } finally {
       setIsZipping(false);
       setZipProgressText('');
+      setZipProgressPercent(0);
     }
   };
 
@@ -5082,9 +5086,20 @@ return (
               </div>
 
               {isZipping && (
-                <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl flex items-center gap-3 text-blue-800 font-bold">
-                  <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin shrink-0" />
-                  <span>{zipProgressText || 'Đang nén file ZIP...'}</span>
+                <div className="p-4 bg-blue-50 border border-blue-200 rounded-2xl space-y-2.5">
+                  <div className="flex items-center justify-between text-xs font-bold text-blue-900">
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin shrink-0" />
+                      <span className="truncate max-w-[340px]">{zipProgressText || 'Đang nén file ZIP...'}</span>
+                    </div>
+                    <span className="text-blue-700 font-extrabold shrink-0">{zipProgressPercent}%</span>
+                  </div>
+                  <div className="w-full bg-blue-100 rounded-full h-2.5 overflow-hidden">
+                    <div 
+                      className="bg-blue-600 h-2.5 rounded-full transition-all duration-200 ease-out" 
+                      style={{ width: `${zipProgressPercent}%` }}
+                    />
+                  </div>
                 </div>
               )}
             </div>

@@ -2,36 +2,27 @@ import JSZip from 'jszip';
 import * as XLSX from 'xlsx';
 import { ExamPaper, QuestionItem } from '../types';
 import { TrackingSubmissionStudent } from '../components/modules/ExamManagementModule';
-import { generateSubmissionWordBlob } from './studentSubmissionWordService';
-import { QuestionEvaluation } from '../components/modules/StudentSubmissionDetailModal';
-import { extractStudentAnswer } from '../components/modules/StudentSubmissionDetailModal';
+import { 
+  generateSubmissionDocxBlob, 
+  buildSubmissionDocxFileName,
+  removeVietnameseAccents 
+} from './studentSubmissionWordService';
+import { QuestionEvaluation, extractStudentAnswer } from '../components/modules/StudentSubmissionDetailModal';
 import { checkQuestionCorrectLocal } from '../components/modules/StudentExamModule';
-import { normalizeQuestionType } from '../lib/constants';
+import { buildExamWorkbook } from './excelService';
 
 export interface BulkZipOptions {
   trackingExam: ExamPaper;
   studentsList: TrackingSubmissionStudent[];
   scope: 'all' | 'filtered';
   attemptMode: 'highest_score' | 'latest';
-  onProgress?: (current: number, total: number, studentName: string) => void;
+  onProgress?: (current: number, total: number, studentName: string, percent: number) => void;
 }
 
 /**
- * Loại bỏ dấu tiếng Việt để đặt tên file an toàn
- */
-export function removeVietnameseAccents(str: string): string {
-  if (!str) return '';
-  return str
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[đĐ]/g, 'd')
-    .replace(/[\/\s\\:\*\?"<>\|]+/g, '_')
-    .replace(/_+/g, '_')
-    .trim();
-}
-
-/**
- * Tạo và tải file ZIP chứa toàn bộ bài làm Word của học sinh và file tổng hợp Excel
+ * Tạo và tải file ZIP chứa toàn bộ bài làm Word (.docx) của học sinh và file tổng hợp Excel chuẩn hóa.
+ * Tái sử dụng 100% hàm generateSubmissionDocxBlob của nút "Tải riêng" để đảm bảo mọi file Word trong ZIP
+ * mở được trực tiếp trên Microsoft Word hoàn toàn không có lỗi format.
  */
 export async function downloadBulkSubmissionsZip(options: BulkZipOptions): Promise<{ successCount: number; errors: { name: string; error: string }[] }> {
   const { trackingExam, studentsList, onProgress } = options;
@@ -45,7 +36,6 @@ export async function downloadBulkSubmissionsZip(options: BulkZipOptions): Promi
   const zip = new JSZip();
   let successCount = 0;
   const errors: { name: string; error: string }[] = [];
-  const excelRows: any[] = [];
 
   const questions: QuestionItem[] = trackingExam.questions || [];
   const totalStudents = targetStudents.length;
@@ -56,9 +46,10 @@ export async function downloadBulkSubmissionsZip(options: BulkZipOptions): Promi
     const studentName = st.name || 'HocSinh';
     const rawSub = st.rawSubmission || st;
     const studentCode = st.id || rawSub.studentCode || rawSub.maHs || `HS${stt}`;
+    const percent = Math.round(((i + 1) / totalStudents) * 100);
 
     if (onProgress) {
-      onProgress(i + 1, totalStudents, studentName);
+      onProgress(i + 1, totalStudents, studentName, percent);
     }
 
     try {
@@ -91,17 +82,19 @@ export async function downloadBulkSubmissionsZip(options: BulkZipOptions): Promi
 
       const correctCount = evaluations.filter(e => e.isCorrect).length;
       const totalCount = evaluations.length || 1;
-      const calcScore = st.totalScore !== null && st.totalScore !== undefined ? Number(st.totalScore) : Math.round((correctCount / totalCount) * 10 * 10) / 10;
-      const scoreOutOf10 = calcScore;
+      const calcScore = st.totalScore !== null && st.totalScore !== undefined 
+        ? Number(st.totalScore) 
+        : Math.round((correctCount / totalCount) * 10 * 10) / 10;
 
       const stats = {
         correctCount,
         totalCount: evaluations.length,
         calculatedScore: calcScore,
-        scoreOutOf10
+        scoreOutOf10: calcScore
       };
 
-      const wordBlob = generateSubmissionWordBlob({
+      // TÁI SỬ DỤNG TRỰC TIẾP hàm generateSubmissionDocxBlob của nút "Tải riêng"
+      const wordBlob = await generateSubmissionDocxBlob({
         targetItem: trackingExam,
         studentName,
         studentCode,
@@ -113,20 +106,20 @@ export async function downloadBulkSubmissionsZip(options: BulkZipOptions): Promi
         mode: 'exam'
       });
 
-      const cleanNameNoAccent = removeVietnameseAccents(studentName);
-      const docFileName = `${stt}_${studentCode}_${cleanNameNoAccent}.docx`;
+      if (!wordBlob || wordBlob.size === 0) {
+        throw new Error('Không thể tạo file Word (kết quả rỗng).');
+      }
 
-      zip.file(docFileName, wordBlob);
-      successCount++;
-
-      excelRows.push({
-        'STT': stt,
-        'Mã HS': studentCode,
-        'Họ và tên học sinh': studentName,
-        'Điểm số': calcScore,
-        'Số lần làm': st.attempts || 1,
-        'Thời gian nộp': st.submittedTime || '---'
+      // Đặt tên tệp chuẩn: BaiLam_<MãHS>_<TênKhôngDấu>_<Môn>_<Lớp>.docx
+      const docxFileName = buildSubmissionDocxFileName({
+        studentCode,
+        studentName,
+        subject: trackingExam.subject,
+        className: trackingExam.targetClass
       });
+
+      zip.file(docxFileName, wordBlob);
+      successCount++;
     } catch (err: any) {
       console.warn(`Lỗi tạo file bài làm cho học sinh ${studentName}:`, err);
       errors.push({
@@ -136,18 +129,24 @@ export async function downloadBulkSubmissionsZip(options: BulkZipOptions): Promi
     }
   }
 
+  // Đính kèm file Excel tổng hợp kết quả (dùng chung hàm xuất Excel chuẩn hóa buildExamWorkbook)
   try {
-    const ws = XLSX.utils.json_to_sheet(excelRows);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Tổng Hợp Bài Nộp');
-    const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-    zip.file('DanhSach_TongHop.xlsx', excelBuffer);
+    const { workbook, defaultFilename } = buildExamWorkbook(trackingExam);
+    const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+    zip.file(defaultFilename || 'DanhSach_TongHop_KetQua.xlsx', excelBuffer);
   } catch (err) {
     console.warn('Lỗi tạo file Excel tổng hợp trong ZIP:', err);
   }
 
+  // Nếu có lỗi ở học sinh nào, tạo file LOI.txt ghi nhận chi tiết
+  if (errors.length > 0) {
+    const loiContent = `BÁO CÁO LỖI TẠO FILE BÀI LÀM HỌC SINH\n=====================================\nTổng số lỗi: ${errors.length}\n\n` +
+      errors.map((e, idx) => `${idx + 1}. Học sinh: ${e.name}\n   Chi tiết lỗi: ${e.error}\n`).join('\n');
+    zip.file('LOI.txt', loiContent);
+  }
+
   const zipBlob = await zip.generateAsync({ type: 'blob' });
-  
+
   const examAny = trackingExam as any;
   const classNameClean = removeVietnameseAccents(trackingExam.targetClass || 'Lop');
   const subjectClean = removeVietnameseAccents(trackingExam.subject || 'MonHoc');

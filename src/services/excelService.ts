@@ -807,7 +807,7 @@ export function downloadExamMatrixTemplate() {
  */
 
 
-export function exportExamToExcel(exam: ExamPaper) {
+export function buildExamWorkbook(exam: ExamPaper): { workbook: XLSX.WorkBook; defaultFilename: string } {
   const wb = XLSX.utils.book_new();
 
   const numQuestions = exam.questions?.length || 5;
@@ -993,7 +993,14 @@ export function exportExamToExcel(exam: ExamPaper) {
   const cleanExamName = (exam.title || 'De_Kiem_Tra').replace(/^(ĐỀ kiểm tra|Đề kiểm tra)\s*/i, '').replace(/[\s\/:*?"<>|]+/g, '_');
   const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
   const classNamesCleaned = targetClasses.map(c => c.replace(/[\s\/:*?"<>|]+/g, '_')).join('_');
-  saveWorkbookAsExcel(wb, `KetQua_${cleanExamName}_${classNamesCleaned}_${dateStr}.xlsx`);
+  const defaultFilename = `KetQua_${cleanExamName}_${classNamesCleaned}_${dateStr}.xlsx`;
+
+  return { workbook: wb, defaultFilename };
+}
+
+export function exportExamToExcel(exam: ExamPaper) {
+  const { workbook, defaultFilename } = buildExamWorkbook(exam);
+  saveWorkbookAsExcel(workbook, defaultFilename);
 }
 
 
