@@ -60,6 +60,11 @@ import {
   subscribeToQuizziGamesFromFirestore
 } from '../../services/gameStorageService';
 import {
+  joinQuizLiveSession,
+  completeQuizLiveSession,
+  updateQuizLiveProgress
+} from '../../services/liveQuizSessionService';
+import {
   getEffectiveStudentClassAndGrade,
   isTargetingStudent
 } from '../../services/studentSessionService';
@@ -428,11 +433,12 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
   };
 
 
-  // Leaderboard modal state & real student results using class roster (reduced reads)
+  // Leaderboard modal state, class filter & real student results
   const [selectedLeaderboardGame, setSelectedLeaderboardGame] = useState<GameItem | null>(null);
   const [leaderboardResults, setLeaderboardResults] = useState<any[]>([]);
   const [isLeaderboardLoading, setIsLeaderboardLoading] = useState<boolean>(false);
   const [leaderboardSearch, setLeaderboardSearch] = useState<string>('');
+  const [leaderboardClassFilter, setLeaderboardClassFilter] = useState<string>('Lớp 3D');
   const [debugTeacherInfo, setDebugTeacherInfo] = useState<{
     roomId: string;
     readCount: number;
@@ -442,97 +448,281 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
     misplacedGames: Array<{ studentCode: string; gameKey: string; roomTitle?: string }>;
   }>({ roomId: '', readCount: 0, docsFound: 0, rosterSize: 0, studentDetails: [], misplacedGames: [] });
 
+  // Update class filter when selected game changes
   useEffect(() => {
+    if (selectedLeaderboardGame) {
+      const defaultCls = selectedLeaderboardGame.classInfo?.split(',')[0]?.trim() || 'Lớp 3D';
+      setLeaderboardClassFilter(defaultCls);
+    }
+  }, [selectedLeaderboardGame]);
+
+  const fetchLeaderboardData = useCallback(async () => {
     if (!selectedLeaderboardGame) {
       setLeaderboardResults([]);
       setLeaderboardSearch('');
       setDebugTeacherInfo({ roomId: '', readCount: 0, docsFound: 0, rosterSize: 0, studentDetails: [], misplacedGames: [] });
       return;
     }
-    async function fetchLeaderboard() {
-      setIsLeaderboardLoading(true);
+    setIsLeaderboardLoading(true);
+    try {
+      if (!db) {
+        setIsLeaderboardLoading(false);
+        return;
+      }
+
+      const currentRoomId = String(selectedLeaderboardGame.id);
+      const currentOriginalId = String(selectedLeaderboardGame.originalGameId || currentRoomId.replace(/-class-.*$/, ''));
+      const rootId = currentRoomId.replace(/-class-.*$/, '');
+      const currentTitle = (selectedLeaderboardGame.title || '').trim().toLowerCase();
+
+      // Class to filter: either user's selected dropdown or game's assigned class
+      const targetClass = leaderboardClassFilter || selectedLeaderboardGame.classInfo || 'Lớp 3D';
+      const cleanTargetClass = targetClass.replace(/^Lớp\s*/i, '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+
+      // Prepare student roster for name fallback
+      const roster = getStudentsFromLocalStorage(targetClass) || generateDefaultClassRoster(targetClass, 38);
+      const rosterMap = new Map<string, string>();
+      roster.forEach((st: any) => {
+        const code = normalizeStudentCode(st.code || st.studentCode || st.maHs || st.id);
+        const name = st.fullName || st.name || '';
+        if (code && name) rosterMap.set(code.toUpperCase(), name);
+      });
+
+      const studentMap = new Map<string, any>();
+      let readCount = 0;
+      let docsFound = 0;
+      const studentDetails: any[] = [];
+      const misplacedGames: any[] = [];
+
+      // 1. Scan student_results collection (server-authoritative)
       try {
-        if (!db) {
-          setIsLeaderboardLoading(false);
-          return;
-        }
-        const targetClass = selectedLeaderboardGame.classInfo || 'Lớp 3D';
-        const cleanClass = targetClass.replace(/^Lớp\s*/i, '').trim().toUpperCase();
-        const roster = getStudentsFromLocalStorage(targetClass) || getStudentsFromLocalStorage(cleanClass) || generateDefaultClassRoster(targetClass, 38);
+        const snap = await getDocs(collection(db, 'student_results'));
+        readCount += snap.size;
+        docsFound += snap.size;
 
-        const results: any[] = [];
-        const studentDetails: any[] = [];
-        const misplacedGames: any[] = [];
-        let readCount = 0;
-        let docsFound = 0;
+        snap.forEach(docSnap => {
+          const data = docSnap.data();
+          if (!data) return;
+          const docId = docSnap.id;
+          const sCode = normalizeStudentCode(data.studentCode || docId) || docId;
+          const sCodeUpper = sCode.toUpperCase();
+          const gamesObj = data.games || {};
 
-        for (const st of roster) {
-          const sCode = normalizeStudentCode((st as any).code || (st as any).studentCode || (st as any).maHs || (st as any).id);
-          const sName = st.fullName || st.name || sCode;
-          if (!sCode) continue;
+          // Infer student class
+          let sClass = data.className || data.studentClass || data.class || '';
+          if (!sClass) {
+            const codeMatch = sCodeUpper.match(/([1-5][A-Z])/);
+            if (codeMatch) sClass = `Lớp ${codeMatch[1]}`;
+          }
 
-          readCount++;
-          const docRef = doc(db, 'student_results', sCode);
-          const docSnap = await getDoc(docRef);
+          for (const [gKey, gVal] of Object.entries(gamesObj)) {
+            const res = gVal as any;
+            if (!res) continue;
 
-          if (docSnap.exists()) {
-            docsFound++;
-            const data = docSnap.data();
-            const gamesObj = data.games || {};
-            
-            // Strict match by roomId (selectedLeaderboardGame.id)
-            const exactMatch = gamesObj[selectedLeaderboardGame.id];
-            if (exactMatch) {
-              results.push({
+            const resRoomId = String(res.roomId || '');
+            const resTitle = String(res.roomTitle || '').trim().toLowerCase();
+            const resClass = res.className || res.studentClass || sClass;
+
+            // Check if game record matches this room
+            const isIdMatch = (
+              gKey === currentRoomId ||
+              gKey === currentOriginalId ||
+              gKey === rootId ||
+              resRoomId === currentRoomId ||
+              resRoomId === currentOriginalId ||
+              resRoomId === rootId ||
+              (resRoomId && currentRoomId && (resRoomId.includes(currentRoomId) || currentRoomId.includes(resRoomId))) ||
+              (resRoomId && rootId && (resRoomId.includes(rootId) || rootId.includes(resRoomId)))
+            );
+
+            const isTitleMatch = Boolean(resTitle && currentTitle && (
+              resTitle === currentTitle ||
+              resTitle.includes(currentTitle) ||
+              currentTitle.includes(resTitle)
+            ));
+
+            if (isIdMatch || isTitleMatch) {
+              const effectiveClass = resClass || sClass || targetClass;
+              const cleanStudentClass = effectiveClass.replace(/^Lớp\s*/i, '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+
+              // Check if matches class filter
+              const isClassAllowed = (
+                targetClass === 'Tất cả các lớp' ||
+                cleanTargetClass === '' ||
+                cleanStudentClass === cleanTargetClass ||
+                sCodeUpper.includes(cleanTargetClass)
+              );
+
+              if (!isClassAllowed) {
+                misplacedGames.push({ studentCode: sCode, gameKey: gKey, roomTitle: res.roomTitle });
+                continue;
+              }
+
+              const sName = res.studentName || data.studentName || rosterMap.get(sCodeUpper) || sCode;
+              const isCompleted = res.completed !== false && res.status !== 'in_progress';
+              const totalQ = res.totalQuestions || selectedLeaderboardGame.questions?.length || 1;
+              const ansQ = res.questionsAnswered !== undefined ? res.questionsAnswered : (isCompleted ? totalQ : 0);
+              const scoreVal = typeof res.score === 'number' ? res.score : 0;
+
+              const candidate = {
                 studentCode: sCode,
                 studentName: sName,
-                className: targetClass,
-                score: exactMatch.score !== undefined ? exactMatch.score : 0,
-                maxScore: exactMatch.maxScore || ((selectedLeaderboardGame.questions?.length || 1) * 100),
-                completed: exactMatch.completed !== undefined ? exactMatch.completed : true,
-                questionsAnswered: exactMatch.questionsAnswered || selectedLeaderboardGame.questions?.length || 1,
-                totalQuestions: exactMatch.totalQuestions || selectedLeaderboardGame.questions?.length || 1,
-                submittedAt: exactMatch.submittedAt || exactMatch.updatedAt || new Date().toISOString(),
-                rank: exactMatch.rank || 'unranked'
-              });
-              studentDetails.push({ code: sCode, name: sName, status: 'Đã tham gia', reason: 'Khớp chính xác roomId' });
-            } else {
-              let foundMisplaced = false;
-              for (const [gKey, gVal] of Object.entries(gamesObj)) {
-                const gRes = gVal as any;
-                if (gRes && selectedLeaderboardGame.title && gRes.roomTitle && gRes.roomTitle.trim().toLowerCase() === selectedLeaderboardGame.title.trim().toLowerCase()) {
-                  misplacedGames.push({ studentCode: sCode, gameKey: gKey, roomTitle: gRes.roomTitle });
-                  foundMisplaced = true;
+                className: effectiveClass,
+                score: scoreVal,
+                maxScore: res.maxScore || (totalQ * 100),
+                completed: isCompleted,
+                questionsAnswered: ansQ,
+                totalQuestions: totalQ,
+                submittedAt: res.submittedAt || res.updatedAt || new Date().toISOString(),
+                rank: res.rank || 'unranked',
+                source: 'student_results'
+              };
+
+              const existing = studentMap.get(sCodeUpper);
+              if (!existing) {
+                studentMap.set(sCodeUpper, candidate);
+              } else {
+                if (candidate.completed && !existing.completed) {
+                  studentMap.set(sCodeUpper, candidate);
+                } else if (candidate.completed === existing.completed && candidate.score > existing.score) {
+                  studentMap.set(sCodeUpper, candidate);
                 }
               }
-              studentDetails.push({ code: sCode, name: sName, status: 'Chưa tham gia', reason: foundMisplaced ? 'Có bài nộp nhưng lệch roomId' : 'Chưa có bản ghi kết quả' });
-            }
-          } else {
-            studentDetails.push({ code: sCode, name: sName, status: 'Chưa tham gia', reason: 'Chưa có tài liệu trên server' });
-          }
-        }
 
-        setLeaderboardResults(results);
-        setDebugTeacherInfo({
-          roomId: selectedLeaderboardGame.id,
-          readCount,
-          docsFound,
-          rosterSize: roster.length,
-          studentDetails,
-          misplacedGames
+              studentDetails.push({
+                code: sCode,
+                name: sName,
+                status: isCompleted ? 'Đã tham gia' : 'Đang làm dở',
+                reason: isIdMatch ? 'Khớp roomId' : 'Khớp tiêu đề phòng'
+              });
+            }
+          }
         });
       } catch (err) {
-        console.warn('Lỗi tải bảng xếp hạng game:', err);
-      } finally {
-        setIsLeaderboardLoading(false);
+        console.warn('Lỗi quét student_results cho leaderboard:', err);
       }
+
+      // 2. Scan quiz_live_sessions collection (for in-progress and completed sessions)
+      try {
+        const liveSnap = await getDocs(collection(db, 'quiz_live_sessions'));
+        liveSnap.forEach(docSnap => {
+          const p = docSnap.data();
+          if (!p || p.studentId?.startsWith('seed_st_')) return;
+
+          const pTargetId = String(p.targetId || '');
+          const pTitle = String(p.targetTitle || '').trim().toLowerCase();
+
+          const isTargetMatch = (
+            pTargetId === currentRoomId ||
+            pTargetId === currentOriginalId ||
+            pTargetId === rootId ||
+            (pTargetId && currentRoomId && (pTargetId.includes(currentRoomId) || currentRoomId.includes(pTargetId))) ||
+            Boolean(pTitle && currentTitle && (pTitle === currentTitle || pTitle.includes(currentTitle) || currentTitle.includes(pTitle)))
+          );
+
+          if (!isTargetMatch) return;
+
+          const pStudentId = normalizeStudentCode(p.studentId) || p.studentId;
+          const pStudentIdUpper = pStudentId.toUpperCase();
+          const pClass = p.studentClass || '';
+          const cleanPClass = pClass.replace(/^Lớp\s*/i, '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+
+          const isClassAllowed = (
+            targetClass === 'Tất cả các lớp' ||
+            cleanTargetClass === '' ||
+            cleanPClass === cleanTargetClass ||
+            pStudentIdUpper.includes(cleanTargetClass)
+          );
+
+          if (!isClassAllowed) return;
+
+          const isCompleted = p.status === 'completed';
+          const totalQ = p.totalQuestions || selectedLeaderboardGame.questions?.length || 1;
+          const ansQ = p.answeredCount !== undefined ? p.answeredCount : (isCompleted ? totalQ : 0);
+
+          let scoreVal = typeof p.score === 'number' ? p.score : 0;
+          if (scoreVal <= 10 && totalQ > 0) {
+            scoreVal = scoreVal * 10;
+          }
+
+          const candidate = {
+            studentCode: pStudentId,
+            studentName: p.studentName || rosterMap.get(pStudentIdUpper) || pStudentId,
+            className: pClass || targetClass,
+            score: scoreVal,
+            maxScore: totalQ * 100,
+            completed: isCompleted,
+            questionsAnswered: ansQ,
+            totalQuestions: totalQ,
+            submittedAt: p.completedAt ? new Date(p.completedAt).toISOString() : (p.updatedAt ? new Date(p.updatedAt).toISOString() : new Date().toISOString()),
+            rank: 'unranked',
+            source: 'quiz_live_sessions'
+          };
+
+          const existing = studentMap.get(pStudentIdUpper);
+          if (!existing) {
+            studentMap.set(pStudentIdUpper, candidate);
+          } else {
+            if (candidate.completed && !existing.completed) {
+              studentMap.set(pStudentIdUpper, candidate);
+            }
+          }
+        });
+      } catch (err) {
+        console.warn('Lỗi quét quiz_live_sessions cho leaderboard:', err);
+      }
+
+      const results = Array.from(studentMap.values());
+      setLeaderboardResults(results);
+      setDebugTeacherInfo({
+        roomId: currentRoomId,
+        readCount,
+        docsFound,
+        rosterSize: roster.length,
+        studentDetails,
+        misplacedGames
+      });
+    } catch (err) {
+      console.warn('Lỗi tải bảng xếp hạng game:', err);
+    } finally {
+      setIsLeaderboardLoading(false);
     }
-    fetchLeaderboard();
-  }, [selectedLeaderboardGame]);
+  }, [selectedLeaderboardGame, leaderboardClassFilter]);
+
+  useEffect(() => {
+    fetchLeaderboardData();
+  }, [fetchLeaderboardData]);
+
+  // Available classes for dropdown filter in leaderboard modal
+  const availableLeaderboardClasses = useMemo(() => {
+    const set = new Set<string>();
+    if (selectedLeaderboardGame?.classInfo) {
+      selectedLeaderboardGame.classInfo.split(',').forEach(c => {
+        const trimmed = c.trim();
+        if (trimmed) set.add(trimmed);
+      });
+    }
+    if (selectedLeaderboardGame?.grade) {
+      const gradeClasses = CLASSES_BY_GRADE[selectedLeaderboardGame.grade] || [];
+      gradeClasses.forEach(c => set.add(c));
+    } else {
+      ['Lớp 3A', 'Lớp 3B', 'Lớp 3C', 'Lớp 3D', 'Lớp 3E'].forEach(c => set.add(c));
+    }
+    leaderboardResults.forEach(r => {
+      if (r.className) set.add(r.className);
+    });
+    return Array.from(set);
+  }, [selectedLeaderboardGame, leaderboardResults]);
 
   const sortedLeaderboard = useMemo(() => {
     return [...leaderboardResults].sort((a, b) => {
+      if (a.completed !== b.completed) {
+        return a.completed ? -1 : 1;
+      }
       if (b.score !== a.score) return b.score - a.score;
+      if (b.questionsAnswered !== a.questionsAnswered) {
+        return b.questionsAnswered - a.questionsAnswered;
+      }
       return new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime();
     });
   }, [leaderboardResults]);
@@ -639,6 +829,64 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
     setMotivationalQuote(randomQuote);
     setCountdownStep(3);
     setGameMode('countdown');
+
+    // Register student session in-progress for accurate real-time tracking
+    const effectiveStudentCode = resolveAuthenticStudentId(currentUserId);
+    const studentCls = getEffectiveStudentClassAndGrade().studentClass || game.classInfo || 'Lớp 3D';
+    try {
+      joinQuizLiveSession({
+        targetId: game.id,
+        targetTitle: game.title,
+        subject: game.subject,
+        grade: game.grade,
+        studentId: effectiveStudentCode,
+        studentName: currentUserName || 'Học sinh',
+        studentClass: studentCls,
+        totalQuestions: game.questions?.length || 1
+      });
+      if (game.originalGameId && game.originalGameId !== game.id) {
+        joinQuizLiveSession({
+          targetId: game.originalGameId,
+          targetTitle: game.title,
+          subject: game.subject,
+          grade: game.grade,
+          studentId: effectiveStudentCode,
+          studentName: currentUserName || 'Học sinh',
+          studentClass: studentCls,
+          totalQuestions: game.questions?.length || 1
+        });
+      }
+      studentResultService.saveGameResult(effectiveStudentCode, game.id, {
+        score: 0,
+        maxScore: (game.questions?.length || 1) * 100,
+        rank: 'unranked',
+        submittedAt: new Date().toISOString(),
+        completed: false,
+        questionsAnswered: 0,
+        totalQuestions: game.questions?.length || 1,
+        studentName: currentUserName || 'Học sinh',
+        className: studentCls,
+        roomId: game.id,
+        roomTitle: game.title
+      });
+      if (game.originalGameId && game.originalGameId !== game.id) {
+        studentResultService.saveGameResult(effectiveStudentCode, game.originalGameId, {
+          score: 0,
+          maxScore: (game.questions?.length || 1) * 100,
+          rank: 'unranked',
+          submittedAt: new Date().toISOString(),
+          completed: false,
+          questionsAnswered: 0,
+          totalQuestions: game.questions?.length || 1,
+          studentName: currentUserName || 'Học sinh',
+          className: studentCls,
+          roomId: game.originalGameId,
+          roomTitle: game.title
+        });
+      }
+    } catch (e) {
+      console.warn('Lỗi ghi nhận tham gia đấu trường:', e);
+    }
   };
 
   const [debugSaveResult, setDebugSaveResult] = useState<{
@@ -680,6 +928,8 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
       setDebugSaveResult({ status: 'saving', path: pathStr, studentCode: effectiveStudentCode, roomId: activeGame.id });
     }
 
+    const studentCls = getEffectiveStudentClassAndGrade().studentClass || activeGame.classInfo || 'Lớp 3D';
+
     try {
       await studentResultService.saveGameResult(effectiveStudentCode, activeGame.id, {
         score: finalScore,
@@ -690,10 +940,50 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
         questionsAnswered: activeGame.questions.length,
         totalQuestions: activeGame.questions.length,
         studentName: currentUserName || 'Học sinh',
-        className: getEffectiveStudentClassAndGrade().studentClass || activeGame.classInfo || 'Lớp 3D',
+        className: studentCls,
         roomId: activeGame.id,
         roomTitle: activeGame.title
       });
+
+      if (activeGame.originalGameId && activeGame.originalGameId !== activeGame.id) {
+        await studentResultService.saveGameResult(effectiveStudentCode, activeGame.originalGameId, {
+          score: finalScore,
+          maxScore: totalPossible,
+          rank,
+          submittedAt: new Date().toISOString(),
+          completed: true,
+          questionsAnswered: activeGame.questions.length,
+          totalQuestions: activeGame.questions.length,
+          studentName: currentUserName || 'Học sinh',
+          className: studentCls,
+          roomId: activeGame.originalGameId,
+          roomTitle: activeGame.title
+        });
+      }
+
+      await completeQuizLiveSession({
+        targetId: activeGame.id,
+        studentId: effectiveStudentCode,
+        studentName: currentUserName || 'Học sinh',
+        studentClass: studentCls,
+        score: finalScore,
+        percentage: Math.round(ratio * 100),
+        totalQuestions: activeGame.questions.length,
+        answeredCount: activeGame.questions.length
+      });
+
+      if (activeGame.originalGameId && activeGame.originalGameId !== activeGame.id) {
+        await completeQuizLiveSession({
+          targetId: activeGame.originalGameId,
+          studentId: effectiveStudentCode,
+          studentName: currentUserName || 'Học sinh',
+          studentClass: studentCls,
+          score: finalScore,
+          percentage: Math.round(ratio * 100),
+          totalQuestions: activeGame.questions.length,
+          answeredCount: activeGame.questions.length
+        });
+      }
 
       if (db) {
         const verifyDocRef = doc(db, 'student_results', effectiveStudentCode);
@@ -905,6 +1195,24 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
       setScore((prev) => prev + 100);
     }
 
+    const effectiveStudentCode = resolveAuthenticStudentId(currentUserId);
+    try {
+      updateQuizLiveProgress({
+        targetId: activeGame.id,
+        studentId: effectiveStudentCode,
+        answeredCount: currentQuestionIndex + 1,
+        totalQuestions: activeGame.questions.length
+      });
+      if (activeGame.originalGameId && activeGame.originalGameId !== activeGame.id) {
+        updateQuizLiveProgress({
+          targetId: activeGame.originalGameId,
+          studentId: effectiveStudentCode,
+          answeredCount: currentQuestionIndex + 1,
+          totalQuestions: activeGame.questions.length
+        });
+      }
+    } catch {}
+
     if (activeGame.isTimeLimited !== false) {
       setTimeout(() => {
         if (currentQuestionIndex + 1 < activeGame.questions.length) {
@@ -931,6 +1239,24 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
       currentScore += 100;
       setScore((prev) => prev + 100);
     }
+
+    const effectiveStudentCode = resolveAuthenticStudentId(currentUserId);
+    try {
+      updateQuizLiveProgress({
+        targetId: activeGame.id,
+        studentId: effectiveStudentCode,
+        answeredCount: currentQuestionIndex + 1,
+        totalQuestions: activeGame.questions.length
+      });
+      if (activeGame.originalGameId && activeGame.originalGameId !== activeGame.id) {
+        updateQuizLiveProgress({
+          targetId: activeGame.originalGameId,
+          studentId: effectiveStudentCode,
+          answeredCount: currentQuestionIndex + 1,
+          totalQuestions: activeGame.questions.length
+        });
+      }
+    } catch {}
 
     if (activeGame.isTimeLimited !== false) {
       setTimeout(() => {
@@ -2954,9 +3280,9 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
               </div>
             </div>
 
-            {/* Search bar & debug scan */}
-            <div className="px-6 pt-4 flex items-center justify-between gap-3 relative z-10">
-              <div className="relative flex-1">
+            {/* Search bar, Class filter & refresh */}
+            <div className="px-6 pt-4 flex flex-wrap items-center justify-between gap-3 relative z-10">
+              <div className="relative flex-1 min-w-[200px]">
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
@@ -2966,6 +3292,34 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                   className="w-full pl-9 pr-4 py-2 bg-white/10 border border-white/20 rounded-xl text-xs text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-400"
                 />
               </div>
+
+              {/* Bộ lọc theo Lớp */}
+              <div className="flex items-center gap-2 shrink-0">
+                <Filter className="w-4 h-4 text-amber-300" />
+                <span className="text-xs font-bold text-amber-200">Lớp:</span>
+                <select
+                  value={leaderboardClassFilter}
+                  onChange={(e) => setLeaderboardClassFilter(e.target.value)}
+                  className="bg-indigo-950 border border-white/20 text-xs text-amber-200 font-extrabold rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-amber-400 cursor-pointer"
+                >
+                  <option value="Tất cả các lớp">Tất cả các lớp</option>
+                  {availableLeaderboardClasses.map(cls => (
+                    <option key={cls} value={cls}>{cls}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Nút làm mới */}
+              <button
+                onClick={fetchLeaderboardData}
+                disabled={isLeaderboardLoading}
+                title="Làm mới bảng xếp hạng"
+                className="px-3.5 py-2 bg-white/10 hover:bg-white/20 text-amber-300 rounded-xl border border-white/20 transition-all cursor-pointer flex items-center gap-1.5 text-xs font-bold shrink-0 disabled:opacity-50"
+              >
+                <RotateCw className={`w-3.5 h-3.5 ${isLeaderboardLoading ? 'animate-spin' : ''}`} />
+                <span>Làm mới</span>
+              </button>
+
               {typeof window !== 'undefined' && window.location.search.includes('debug=1') && (
                 <button
                   onClick={handleScanMisplacedGameResults}
@@ -3019,7 +3373,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                   </div>
                   <h4 className="text-base font-extrabold text-white">Chưa có học sinh tham gia</h4>
                   <p className="text-xs text-amber-200/80 max-w-sm leading-relaxed">
-                    Học sinh chưa hoàn thành lượt chơi thực tế của phòng thi đấu này. Khi học sinh hoàn thành, kết quả sẽ cập nhật real-time tại đây.
+                    Học sinh chưa hoàn thành lượt chơi thực tế của phòng thi đấu này. Khi học sinh hoàn thành hoặc đang làm bài, kết quả sẽ cập nhật real-time tại đây.
                   </p>
                 </div>
               ) : (
@@ -3030,6 +3384,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                         <th className="p-3.5 text-center w-16">Hạng</th>
                         <th className="p-3.5">Mã HS</th>
                         <th className="p-3.5">Học Sinh</th>
+                        <th className="p-3.5 text-center">Lớp</th>
                         <th className="p-3.5 text-center">Tiến Trình (Đúng/Sai)</th>
                         <th className="p-3.5 text-center">Thời Gian</th>
                         <th className="p-3.5 text-right">Điểm Số</th>
@@ -3037,20 +3392,40 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                     </thead>
                     <tbody className="divide-y divide-white/10 text-xs font-medium text-white">
                       {filteredLeaderboard.map((item, idx) => {
-                        const medal = idx === 0 ? '🥇 1' : idx === 1 ? '🥈 2' : idx === 2 ? '🥉 3' : `${idx + 1}`;
-                        const progressText = item.completed 
-                          ? `${item.questionsAnswered}/${item.totalQuestions} (100%)`
-                          : `Đã vào chơi (${item.questionsAnswered}/${item.totalQuestions} câu - Chưa hoàn thành)`;
-                        const timeStr = new Date(item.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                        const medal = item.completed 
+                          ? (idx === 0 ? '🥇 1' : idx === 1 ? '🥈 2' : idx === 2 ? '🥉 3' : `${idx + 1}`)
+                          : '⏳';
+                        const timeStr = item.submittedAt 
+                          ? new Date(item.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                          : '-';
 
                         return (
                           <tr key={item.studentCode} className="hover:bg-white/10 transition-colors">
                             <td className="p-3.5 text-center font-black text-amber-300">{medal}</td>
                             <td className="p-3.5 font-bold text-amber-200">{item.studentCode}</td>
                             <td className="p-3.5 font-extrabold text-white">{item.studentName}</td>
-                            <td className="p-3.5 text-center text-emerald-300 font-bold">{progressText}</td>
+                            <td className="p-3.5 text-center">
+                              <span className="px-2.5 py-1 rounded-lg bg-indigo-900/60 border border-indigo-400/30 text-amber-200 font-bold text-[11px]">
+                                {item.className || 'Lớp 3D'}
+                              </span>
+                            </td>
+                            <td className="p-3.5 text-center">
+                              {item.completed ? (
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-extrabold bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
+                                  <CheckCircle2 className="w-3.5 h-3.5" />
+                                  Hoàn thành ({item.questionsAnswered}/{item.totalQuestions})
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-extrabold bg-amber-500/20 text-amber-300 border border-amber-400/30 animate-pulse">
+                                  <Clock className="w-3.5 h-3.5" />
+                                  Đang làm dở ({item.questionsAnswered}/{item.totalQuestions} câu)
+                                </span>
+                              )}
+                            </td>
                             <td className="p-3.5 text-center text-amber-200">{timeStr}</td>
-                            <td className="p-3.5 text-right font-black text-amber-300">{item.score.toLocaleString()} đ</td>
+                            <td className="p-3.5 text-right font-black text-amber-300">
+                              {item.completed ? `${item.score.toLocaleString()} đ` : `${item.score || 0} đ`}
+                            </td>
                           </tr>
                         );
                       })}
