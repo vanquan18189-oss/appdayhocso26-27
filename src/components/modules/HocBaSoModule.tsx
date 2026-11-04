@@ -2518,7 +2518,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
   };
 
   const getInitialGradeAndClass = (): { grade: string; className: string } => {
-    return { grade: 'Khối 3', className: 'Lớp 3C' };
+    return { grade: 'Khối 5', className: 'Lớp 5C' };
   };
 
   const userKey = useMemo(() => getCurrentUserAccountKey(), []);
