@@ -142,7 +142,19 @@ export const studentResultService = {
   async saveGameResult(
     rawStudentCode: string,
     gameId: string,
-    resultData: { score: number; maxScore: number; rank: number | 'unranked'; submittedAt: string }
+    resultData: {
+      score: number;
+      maxScore: number;
+      rank: number | 'unranked';
+      submittedAt: string;
+      completed?: boolean;
+      questionsAnswered?: number;
+      totalQuestions?: number;
+      studentName?: string;
+      className?: string;
+      roomId?: string;
+      roomTitle?: string;
+    }
   ): Promise<boolean> {
     try {
       const studentCode = normalizeStudentCode(rawStudentCode);

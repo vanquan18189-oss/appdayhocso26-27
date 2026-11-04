@@ -42,6 +42,9 @@ import {
 import { GameItem, GameType, UserRole, QuizziGameItem } from '../../types';
 import { getStudentGameProfile, resolveAuthenticStudentId } from '../../services/studentGameStoreService';
 import { studentResultService } from '../../services/studentResultService';
+import { normalizeStudentCode } from '../../services/studentCode';
+import { db } from '../../services/firebase';
+import { collection, getDocs, doc, writeBatch } from 'firebase/firestore';
 import { ShareContentModal } from './ShareContentModal';
 import { StudentGameStoreTab } from './StudentGameStoreTab';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
@@ -424,8 +427,110 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
   };
 
 
-  // Leaderboard modal state
+  // Leaderboard modal state & real student results
   const [selectedLeaderboardGame, setSelectedLeaderboardGame] = useState<GameItem | null>(null);
+  const [leaderboardResults, setLeaderboardResults] = useState<any[]>([]);
+  const [isLeaderboardLoading, setIsLeaderboardLoading] = useState<boolean>(false);
+  const [leaderboardSearch, setLeaderboardSearch] = useState<string>('');
+
+  useEffect(() => {
+    if (!selectedLeaderboardGame) {
+      setLeaderboardResults([]);
+      setLeaderboardSearch('');
+      return;
+    }
+    async function fetchLeaderboard() {
+      setIsLeaderboardLoading(true);
+      try {
+        if (!db) {
+          setIsLeaderboardLoading(false);
+          return;
+        }
+        const snap = await getDocs(collection(db, 'student_results'));
+        const results: any[] = [];
+        snap.forEach(docSnap => {
+          const docData = docSnap.data();
+          if (!docData || !docData.studentCode) return;
+          const gamesObj = docData.games || {};
+          const gameResult = gamesObj[selectedLeaderboardGame.id] ||
+                             Object.values(gamesObj).find((g: any) => g && (g.roomId === selectedLeaderboardGame.id || g.roomTitle === selectedLeaderboardGame.title));
+          if (gameResult) {
+            results.push({
+              studentCode: normalizeStudentCode(docData.studentCode || gameResult.studentCode),
+              studentName: docData.studentName || gameResult.studentName || docData.studentCode,
+              className: docData.className || gameResult.className || selectedLeaderboardGame.classInfo || '',
+              score: gameResult.score !== undefined ? gameResult.score : 0,
+              maxScore: gameResult.maxScore || ((selectedLeaderboardGame.questions?.length || 1) * 100),
+              completed: gameResult.completed !== undefined ? gameResult.completed : true,
+              questionsAnswered: gameResult.questionsAnswered || selectedLeaderboardGame.questions?.length || 1,
+              totalQuestions: gameResult.totalQuestions || selectedLeaderboardGame.questions?.length || 1,
+              submittedAt: gameResult.submittedAt || gameResult.updatedAt || new Date().toISOString(),
+              rank: gameResult.rank || 'unranked'
+            });
+          }
+        });
+        setLeaderboardResults(results);
+      } catch (err) {
+        console.warn('Lỗi tải bảng xếp hạng game:', err);
+      } finally {
+        setIsLeaderboardLoading(false);
+      }
+    }
+    fetchLeaderboard();
+  }, [selectedLeaderboardGame]);
+
+  const sortedLeaderboard = useMemo(() => {
+    return [...leaderboardResults].sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime();
+    });
+  }, [leaderboardResults]);
+
+  const filteredLeaderboard = useMemo(() => {
+    if (!leaderboardSearch.trim()) return sortedLeaderboard;
+    const q = leaderboardSearch.trim().toLowerCase();
+    return sortedLeaderboard.filter((item, idx) => {
+      const sttStr = String(idx + 1);
+      const codeStr = (item.studentCode || '').toLowerCase();
+      const nameStr = (item.studentName || '').toLowerCase();
+      return codeStr.includes(q) || nameStr.includes(q) || sttStr === q;
+    });
+  }, [sortedLeaderboard, leaderboardSearch]);
+
+  const participatedCount = leaderboardResults.length;
+  const completedCount = leaderboardResults.filter(r => r.completed).length;
+
+  const handleScanMisplacedGameResults = async () => {
+    if (!selectedLeaderboardGame || !db) return;
+    try {
+      const snap = await getDocs(collection(db, 'student_results'));
+      const exactMatch: any[] = [];
+      const normalizedMatch: any[] = [];
+      const unmatched: any[] = [];
+
+      snap.forEach(docSnap => {
+        const data = docSnap.data();
+        if (!data || !data.games) return;
+        const studentCode = data.studentCode || docSnap.id;
+        for (const [gKey, gVal] of Object.entries(data.games)) {
+          const res = gVal as any;
+          if (!res) continue;
+          if (gKey === selectedLeaderboardGame.id || res.roomId === selectedLeaderboardGame.id) {
+            exactMatch.push({ studentCode, ...res });
+          } else if (res.roomTitle && selectedLeaderboardGame.title && res.roomTitle.trim().toLowerCase() === selectedLeaderboardGame.title.trim().toLowerCase()) {
+            normalizedMatch.push({ studentCode, ...res });
+          } else {
+            unmatched.push({ studentCode, gameKey: gKey, ...res });
+          }
+        }
+      });
+
+      alert(`[QUÉT KẾT QUẢ TRÒ CHƠI LẠC MÃ]\n- Khớp chính xác (roomId): ${exactMatch.length} bản ghi\n- Khớp theo tiêu đề: ${normalizedMatch.length} bản ghi\n- Khác/Không khớp: ${unmatched.length} bản ghi`);
+    } catch (err) {
+      console.error('Lỗi quét kết quả game:', err);
+      alert('Lỗi khi quét kết quả trò chơi');
+    }
+  };
 
   // Delete confirmation modal state
   const [roomToDelete, setRoomToDelete] = useState<GameItem | null>(null);
@@ -485,7 +590,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
     setGameMode('countdown');
   };
 
-  const finishGameAndAward = (finalScore: number) => {
+  const finishGameAndAward = async (finalScore: number) => {
     if (!activeGame) return;
     setGameMode('result');
     if (finalScore > 0) {
@@ -511,16 +616,21 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
     }
 
     try {
-      studentResultService.saveGameResult(effectiveStudentCode, activeGame.id, {
+      await studentResultService.saveGameResult(effectiveStudentCode, activeGame.id, {
         score: finalScore,
         maxScore: totalPossible,
         rank,
-        submittedAt: new Date().toISOString()
-      }).catch(err => {
-        console.warn('Lỗi lưu kết quả game vào student_results:', err);
+        submittedAt: new Date().toISOString(),
+        completed: true,
+        questionsAnswered: activeGame.questions.length,
+        totalQuestions: activeGame.questions.length,
+        studentName: currentUserName || 'Học sinh',
+        className: getEffectiveStudentClassAndGrade().studentClass || activeGame.classInfo || 'Lớp 3D',
+        roomId: activeGame.id,
+        roomTitle: activeGame.title
       });
     } catch (err) {
-      console.warn('Lỗi gọi studentResultService.saveGameResult:', err);
+      console.warn('Lỗi lưu kết quả game vào student_results:', err);
     }
   };
 
@@ -2704,26 +2814,53 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
             {/* Room Info Summary Bar */}
             <div className="bg-white/10 backdrop-blur-md border-b border-white/15 p-4 grid grid-cols-2 sm:grid-cols-4 gap-3 text-center relative z-10">
               <div className="bg-white/10 p-2.5 rounded-xl border border-white/15">
-                <span className="text-[10px] font-bold text-amber-300 block uppercase">Môn học</span>
-                <span className="text-xs font-black text-white">{selectedLeaderboardGame.subject}</span>
+                <span className="text-[10px] font-bold text-amber-300 block uppercase">Đã tham gia</span>
+                <span className="text-xs font-black text-white">{participatedCount} học sinh</span>
               </div>
               <div className="bg-white/10 p-2.5 rounded-xl border border-white/15">
-                <span className="text-[10px] font-bold text-amber-300 block uppercase">Chủ đề</span>
-                <span className="text-xs font-black text-white truncate block">{selectedLeaderboardGame.grade}</span>
+                <span className="text-[10px] font-bold text-amber-300 block uppercase">Đã hoàn thành</span>
+                <span className="text-xs font-black text-emerald-300">{completedCount} học sinh</span>
               </div>
               <div className="bg-white/10 p-2.5 rounded-xl border border-white/15">
                 <span className="text-[10px] font-bold text-amber-300 block uppercase">Số câu hỏi</span>
                 <span className="text-xs font-black text-amber-200">{selectedLeaderboardGame.questions.length} câu</span>
               </div>
               <div className="bg-white/10 p-2.5 rounded-xl border border-white/15">
-                <span className="text-[10px] font-bold text-amber-300 block uppercase">Học sinh tham gia</span>
-                <span className="text-xs font-black text-emerald-300">{selectedLeaderboardGame.playersCount || 0} học sinh</span>
+                <span className="text-[10px] font-bold text-amber-300 block uppercase">Môn học</span>
+                <span className="text-xs font-black text-white">{selectedLeaderboardGame.subject}</span>
               </div>
+            </div>
+
+            {/* Search bar & debug scan */}
+            <div className="px-6 pt-4 flex items-center justify-between gap-3 relative z-10">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Tìm kiếm theo Mã HS, Tên học sinh hoặc Số thứ tự..."
+                  value={leaderboardSearch}
+                  onChange={(e) => setLeaderboardSearch(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 bg-white/10 border border-white/20 rounded-xl text-xs text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                />
+              </div>
+              {typeof window !== 'undefined' && window.location.search.includes('debug=1') && (
+                <button
+                  onClick={handleScanMisplacedGameResults}
+                  className="px-3.5 py-2 bg-amber-500 hover:bg-amber-600 text-indigo-950 font-black text-xs rounded-xl shadow-md transition-all cursor-pointer shrink-0"
+                >
+                  Quét kết quả trò chơi lạc mã
+                </button>
+              )}
             </div>
 
             {/* Leaderboard Table / Empty State */}
             <div className="p-6 overflow-y-auto flex-1 relative z-10">
-              {(!selectedLeaderboardGame.playersCount || selectedLeaderboardGame.playersCount === 0) ? (
+              {isLeaderboardLoading ? (
+                <div className="py-16 flex flex-col items-center justify-center text-center space-y-3">
+                  <div className="w-12 h-12 rounded-full border-4 border-amber-400 border-t-transparent animate-spin" />
+                  <p className="text-xs text-amber-200">Đang tải dữ liệu bảng xếp hạng...</p>
+                </div>
+              ) : filteredLeaderboard.length === 0 ? (
                 <div className="py-16 flex flex-col items-center justify-center text-center space-y-3">
                   <div className="w-16 h-16 rounded-full bg-amber-400/20 text-amber-300 flex items-center justify-center text-2xl font-bold border-2 border-amber-400/40 animate-pulse">
                     ⏳
@@ -2747,14 +2884,24 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/10 text-xs font-medium text-white">
-                      <tr className="hover:bg-white/10 transition-colors">
-                        <td className="p-3.5 text-center font-black text-amber-300">🥇 1</td>
-                        <td className="p-3.5 font-bold text-amber-200">HS0189</td>
-                        <td className="p-3.5 font-extrabold text-white">Lê Minh Anh</td>
-                        <td className="p-3.5 text-center text-emerald-300 font-bold">{selectedLeaderboardGame.questions.length}/{selectedLeaderboardGame.questions.length} (100%)</td>
-                        <td className="p-3.5 text-center text-amber-200">01:45</td>
-                        <td className="p-3.5 text-right font-black text-amber-300">1,000 đ</td>
-                      </tr>
+                      {filteredLeaderboard.map((item, idx) => {
+                        const medal = idx === 0 ? '🥇 1' : idx === 1 ? '🥈 2' : idx === 2 ? '🥉 3' : `${idx + 1}`;
+                        const progressText = item.completed 
+                          ? `${item.questionsAnswered}/${item.totalQuestions} (100%)`
+                          : `Đã vào chơi (${item.questionsAnswered}/${item.totalQuestions} câu - Chưa hoàn thành)`;
+                        const timeStr = new Date(item.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+                        return (
+                          <tr key={item.studentCode} className="hover:bg-white/10 transition-colors">
+                            <td className="p-3.5 text-center font-black text-amber-300">{medal}</td>
+                            <td className="p-3.5 font-bold text-amber-200">{item.studentCode}</td>
+                            <td className="p-3.5 font-extrabold text-white">{item.studentName}</td>
+                            <td className="p-3.5 text-center text-emerald-300 font-bold">{progressText}</td>
+                            <td className="p-3.5 text-center text-amber-200">{timeStr}</td>
+                            <td className="p-3.5 text-right font-black text-amber-300">{item.score.toLocaleString()} đ</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
