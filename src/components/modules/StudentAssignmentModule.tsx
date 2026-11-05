@@ -92,23 +92,6 @@ export const getCanonicalAssignmentKey = (item: any): string => {
   if (!item) return '';
   const as = item.assignment || item;
   const rawId = String(as.id || item.id || as.assignmentId || item.assignmentId || '').trim();
-  const rootId = (as.originalAssignmentId || rawId).replace(/-class-.*$/i, '').replace(/^as-/i, '').trim().toLowerCase();
-  
-  const rawTitle = String(as.title || item.title || '').trim().toLowerCase()
-    .replace(/^bài tập tự luyện:\s*/i, '')
-    .replace(/^bài tập:\s*/i, '')
-    .replace(/^luyện tập:\s*/i, '')
-    .replace(/^rèn luyện:\s*/i, '')
-    .replace(/\s+/g, ' ');
-  const subject = String(as.subject || item.subject || '').trim().toLowerCase();
-
-  // If rootId is meaningful (not legacy or generic submission ID starting with sub-)
-  if (rootId && rootId !== 'legacy' && !rootId.startsWith('sub-')) {
-    return `as_${rootId}`;
-  }
-  if (rawTitle) {
-    return `title_${rawTitle}__sub_${subject}`;
-  }
   return rawId || 'unknown';
 };
 
@@ -645,32 +628,35 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       return bSubs - aSubs;
     });
 
-    // 2. Khử trùng lặp theo ID và nhóm bài tập (root ID hoặc chữ ký tiêu đề + môn + khối)
-    const seenIds = new Set<string>();
-    const seenKeys = new Set<string>();
-    const cleanList: HomeworkAssignment[] = [];
-
+    // 2. Cơ chế Khử trùng lặp thông minh (Smart Deduplication): Gom nhóm theo rootId hoặc tiêu đề + môn + khối, chọn bản tốt nhất (nhiều bài nộp nhất hoặc mới nhất)
+    const map = new Map<string, HomeworkAssignment>();
     sortedFiltered.forEach(as => {
-      if (seenIds.has(as.id)) return;
+      if ((as as any).status === 'archived') return;
       const cleanTitle = (as.title || '')
         .trim()
         .toLowerCase()
         .replace(/^bài tập tự luyện:\s*/i, '')
         .replace(/^bài tập:\s*/i, '')
+        .replace(/^luyện tập:\s*/i, '')
         .replace(/\s+/g, ' ');
-      
+
       const rootId = as.originalAssignmentId || (as as any).groupId || as.id.replace(/-class-.*$/, '');
       const semanticKey = `${cleanTitle}__${(as.subject || '').trim().toLowerCase()}__${(as.grade || '').trim().toLowerCase()}`;
-      const groupKey = rootId && rootId !== as.id ? `root::${rootId}` : `semantic::${semanticKey}`;
+      const groupKey = rootId && rootId !== 'legacy' ? `root::${rootId}` : `semantic::${semanticKey}`;
 
-      if (seenKeys.has(groupKey)) return;
-
-      seenIds.add(as.id);
-      seenKeys.add(groupKey);
-      cleanList.push(as);
+      if (!map.has(groupKey)) {
+        map.set(groupKey, as);
+      } else {
+        const existing = map.get(groupKey)!;
+        const existingSubs = (existing.submissions?.length || existing.completedCount || 0);
+        const currentSubs = (as.submissions?.length || as.completedCount || 0);
+        if (currentSubs > existingSubs) {
+          map.set(groupKey, as);
+        }
+      }
     });
 
-    return cleanList;
+    return Array.from(map.values());
   }, [liveAssignments, studentClass, studentGrade, isPreviewMode, effectiveUserId]);
 
   const historySubmissions = useMemo(() => {
@@ -687,14 +673,19 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
     return deduplicateAssignmentSubmissions(list);
   }, [assignmentHistory]);
 
-  // Thống kê 4 ô cho Phân hệ Nhiệm vụ học tập
+  // Thống kê 4 ô cho Phân hệ Nhiệm vụ học tập (Bộ đếm nhất quán: Tổng = số thẻ khác nhau, Đã hoàn thành = số bài có ít nhất 1 bài nộp, Cần làm = Tổng - Đã hoàn thành)
   const assignmentStats = useMemo(() => {
     const totalCount = todoAssignments.length;
-    const completedCount = historySubmissions.length;
-    const completedKeys = new Set(historySubmissions.map(s => getCanonicalAssignmentKey(s)));
-    const pendingCount = todoAssignments.filter(
-      as => !completedKeys.has(getCanonicalAssignmentKey(as)) && !historySubmissions.some(sub => (sub.assignment?.id && sub.assignment.id === as.id) || (sub.id && sub.id === as.id))
-    ).length;
+    const completedAssignments = todoAssignments.filter(as => {
+      const subs = Array.isArray(as.submissions) ? as.submissions : [];
+      const hasSub = subs.some((s: any) => {
+        const sid = String(s.studentId || s.studentCode || s.maHs || s.code || '').trim().toLowerCase();
+        return sid === effectiveUserId.toLowerCase();
+      }) || historySubmissions.some(sub => sub.assignment?.id === as.id || sub.id === as.id);
+      return hasSub;
+    });
+    const completedCount = completedAssignments.length;
+    const pendingCount = Math.max(0, totalCount - completedCount);
 
     let avgScoreStr = '0 / 10';
     const scoredHistory = historySubmissions.filter(sub => isSubjectWithScore(sub.subject || sub.assignment?.subject));
@@ -713,7 +704,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       pendingCount,
       avgScoreStr,
     };
-  }, [todoAssignments, historySubmissions]);
+  }, [todoAssignments, historySubmissions, effectiveUserId]);
 
   // Nếu đang làm bài, render component StudentExamModule chuyên biệt để hỗ trợ đầy đủ các dạng câu hỏi (phân loại, ghép nối...)
   if (solvingAssignment) {
@@ -771,8 +762,41 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
     );
   }
 
+  const isDebugMode = typeof window !== 'undefined' && window.location.search.includes('debug=1');
+
   return (
     <div className="space-y-6 pb-12 w-full">
+      {isDebugMode && (
+        <div className="bg-slate-900 text-emerald-300 p-4 rounded-2xl text-xs font-mono space-y-2 border border-emerald-500/40">
+          <div className="font-bold text-white flex items-center justify-between">
+            <span>🐛 [STUDENT DEBUG MODE (?debug=1)] Học sinh: {effectiveUserName} ({effectiveUserId}) - Lớp {studentClass}</span>
+            <span>Tổng bài: {todoAssignments.length}</span>
+          </div>
+          <div className="max-h-48 overflow-y-auto space-y-1">
+            {todoAssignments.map((as, idx) => {
+              const subs = Array.isArray(as.submissions) ? as.submissions : [];
+              const hasSubmitted = subs.some((s: any) => String(s.studentId || s.studentCode || s.maHs || '').toLowerCase() === effectiveUserId.toLowerCase());
+              const source = as.id.startsWith('as-') ? 'Firestore/Cache' : 'Local';
+              return (
+                <div key={as.id} className="bg-slate-800 p-2 rounded border border-slate-700 flex items-center justify-between">
+                  <div>
+                    <span className="text-amber-400 font-bold">#{idx + 1} ID: {as.id}</span> | 
+                    <span> Tiêu đề: {as.title}</span> | 
+                    <span> Lớp: {as.targetClass || 'Chung'}</span> | 
+                    <span> Nguồn: {source}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`px-2 py-0.5 rounded text-[10px] ${hasSubmitted ? 'bg-emerald-900 text-emerald-200' : 'bg-amber-900 text-amber-200'}`}>
+                      {hasSubmitted ? 'Đã hoàn thành' : 'Chưa làm'} ({subs.length} nộp)
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {isPreviewMode && (
         <div className="bg-amber-500/15 border-2 border-dashed border-amber-500/40 text-amber-900 rounded-2xl p-4 text-xs font-black flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xs">
           <div className="flex items-center gap-2">

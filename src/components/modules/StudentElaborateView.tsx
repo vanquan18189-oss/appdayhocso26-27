@@ -67,7 +67,55 @@ export const StudentElaborateView: React.FC<StudentElaborateViewProps> = ({
 
   // Toolbar & Settings states
   const [isBilingual, setIsBilingual] = useState<boolean>(false);
-  const [fontSizeLevel, setFontSizeLevel] = useState<'sm' | 'base' | 'lg' | 'xl'>('base');
+  const [fontSizeLevel, setFontSizeLevel] = useState<'sm' | 'base' | 'lg' | 'xl'>(() => {
+    try {
+      const saved = localStorage.getItem('eduplay_student_font_size_level');
+      if (saved === 'sm' || saved === 'base' || saved === 'lg' || saved === 'xl') return saved;
+    } catch {}
+    return 'base';
+  });
+
+  const saveFontSizeLevel = (newLevel: 'sm' | 'base' | 'lg' | 'xl') => {
+    setFontSizeLevel(newLevel);
+    try {
+      localStorage.setItem('eduplay_student_font_size_level', newLevel);
+    } catch {}
+  };
+
+  const increaseFontSize = () => {
+    if (fontSizeLevel === 'sm') saveFontSizeLevel('base');
+    else if (fontSizeLevel === 'base') saveFontSizeLevel('lg');
+    else if (fontSizeLevel === 'lg') saveFontSizeLevel('xl');
+  };
+
+  const decreaseFontSize = () => {
+    if (fontSizeLevel === 'xl') saveFontSizeLevel('lg');
+    else if (fontSizeLevel === 'lg') saveFontSizeLevel('base');
+    else if (fontSizeLevel === 'base') saveFontSizeLevel('sm');
+  };
+
+  const getQuestionFontSizeClass = () => {
+    switch (fontSizeLevel) {
+      case 'sm': return 'text-sm sm:text-base font-extrabold text-slate-900 leading-relaxed';
+      case 'base': return 'text-base sm:text-lg font-extrabold text-slate-900 leading-relaxed';
+      case 'lg': return 'text-lg sm:text-xl font-extrabold text-slate-900 leading-relaxed';
+      case 'xl': return 'text-xl sm:text-2xl font-extrabold text-slate-900 leading-relaxed';
+      default: return 'text-base sm:text-lg font-extrabold text-slate-900 leading-relaxed';
+    }
+  };
+
+  const getAnswerFontSizeClass = () => {
+    switch (fontSizeLevel) {
+      case 'sm': return 'text-sm sm:text-base font-medium text-slate-800 leading-relaxed';
+      case 'base': return 'text-base sm:text-lg font-medium text-slate-800 leading-relaxed';
+      case 'lg': return 'text-lg sm:text-xl font-medium text-slate-800 leading-relaxed';
+      case 'xl': return 'text-xl sm:text-2xl font-medium text-slate-800 leading-relaxed';
+      default: return 'text-base sm:text-lg font-medium text-slate-800 leading-relaxed';
+    }
+  };
+
+  const getFontSizeClass = () => getAnswerFontSizeClass();
+
   const [timerSeconds, setTimerSeconds] = useState<number>(0);
   const [isTimerRunning, setIsTimerRunning] = useState<boolean>(true);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
@@ -106,29 +154,6 @@ export const StudentElaborateView: React.FC<StudentElaborateViewProps> = ({
     const mins = Math.floor(totalSeconds / 60);
     const secs = totalSeconds % 60;
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  // Font size classes
-  const getFontSizeClass = () => {
-    switch (fontSizeLevel) {
-      case 'sm': return 'text-xs';
-      case 'base': return 'text-sm';
-      case 'lg': return 'text-base';
-      case 'xl': return 'text-lg';
-      default: return 'text-sm';
-    }
-  };
-
-  const increaseFontSize = () => {
-    if (fontSizeLevel === 'sm') setFontSizeLevel('base');
-    else if (fontSizeLevel === 'base') setFontSizeLevel('lg');
-    else if (fontSizeLevel === 'lg') setFontSizeLevel('xl');
-  };
-
-  const decreaseFontSize = () => {
-    if (fontSizeLevel === 'xl') setFontSizeLevel('lg');
-    else if (fontSizeLevel === 'lg') setFontSizeLevel('base');
-    else if (fontSizeLevel === 'base') setFontSizeLevel('sm');
   };
 
   // Current active question
@@ -598,7 +623,7 @@ export const StudentElaborateView: React.FC<StudentElaborateViewProps> = ({
         
         {/* Context Prompt (In nghiêng như mẫu: "Quan sát hình dưới đây:") */}
         <div>
-          <h3 className="text-sm sm:text-base font-extrabold italic text-slate-900 tracking-tight">
+          <h3 className={getQuestionFontSizeClass()}>
             {currentQ.content || 'Quan sát và trả lời câu hỏi dưới đây:'}
           </h3>
           {isBilingual && (
@@ -726,7 +751,7 @@ export const StudentElaborateView: React.FC<StudentElaborateViewProps> = ({
           <div className="space-y-4">
             {/* 1. Multiple Choice */}
             {(!currentQ.type || currentQ.type === 'multiple_choice') && currentQ.options && (
-              <div className={`grid ${currentQ.options.some(o => o.length > 30) ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2'} gap-3 pt-2`}>
+              <div className={`grid ${currentQ.options.some(o => o.length > 30) ? 'grid-cols-1' : 'grid-cols-1 sm:grid-cols-2'} gap-4 pt-2`}>
                 {currentQ.options.map((opt, optIdx) => {
                   const optLetter = String.fromCharCode(65 + optIdx);
                   const isSelected = studentAnswers[currentQ.id] === optLetter;
@@ -736,20 +761,20 @@ export const StudentElaborateView: React.FC<StudentElaborateViewProps> = ({
                       key={optIdx}
                       type="button"
                       onClick={() => handleOptionSelect(currentQ.id, optLetter)}
-                      className={`p-3.5 rounded-2xl text-left border transition-all flex items-center gap-3 cursor-pointer ${
+                      className={`p-4 sm:p-5 rounded-2xl text-left border transition-all flex items-center gap-4 cursor-pointer ${
                         isSelected
                           ? 'bg-indigo-50/80 border-indigo-600 text-indigo-950 font-bold shadow-xs'
-                          : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                          : 'bg-white border-slate-200 text-slate-800 hover:bg-slate-50'
                       }`}
                     >
-                      <span className={`w-5 h-5 rounded-full border flex items-center justify-center shrink-0 transition-all ${
+                      <span className={`w-8 h-8 rounded-xl border flex items-center justify-center font-bold text-xs shrink-0 transition-all ${
                         isSelected 
                           ? 'border-indigo-600 bg-indigo-600 text-white' 
-                          : 'border-slate-300 bg-white'
+                          : 'border-slate-300 bg-slate-200 text-slate-700'
                       }`}>
-                        {isSelected && <span className="w-2 h-2 rounded-full bg-white" />}
+                        {optLetter}
                       </span>
-                      <span className={`${getFontSizeClass()} leading-relaxed flex-1`}>{opt}</span>
+                      <span className={`${getAnswerFontSizeClass()} flex-1`}>{opt}</span>
                     </button>
                   );
                 })}

@@ -54,6 +54,53 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
   currentClass
 }) => {
   const [selectingLeftItem, setSelectingLeftItem] = useState<{ [qId: string]: number | null }>({});
+  const [fontSizeLevel, setFontSizeLevel] = useState<'sm' | 'base' | 'lg' | 'xl'>(() => {
+    try {
+      const saved = localStorage.getItem('eduplay_student_font_size_level');
+      if (saved === 'sm' || saved === 'base' || saved === 'lg' || saved === 'xl') return saved;
+    } catch {}
+    return 'base';
+  });
+
+  const saveFontSizeLevel = (newLevel: 'sm' | 'base' | 'lg' | 'xl') => {
+    setFontSizeLevel(newLevel);
+    try {
+      localStorage.setItem('eduplay_student_font_size_level', newLevel);
+    } catch {}
+  };
+
+  const increaseFontSize = () => {
+    if (fontSizeLevel === 'sm') saveFontSizeLevel('base');
+    else if (fontSizeLevel === 'base') saveFontSizeLevel('lg');
+    else if (fontSizeLevel === 'lg') saveFontSizeLevel('xl');
+  };
+
+  const decreaseFontSize = () => {
+    if (fontSizeLevel === 'xl') saveFontSizeLevel('lg');
+    else if (fontSizeLevel === 'lg') saveFontSizeLevel('base');
+    else if (fontSizeLevel === 'base') saveFontSizeLevel('sm');
+  };
+
+  const getQuestionFontSizeClass = () => {
+    switch (fontSizeLevel) {
+      case 'sm': return 'text-sm sm:text-base font-extrabold text-slate-900 leading-relaxed';
+      case 'base': return 'text-base sm:text-lg font-extrabold text-slate-900 leading-relaxed';
+      case 'lg': return 'text-lg sm:text-xl font-extrabold text-slate-900 leading-relaxed';
+      case 'xl': return 'text-xl sm:text-2xl font-extrabold text-slate-900 leading-relaxed';
+      default: return 'text-base sm:text-lg font-extrabold text-slate-900 leading-relaxed';
+    }
+  };
+
+  const getAnswerFontSizeClass = () => {
+    switch (fontSizeLevel) {
+      case 'sm': return 'text-sm sm:text-base font-medium text-slate-800 leading-relaxed';
+      case 'base': return 'text-base sm:text-lg font-medium text-slate-800 leading-relaxed';
+      case 'lg': return 'text-lg sm:text-xl font-medium text-slate-800 leading-relaxed';
+      case 'xl': return 'text-xl sm:text-2xl font-medium text-slate-800 leading-relaxed';
+      default: return 'text-base sm:text-lg font-medium text-slate-800 leading-relaxed';
+    }
+  };
+
   const evaluateStep = lesson.stepEvaluate as any;
   
   // Comprehensive evaluation of whether Step 3 is enabled or closed across all flags
@@ -418,7 +465,7 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
       {/* SUB-STEP 2: HƯỚNG GIẢI QUYẾT & CÂU HỎI TƯƠNG TÁC */}
       {effectiveSubStep === 2 && (
         <div className="bg-slate-50 p-6 sm:p-8 rounded-3xl border border-slate-200 space-y-6 animate-in fade-in duration-200">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-200">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-3 border-b border-slate-200">
             <div className="flex items-center gap-2">
               <span className="w-7 h-7 rounded-xl bg-pink-100 text-pink-700 font-extrabold text-xs flex items-center justify-center">
                 2
@@ -427,12 +474,35 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
                 Bước 2: Hướng giải quyết & Câu hỏi tương tác
               </span>
             </div>
-            <button
-              onClick={() => setCurrentSubStep(1)}
-              className="text-xs text-pink-600 hover:text-pink-700 font-bold underline cursor-pointer"
-            >
-              ← Xem lại tình huống
-            </button>
+            <div className="flex items-center gap-3">
+              {/* Font size control toolbar */}
+              <div className="flex items-center bg-white rounded-xl border border-slate-200 overflow-hidden shadow-2xs">
+                <button
+                  type="button"
+                  onClick={decreaseFontSize}
+                  className="px-2.5 py-1.5 hover:bg-slate-100 text-xs font-bold text-slate-700 flex items-center gap-0.5 cursor-pointer border-r border-slate-200"
+                  title="Giảm cỡ chữ"
+                >
+                  <span>A</span>
+                  <span className="text-[10px]">▾</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={increaseFontSize}
+                  className="px-2.5 py-1.5 hover:bg-slate-100 text-xs font-black text-slate-900 flex items-center gap-0.5 cursor-pointer"
+                  title="Tăng cỡ chữ"
+                >
+                  <span>A</span>
+                  <span className="text-[10px]">▴</span>
+                </button>
+              </div>
+              <button
+                onClick={() => setCurrentSubStep(1)}
+                className="text-xs text-pink-600 hover:text-pink-700 font-bold underline cursor-pointer"
+              >
+                ← Xem lại tình huống
+              </button>
+            </div>
           </div>
 
           {questions.length === 0 ? (
@@ -452,13 +522,13 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
               const qType = q.type || 'multiple_choice';
 
               return (
-                <div key={q.id || qIdx} className="bg-white p-6 rounded-2xl border border-slate-200 space-y-4 shadow-xs">
+                <div key={q.id || qIdx} className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-200 space-y-5 shadow-sm">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-extrabold text-pink-800 bg-pink-100 px-3 py-1 rounded-lg">
+                    <span className="text-xs font-extrabold text-pink-800 bg-pink-100 px-3.5 py-1.5 rounded-xl">
                       Câu hỏi {qIdx + 1} ({getQuestionTypeLabel(qType)})
                     </span>
                     {submittedQuestions && (
-                      <span className={`text-xs font-bold px-3 py-1 rounded-lg flex items-center gap-1 ${
+                      <span className={`text-xs font-bold px-3 py-1 rounded-xl flex items-center gap-1 ${
                         isCorrect ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
                       }`}>
                         {isCorrect ? <Check className="w-3.5 h-3.5" /> : <X className="w-3.5 h-3.5" />}
@@ -467,15 +537,15 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
                     )}
                   </div>
 
-                  <p className="text-xs sm:text-sm font-extrabold text-slate-900 leading-relaxed">{q.content}</p>
+                  <p className={getQuestionFontSizeClass()}>{q.content}</p>
 
                   {/* 1. Multiple Choice */}
                   {qType === 'multiple_choice' && q.options && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
                       {q.options.map((opt, optIdx) => {
                         const optLetter = String.fromCharCode(65 + optIdx);
                         const isSelected = questionAnswers[q.id] === optLetter;
-                        let btnStyle = 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-pink-50/40';
+                        let btnStyle = 'bg-slate-50 border-slate-200 text-slate-800 hover:bg-pink-50/40';
 
                         if (submittedQuestions) {
                           if (optLetter === (q.correctAnswer || 'A')) {
@@ -492,16 +562,16 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
                             key={optIdx}
                             disabled={submittedQuestions}
                             onClick={() => handleOptionSelect(q.id, optLetter)}
-                            className={`p-3.5 rounded-2xl text-left border text-xs font-semibold transition-all flex items-center gap-3 cursor-pointer ${btnStyle}`}
+                            className={`p-4 sm:p-5 rounded-2xl text-left border transition-all flex items-center gap-4 cursor-pointer ${btnStyle}`}
                           >
-                            <span className={`w-7 h-7 rounded-full border flex items-center justify-center text-xs shrink-0 ${
+                            <span className={`w-8 h-8 rounded-xl border flex items-center justify-center font-bold text-xs shrink-0 ${
                               isSelected || (submittedQuestions && optLetter === (q.correctAnswer || 'A')) 
                                 ? 'bg-white/20 text-white border-white/30' 
                                 : 'bg-slate-200 border-slate-300 text-slate-700'
                             }`}>
                               {optLetter}
                             </span>
-                            <span className="flex-1">{opt}</span>
+                            <span className={`${getAnswerFontSizeClass()} flex-1`}>{opt}</span>
                           </button>
                         );
                       })}
@@ -510,9 +580,9 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
 
                   {/* 2. Multiple Response */}
                   {qType === 'multiple_response' && q.options && (
-                    <div className="space-y-3 pt-2">
+                    <div className="space-y-4 pt-2">
                       <div className="text-xs text-pink-800 font-bold">Chọn tất cả các đáp án đúng:</div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         {q.options.map((opt, optIdx) => {
                           const currentArr: number[] = questionAnswers[q.id] || [];
                           const isSelected = currentArr.includes(optIdx);
@@ -523,20 +593,20 @@ export const StudentApplyView: React.FC<StudentApplyViewProps> = ({
                               type="button"
                               disabled={submittedQuestions}
                               onClick={() => handleMultiSelect(q.id, optIdx)}
-                              className={`p-3.5 rounded-2xl text-left border transition-all flex items-center gap-3 cursor-pointer ${
+                              className={`p-4 sm:p-5 rounded-2xl text-left border transition-all flex items-center gap-4 cursor-pointer ${
                                 isSelected
                                   ? 'bg-pink-50 border-pink-600 text-pink-950 font-bold shadow-xs'
                                   : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
                               }`}
                             >
-                              <span className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 transition-all ${
+                              <span className={`w-6 h-6 rounded-lg border flex items-center justify-center shrink-0 transition-all ${
                                 isSelected 
                                   ? 'border-pink-600 bg-pink-600 text-white' 
                                   : 'border-slate-300 bg-white'
                               }`}>
-                                {isSelected && <Check className="w-3.5 h-3.5" />}
+                                {isSelected && <Check className="w-4 h-4" />}
                               </span>
-                              <span className="text-xs leading-relaxed flex-1">{opt}</span>
+                              <span className={`${getAnswerFontSizeClass()} flex-1`}>{opt}</span>
                             </button>
                           );
                         })}
