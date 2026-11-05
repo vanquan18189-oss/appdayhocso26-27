@@ -37,7 +37,7 @@ import {
   getAssignmentsFromFirestore,
   getLocalCachedAssignments
 } from '../../services/assignmentStorageService';
-import { formatScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
+import { formatScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime, parseScoreValue, calculateExamScore } from '../../utils/scoreUtils';
 import { db } from '../../services/firebase';
 import { doc, getDoc, setDoc, runTransaction } from 'firebase/firestore';
 
@@ -318,8 +318,32 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
         });
 
         if (matchedSub) {
-          const numScore = matchedSub.score !== undefined ? matchedSub.score : '-';
-          const rankTier = (matchedSub as any).rank || (typeof numScore === 'number' ? (numScore >= 8 ? 'Xuất sắc' : numScore >= 5 ? 'Đạt' : 'Cần cố gắng') : 'Hoàn thành');
+          const answers = matchedSub.answers || {};
+          const questionsList = as.questions || [];
+          const totalQ = Math.max(1, questionsList.length);
+          let correctCount = 0;
+          if (answers && Object.keys(answers).length > 0) {
+            questionsList.forEach((q, idx) => {
+              const studentChoice = answers[idx];
+              if (checkQuestionCorrectLocal(q, studentChoice)) {
+                correctCount++;
+              }
+            });
+          }
+
+          const rawScore = matchedSub.score !== undefined ? matchedSub.score : (matchedSub.totalScore !== undefined ? matchedSub.totalScore : '-');
+          let parsedScore = parseScoreValue(rawScore, correctCount, totalQ);
+          if ((parsedScore === 0 || isNaN(parsedScore)) && correctCount > 0) {
+            parsedScore = calculateExamScore(correctCount, totalQ);
+          }
+
+          const hasScore = isSubjectWithScore(as.subject);
+          const scoreDisplay = hasScore 
+            ? (parsedScore > 0 || correctCount > 0 ? String(parsedScore) : (rawScore !== '-' ? String(rawScore) : '0'))
+            : getQualitativeLabel(correctCount, totalQ);
+
+          const rankTier = (matchedSub as any).rank || (hasScore ? (parsedScore >= 8 ? 'Xuất sắc' : parsedScore >= 5 ? 'Đạt' : 'Cần cố gắng') : 'Hoàn thành');
+
           firestoreItems.push({
             id: matchedSub.id || `sub-${as.id}-${effectiveUserId}`,
             type: 'assignment' as const,
@@ -328,11 +352,38 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
             title: as.title,
             subject: as.subject || 'Môn học',
             rank: rankTier,
-            score: String(numScore),
+            score: scoreDisplay,
             submittedTime: formatSubmissionDateTime(matchedSub.submittedAt || matchedSub.submittedTime || getCurrentSubmissionTimestamp()),
             assignment: as,
-            answers: matchedSub.answers || {}
+            answers
           });
+
+          // Self-heal: If Firestore had score === 0 but student actually scored points, update Firestore in background
+          if (db && as.id && (rawScore === 0 || rawScore === '0') && correctCount > 0) {
+            try {
+              const assignRef = doc(db, 'assignments', as.id);
+              const subDocRef = doc(db, 'assignments', as.id, 'submissions', effectiveUserId);
+              setDoc(subDocRef, { score: parsedScore, totalScore: parsedScore, updatedAt: new Date().toISOString() }, { merge: true }).catch(() => {});
+              getDoc(assignRef).then(snap => {
+                if (snap.exists()) {
+                  const data = snap.data();
+                  const existing = Array.isArray(data.submissions) ? [...data.submissions] : [];
+                  let modified = false;
+                  const updated = existing.map((s: any) => {
+                    const sid = (s.studentId || s.studentCode || s.maHs || '').trim().toLowerCase();
+                    if (sid === effectiveUserId.toLowerCase() && (s.score === 0 || s.score === '0')) {
+                      modified = true;
+                      return { ...s, score: parsedScore, totalScore: parsedScore };
+                    }
+                    return s;
+                  });
+                  if (modified) {
+                    setDoc(assignRef, { submissions: updated }, { merge: true }).catch(() => {});
+                  }
+                }
+              }).catch(() => {});
+            } catch {}
+          }
         }
       });
 
@@ -391,12 +442,41 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
     submittedTime: string;
     assignment: HomeworkAssignment;
     answers: Record<number, any>;
+    totalScore?: number;
+    scoreNumber?: number;
+    correctCount?: number;
+    totalQuestions?: number;
   }) => {
+    // Calculate correct answers
+    const questions = newSub.assignment?.questions || [];
+    const totalQuestions = Math.max(1, questions.length);
+    let correctCount = 0;
+    questions.forEach((q, idx) => {
+      const studentChoice = newSub.answers?.[idx];
+      if (checkQuestionCorrectLocal(q, studentChoice)) {
+        correctCount++;
+      }
+    });
+
+    const hasScore = isSubjectWithScore(newSub.subject || newSub.assignment?.subject);
+    const calculatedScore = calculateExamScore(correctCount, totalQuestions);
+
+    let numScore = newSub.totalScore !== undefined && !isNaN(newSub.totalScore)
+      ? newSub.totalScore
+      : (newSub.scoreNumber !== undefined && !isNaN(newSub.scoreNumber) ? newSub.scoreNumber : parseScoreValue(newSub.score, correctCount, totalQuestions));
+
+    if ((numScore === 0 || isNaN(numScore)) && correctCount > 0) {
+      numScore = calculatedScore;
+    }
+
+    const formattedScore = hasScore ? String(numScore) : (newSub.score || getQualitativeLabel(correctCount, totalQuestions));
+
     const subWithStudent: AssignmentSubmissionItem = { 
       ...newSub, 
       type: 'assignment',
       submissionType: 'assignment',
-      studentId: effectiveUserId 
+      studentId: effectiveUserId,
+      score: formattedScore
     };
     const newKey = getCanonicalAssignmentKey(subWithStudent);
     const remaining = assignmentHistory.filter(s => getCanonicalAssignmentKey(s) !== newKey);
@@ -409,7 +489,6 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       console.error('Error saving student assignment submission:', err);
     }
 
-    const numScore = !isNaN(Number(newSub.score)) ? Number(newSub.score) : 0;
     const submissionRecord = {
       id: newSub.id || `sub-${Date.now()}`,
       studentId: effectiveUserId,
@@ -418,6 +497,9 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       code: effectiveUserId,
       studentName: effectiveUserName || 'Học sinh',
       score: numScore,
+      totalScore: numScore,
+      correctCount,
+      totalQuestions,
       submittedAt: formatSubmissionDateTime(newSub.submittedTime || getCurrentSubmissionTimestamp()),
       submittedTime: formatSubmissionDateTime(newSub.submittedTime || getCurrentSubmissionTimestamp()),
       answers: newSub.answers,
@@ -506,17 +588,6 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       } catch {}
     }
 
-    // Calculate correct answers
-    const questions = newSub.assignment.questions || [];
-    let correctCount = 0;
-    questions.forEach((q, idx) => {
-      const studentChoice = newSub.answers[idx];
-      if (checkQuestionCorrectLocal(q, studentChoice)) {
-        correctCount++;
-      }
-    });
-    const totalQuestions = questions.length || 1;
-
     // Automatic reward calculation (+10 Xu / +5 EXP, bonus +5 Xu if >=80% correct, first-time only)
     awardAssignmentReward(
       effectiveUserId,
@@ -526,7 +597,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       totalQuestions
     );
 
-    showToast(`🎉 Nộp bài thành công! Điểm số của em: ${newSub.score}`);
+    showToast(`🎉 Nộp bài thành công! Điểm số của em: ${formattedScore}`);
   };
 
   // Phân loại dữ liệu độc lập: loại trừ các bài giảng E-Learning, lọc theo lớp học và khử trùng lặp triệt để
@@ -687,7 +758,11 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
               score: newSub.score,
               submittedTime: newSub.submittedTime,
               assignment: solvingAssignment,
-              answers: newSub.answers || {}
+              answers: newSub.answers || {},
+              totalScore: (newSub as any).totalScore,
+              scoreNumber: (newSub as any).scoreNumber,
+              correctCount: (newSub as any).correctCount,
+              totalQuestions: (newSub as any).totalQuestions
             });
           }}
           isPreviewMode={isPreviewMode}
@@ -1026,26 +1101,65 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
                         </span>
                       </td>
                       <td className="py-4 px-6 text-center">
-                        <span className={`font-extrabold px-3 py-1 rounded-full text-xs ${
-                          !isSubjectWithScore(sub.subject)
-                            ? (getQualitativeLevel(sub.score) === 'T' ? 'bg-emerald-100 text-emerald-800' : getQualitativeLevel(sub.score) === 'HT' ? 'bg-sky-100 text-sky-800' : 'bg-rose-100 text-rose-800')
-                            : 'bg-emerald-100 text-emerald-800'
-                        }`}>
-                          {!isSubjectWithScore(sub.subject) ? getQualitativeLabel(sub.score) : sub.score}
-                        </span>
+                        {(() => {
+                          const qList = sub.assignment?.questions || [];
+                          const tQ = Math.max(1, qList.length);
+                          let cCount = 0;
+                          if (sub.answers) {
+                            qList.forEach((q, idx) => {
+                              if (checkQuestionCorrectLocal(q, sub.answers[idx])) cCount++;
+                            });
+                          }
+                          const calcScore = calculateExamScore(cCount, tQ);
+                          let parsed = parseScoreValue(sub.score, cCount, tQ);
+                          if ((parsed === 0 || isNaN(parsed)) && cCount > 0) {
+                            parsed = calcScore;
+                          }
+                          const hasScore = isSubjectWithScore(sub.subject);
+                          const tableScore = hasScore
+                            ? (parsed > 0 || cCount > 0 ? String(parsed) : (sub.score !== '-' ? sub.score : '0'))
+                            : getQualitativeLabel(sub.score);
+                          return (
+                            <span className={`font-extrabold px-3 py-1 rounded-full text-xs ${
+                              !hasScore
+                                ? (getQualitativeLevel(tableScore) === 'T' ? 'bg-emerald-100 text-emerald-800' : getQualitativeLevel(tableScore) === 'HT' ? 'bg-sky-100 text-sky-800' : 'bg-rose-100 text-rose-800')
+                                : 'bg-emerald-100 text-emerald-800'
+                            }`}>
+                              {tableScore}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td className="py-4 px-6 text-slate-500">{formatSubmissionDateTime(sub.submittedTime)}</td>
                       <td className="py-4 px-6 text-center">
                         <button
-                          onClick={() => setDetailSubmission({
-                            assignment: sub.assignment,
-                            score: sub.score,
-                            time: formatSubmissionDateTime(sub.submittedTime),
-                            answers: sub.answers,
-                            title: sub.title,
-                            subject: sub.subject,
-                            rank: sub.rank
-                          })}
+                          onClick={() => {
+                            const qList = sub.assignment?.questions || [];
+                            const tQ = Math.max(1, qList.length);
+                            let cCount = 0;
+                            if (sub.answers) {
+                              qList.forEach((q, idx) => {
+                                if (checkQuestionCorrectLocal(q, sub.answers[idx])) cCount++;
+                              });
+                            }
+                            const calcScore = calculateExamScore(cCount, tQ);
+                            let parsed = parseScoreValue(sub.score, cCount, tQ);
+                            if ((parsed === 0 || isNaN(parsed)) && cCount > 0) {
+                              parsed = calcScore;
+                            }
+                            const fixedScore = isSubjectWithScore(sub.subject)
+                              ? (parsed > 0 || cCount > 0 ? String(parsed) : sub.score)
+                              : sub.score;
+                            setDetailSubmission({
+                              assignment: sub.assignment,
+                              score: fixedScore,
+                              time: formatSubmissionDateTime(sub.submittedTime),
+                              answers: sub.answers,
+                              title: sub.title,
+                              subject: sub.subject,
+                              rank: sub.rank
+                            });
+                          }}
                           className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-emerald-600 hover:text-white text-slate-700 font-bold transition-all shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
                         >
                           <Eye className="w-3.5 h-3.5" /> Xem chi tiết
@@ -1083,11 +1197,22 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
         });
 
         // Extract numeric score from string e.g. "9.0 / 10" or calculate ratio
-        const scoreParts = detailSubmission.score.split('/');
-        const numericScore = parseFloat(scoreParts[0]) || ((correctCount / totalQ) * 10);
+        const calculatedScore = calculateExamScore(correctCount, totalQ);
+        const scoreParts = String(detailSubmission.score || '').split('/');
+        let numericScore = parseScoreValue(scoreParts[0], correctCount, totalQ);
+        if ((numericScore === 0 || isNaN(numericScore)) && correctCount > 0) {
+          numericScore = calculatedScore;
+        }
         const maxScore = parseFloat(scoreParts[1]) || 10;
         const ratio = numericScore / maxScore;
         const isHighRatio = ratio >= 0.8;
+
+        const hasScore = isSubjectWithScore(detailSubmission.subject);
+        const displayScore = hasScore 
+          ? (detailSubmission.score && detailSubmission.score !== '0' && detailSubmission.score !== '-' 
+              ? (detailSubmission.score.includes('/') ? detailSubmission.score : String(numericScore))
+              : String(numericScore))
+          : getQualitativeLabel(correctCount, totalQ);
 
         return (
           <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
@@ -1121,9 +1246,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
                       {isSubjectWithScore(detailSubmission.subject) ? 'ĐIỂM SỐ ĐẠT ĐƯỢC' : 'MỨC ĐẠT ĐƯỢC'}
                     </span>
                     <div className="text-2xl sm:text-3xl font-black">
-                      {isSubjectWithScore(detailSubmission.subject) 
-                        ? detailSubmission.score 
-                        : getQualitativeLabel(correctCount, totalQ)}
+                      {displayScore}
                     </div>
                     <p className="text-xs text-emerald-100 font-medium">
                       Đúng {correctCount} trên tổng số {totalQ} câu {incorrectQuestionIndices.length > 0 ? `(Làm sai ${incorrectQuestionIndices.length} câu)` : '(Làm đúng toàn bộ)'}

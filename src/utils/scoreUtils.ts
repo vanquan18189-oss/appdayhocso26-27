@@ -16,6 +16,53 @@ export function roundTotalScore(score: number | string | null | undefined): numb
   return Math.round(num); // Standard mathematical rounding to nearest integer (.5+ rounds up, <.5 rounds down)
 }
 
+/**
+ * Safely parse a score value from number, string, or composite string (e.g. "7 / 10", "7.0", 7)
+ * If score is 0 or NaN, but fallbackCorrect > 0, calculates score based on correct/total ratio on a 10-point scale.
+ */
+export function parseScoreValue(
+  scoreRaw: any,
+  fallbackCorrect?: number,
+  totalQuestions?: number
+): number {
+  let num: number = NaN;
+  if (typeof scoreRaw === 'number') {
+    num = scoreRaw;
+  } else if (typeof scoreRaw === 'string') {
+    const trimmed = scoreRaw.trim();
+    if (trimmed.includes('/')) {
+      const parts = trimmed.split('/');
+      num = parseFloat(parts[0]);
+    } else {
+      num = parseFloat(trimmed);
+    }
+  }
+
+  // If parsed score is invalid (NaN) or 0 while student got questions correct, calculate accurately
+  if (
+    (isNaN(num) || num === 0) &&
+    typeof fallbackCorrect === 'number' &&
+    fallbackCorrect > 0 &&
+    typeof totalQuestions === 'number' &&
+    totalQuestions > 0
+  ) {
+    num = Math.min(10, Math.max(0, Math.round((fallbackCorrect / totalQuestions) * 10)));
+  }
+
+  return isNaN(num) ? 0 : num;
+}
+
+/**
+ * Calculates official 10-point scale score from correct count and total questions
+ */
+export function calculateExamScore(
+  correctCount: number,
+  totalQuestions: number
+): number {
+  if (!totalQuestions || totalQuestions <= 0) return 0;
+  return Math.min(10, Math.max(0, Math.round((correctCount / totalQuestions) * 10)));
+}
+
 export function formatTotalScore(score: number | string | null | undefined, fallback: string = '0'): string {
   if (score === null || score === undefined || score === '' || score === '-') return fallback;
   const num = typeof score === 'number' ? score : parseFloat(String(score));

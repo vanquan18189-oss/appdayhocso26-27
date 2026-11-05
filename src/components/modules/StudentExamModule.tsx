@@ -48,7 +48,7 @@ import { removeUndefined } from '../../services/teacherStorageService';
 import { db } from '../../services/firebase';
 import { doc, runTransaction, setDoc, getDoc, updateDoc, deleteDoc } from 'firebase/firestore';
 import { getFirestoreDebugStatus } from '../../services/firestoreWriteVerificationService';
-import { formatScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
+import { formatScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime, parseScoreValue, calculateExamScore } from '../../utils/scoreUtils';
 import { stableShuffle, getMatchingPairColor } from '../../utils/arrayUtils';
 import { invalidateAllSubmissionsCache } from '../../services/hocBaDataService';
 
@@ -1574,6 +1574,10 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           subject: exam.subject || 'Môn học',
           rank: rankTier,
           score: scoreVal,
+          totalScore: scoreNumber,
+          scoreNumber: scoreNumber,
+          correctCount: Math.round(correct),
+          totalQuestions: totalQ,
           submittedTime: nowTimeStr,
           exam,
           questionSnapshot: qSnapshot,
@@ -2454,6 +2458,10 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           subject: exam.subject || 'Môn học',
           rank: rankTier,
           score: scoreVal,
+          totalScore: scoreNumber,
+          scoreNumber: scoreNumber,
+          correctCount: Math.round(correct),
+          totalQuestions: totalQ,
           submittedTime: nowTimeStr,
           exam,
           assignment: isAssignment ? (exam as any) : null,
@@ -3047,8 +3055,12 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
       }
     });
 
-    const scoreParts = detailSubmission.score.split('/');
-    const numericScore = parseFloat(scoreParts[0]) || ((correctCount / totalQ) * 10);
+    const calculatedScore = calculateExamScore(correctCount, totalQ);
+    const scoreParts = String(detailSubmission.score || '').split('/');
+    let numericScore = parseScoreValue(scoreParts[0], correctCount, totalQ);
+    if ((numericScore === 0 || isNaN(numericScore)) && correctCount > 0) {
+      numericScore = calculatedScore;
+    }
     const maxScore = parseFloat(scoreParts[1]) || 10;
     const ratio = numericScore / maxScore;
     const isHighRatio = ratio >= 0.8;
@@ -3296,7 +3308,13 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                   {isScored ? 'ĐIỂM SỐ ĐẠT ĐƯỢC' : 'MỨC ĐẠT ĐƯỢC'}
                 </span>
                 <div className="text-4xl sm:text-5xl font-black tracking-tight flex items-center gap-3">
-                  <span>{isScored ? detailSubmission.score : qualitativeLvl}</span>
+                  <span>
+                    {isScored 
+                      ? (detailSubmission.score && detailSubmission.score !== '0' && detailSubmission.score !== '-'
+                          ? detailSubmission.score 
+                          : (correctCount > 0 ? `${calculatedScore} / 10` : '0 / 10'))
+                      : qualitativeLvl}
+                  </span>
                   <span className="text-2xl sm:text-3xl">
                     {isScored
                       ? (numericScore >= 9.0 ? '🏆' : numericScore >= 7.0 ? '🥈' : numericScore >= 5.0 ? '👍' : '📚')
