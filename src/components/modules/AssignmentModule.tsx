@@ -67,8 +67,9 @@ import { syncAssignmentQuestions } from '../../services/assignmentSyncService';
 import { getCurrentTeacherProfile, resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
 import { getStudentsFromLocalStorage, getClassStudentCount, generateDefaultClassRoster } from '../../services/studentStorageService';
 import { auth, db } from '../../services/firebase';
-import { doc, onSnapshot, getDoc, setDoc } from 'firebase/firestore';
+import { doc, onSnapshot, getDoc, setDoc, collection, getDocs } from 'firebase/firestore';
 import { trackedSetDoc } from '../../services/firestoreWriteTracker';
+import { normalizeStudentCode, formatStandardStudentCode, normalizeStudentName } from '../../services/studentCode';
 import { checkQuestionCorrectLocal } from './StudentExamModule';
 import { useAcademicYear } from '../../contexts/AcademicYearContext';
 import { formatScore, formatTotalScore, roundTotalScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
@@ -208,6 +209,15 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   const [itemsPerPage, setItemsPerPage] = useState<number>(10);
   const [currentPage, setCurrentPage] = useState<number>(1);
 
+  // Toast Notification
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage(null);
+    }, 3000);
+  }, []);
+
   // Selected assignment for Detail Modal / Submissions
   const [detailAssignment, setDetailAssignment] = useState<HomeworkAssignment | null>(null);
 
@@ -218,13 +228,18 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   const [regradeScore, setRegradeScore] = useState('10');
   const [regradeComment, setRegradeComment] = useState('Chấm lại bởi AI thành công.');
 
-  // Real-time synchronization for detailAssignment from Firestore (Chỉ lắng nghe khi bật chế độ Real-time Leaderboard để tiết kiệm quota)
+  // Live submissions synced from Firestore subcollection & local records
+  const [liveSubmissions, setLiveSubmissions] = useState<any[]>([]);
+  const [isSyncingSubmissions, setIsSyncingSubmissions] = useState(false);
+  const [submissionSyncTick, setSubmissionSyncTick] = useState(0);
+
+  // Real-time synchronization for detailAssignment and its submissions from Firestore
   useEffect(() => {
     if (!detailAssignment?.id || !db) return;
-    if (!detailAssignment.enableRealtimeLeaderboard) return; // Tắt khi luyện tập bình thường để tiết kiệm lượt đọc/ghi
 
+    // 1. Listen to parent assignment document updates
     const assignDocRef = doc(db, 'assignments', detailAssignment.id);
-    const unsub = onSnapshot(
+    const unsubDoc = onSnapshot(
       assignDocRef,
       (docSnap) => {
         if (docSnap.exists()) {
@@ -234,21 +249,175 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
             return {
               ...prev,
               ...freshData,
-              submissions: Array.isArray(freshData.submissions) ? freshData.submissions : []
+              questions: (freshData.questions && freshData.questions.length > 0) ? freshData.questions : prev.questions,
+              submissions: Array.isArray(freshData.submissions) ? freshData.submissions : (prev.submissions || [])
             };
           });
         }
       },
       (err) => {
-        console.warn('Real-time assignment snapshot listener error:', err);
+        console.warn('Real-time assignment doc snapshot listener error:', err);
       }
     );
 
-    return () => unsub();
-  }, [detailAssignment?.id, detailAssignment?.enableRealtimeLeaderboard]);
+    // 2. Real-time listener for subcollection: assignments/{id}/submissions
+    const subsCollRef = collection(db, 'assignments', detailAssignment.id, 'submissions');
+    const unsubSubs = onSnapshot(
+      subsCollRef,
+      (snap) => {
+        const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        if (docs.length > 0) {
+          setLiveSubmissions(prev => {
+            const map = new Map<string, any>();
+            prev.forEach((s: any) => map.set(s.id || s.studentId || s.studentCode || s.maHs, s));
+            docs.forEach((s: any) => map.set(s.id || s.studentId || s.studentCode || s.maHs, s));
+            return Array.from(map.values());
+          });
+          setSubmissionSyncTick(t => t + 1);
+        }
+      },
+      (err) => {
+        console.warn('Real-time subcollection submissions listener error:', err);
+      }
+    );
 
-  // Listener for local storage updates & custom window events
-  const [submissionSyncTick, setSubmissionSyncTick] = useState(0);
+    return () => {
+      unsubDoc();
+      unsubSubs();
+    };
+  }, [detailAssignment?.id]);
+
+  // Comprehensive manual/automatic submission sync function (Read-only, no Firestore write)
+  const handleSyncSubmissions = useCallback(async (showToastNotice = true) => {
+    if (!detailAssignment?.id) return;
+    setIsSyncingSubmissions(true);
+    try {
+      const mergedSubsMap = new Map<string, any>();
+
+      // 1. Existing submissions on detailAssignment
+      if (Array.isArray(detailAssignment.submissions)) {
+        detailAssignment.submissions.forEach((s: any) => {
+          const key = s.studentId || s.studentCode || s.maHs || s.id;
+          if (key) mergedSubsMap.set(String(key).toLowerCase(), s);
+        });
+      }
+
+      // 2. Query Firestore subcollection: assignments/{id}/submissions
+      if (db) {
+        try {
+          const subsCollRef = collection(db, 'assignments', detailAssignment.id, 'submissions');
+          const subsSnap = await getDocs(subsCollRef);
+          subsSnap.docs.forEach(docSnap => {
+            const data = { id: docSnap.id, ...docSnap.data() };
+            const key = (data as any).studentId || (data as any).studentCode || (data as any).maHs || docSnap.id;
+            if (key) mergedSubsMap.set(String(key).toLowerCase(), data);
+          });
+        } catch (err) {
+          console.warn('Không thể đọc subcollection submissions:', err);
+        }
+
+        // Also fetch fresh assignment doc to see if submissions array was updated
+        try {
+          const assignDocRef = doc(db, 'assignments', detailAssignment.id);
+          const assignSnap = await getDoc(assignDocRef);
+          if (assignSnap.exists()) {
+            const assignData = assignSnap.data() as HomeworkAssignment;
+            if (Array.isArray(assignData.submissions)) {
+              assignData.submissions.forEach((s: any) => {
+                const key = s.studentId || s.studentCode || s.maHs || s.id;
+                if (key) mergedSubsMap.set(String(key).toLowerCase(), s);
+              });
+            }
+          }
+        } catch (err) {
+          console.warn('Không thể đọc assignment doc:', err);
+        }
+      }
+
+      // 3. Scan localStorage for student submissions
+      if (typeof window !== 'undefined') {
+        const targetClass = detailAssignment.targetClass || 'Lớp 3A';
+        const classStudents = getStudentsFromLocalStorage(targetClass) || [];
+        classStudents.forEach(st => {
+          const keys = [st.code, st.id, st.username].filter(Boolean) as string[];
+          keys.forEach(k => {
+            try {
+              const raw = localStorage.getItem(`eduplay_student_submissions_${k}`);
+              if (raw) {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) {
+                  const m = parsed.find((item: any) =>
+                    item.assignment?.id === detailAssignment.id ||
+                    item.id === detailAssignment.id ||
+                    item.assignmentId === detailAssignment.id ||
+                    (item.title && item.title === detailAssignment.title)
+                  );
+                  if (m) {
+                    mergedSubsMap.set(String(st.code).toLowerCase(), {
+                      id: m.id || `sub-${st.code}`,
+                      studentId: st.code,
+                      studentCode: st.code,
+                      maHs: st.code,
+                      studentName: st.fullName || st.name,
+                      score: m.score !== undefined ? m.score : (m.totalScore !== undefined ? m.totalScore : '-'),
+                      totalScore: m.totalScore !== undefined ? m.totalScore : (m.score !== undefined ? m.score : '-'),
+                      submittedAt: m.submittedTime || m.submittedAt || new Date().toLocaleString('vi-VN'),
+                      submittedTime: m.submittedTime || m.submittedAt || new Date().toLocaleString('vi-VN'),
+                      answers: m.answers || [],
+                      status: 'submitted'
+                    });
+                  }
+                }
+              }
+            } catch {}
+          });
+        });
+
+        // Also check eduplay_all_exam_submissions & eduplay_exam_subs_{id}
+        try {
+          const rawExamSubs = localStorage.getItem(`eduplay_exam_subs_${detailAssignment.id}`);
+          if (rawExamSubs) {
+            const parsed = JSON.parse(rawExamSubs);
+            if (Array.isArray(parsed)) {
+              parsed.forEach((s: any) => {
+                const sCode = s.studentId || s.studentCode || s.maHs;
+                if (sCode) {
+                  mergedSubsMap.set(String(sCode).toLowerCase(), {
+                    ...s,
+                    status: 'submitted'
+                  });
+                }
+              });
+            }
+          }
+        } catch {}
+      }
+
+      const allMerged = Array.from(mergedSubsMap.values());
+      setLiveSubmissions(allMerged);
+      setSubmissionSyncTick(prev => prev + 1);
+
+      if (showToastNotice) {
+        showToast(`✅ Đã đồng bộ kết quả nộp bài! Tìm thấy ${allMerged.length} bài nộp.`);
+      }
+    } catch (err) {
+      console.error('Lỗi khi đồng bộ kết quả bài tập:', err);
+      if (showToastNotice) {
+        showToast('⚠️ Không thể đồng bộ kết quả, vui lòng thử lại.');
+      }
+    } finally {
+      setIsSyncingSubmissions(false);
+    }
+  }, [detailAssignment, showToast]);
+
+  // Auto-sync once on detailAssignment open (Read-only, no Firestore write)
+  useEffect(() => {
+    if (detailAssignment?.id) {
+      handleSyncSubmissions(false);
+    } else {
+      setLiveSubmissions([]);
+    }
+  }, [detailAssignment?.id]);
 
   useEffect(() => {
     const handleSubmissionsUpdated = () => {
@@ -265,24 +434,73 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   // Helper calculating authentic unique submitted student count
   const getAssignmentSubmissionCount = useCallback((as: HomeworkAssignment): number => {
     if (!as) return 0;
-    const subs = Array.isArray(as.submissions) ? as.submissions : [];
     const uniqueStudentKeys = new Set<string>();
-    subs.forEach((s: any) => {
-      const k = (s.studentId || s.maHs || s.studentName || '').trim().toLowerCase();
-      if (k) uniqueStudentKeys.add(k);
-    });
 
-    if (Array.isArray(as.submittedIds) && as.submittedIds.length > 0) {
+    const addSubKey = (s: any) => {
+      if (!s) return;
+      const k = (s.studentId || s.studentCode || s.maHs || s.code || s.studentName || s.name || '').trim().toLowerCase();
+      if (k) uniqueStudentKeys.add(k);
+    };
+
+    // 1. as.submissions
+    const subs = Array.isArray(as.submissions) ? as.submissions : [];
+    subs.forEach(addSubKey);
+
+    // 2. submittedIds
+    if (Array.isArray(as.submittedIds)) {
       as.submittedIds.forEach((id: string) => {
         if (id) uniqueStudentKeys.add(id.trim().toLowerCase());
       });
     }
 
+    // 3. If this is detailAssignment, include liveSubmissions
+    if (detailAssignment && detailAssignment.id === as.id && Array.isArray(liveSubmissions)) {
+      liveSubmissions.forEach(addSubKey);
+    }
+
+    // 4. Scan localStorage for students in targetClass
+    if (typeof window !== 'undefined' && as.targetClass) {
+      const roster = getStudentsFromLocalStorage(as.targetClass) || [];
+      roster.forEach(st => {
+        const keys = [st.code, st.id, st.username].filter(Boolean) as string[];
+        keys.forEach(k => {
+          try {
+            const raw = localStorage.getItem(`eduplay_student_submissions_${k}`);
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              if (Array.isArray(parsed)) {
+                const matched = parsed.find((item: any) =>
+                  item.assignment?.id === as.id ||
+                  item.id === as.id ||
+                  item.assignmentId === as.id ||
+                  (item.title && item.title === as.title)
+                );
+                if (matched) {
+                  addSubKey({ studentId: st.code, studentName: st.fullName || st.name });
+                }
+              }
+            }
+          } catch {}
+        });
+      });
+
+      // Also check eduplay_exam_subs_{as.id}
+      try {
+        const rawExamSubs = localStorage.getItem(`eduplay_exam_subs_${as.id}`);
+        if (rawExamSubs) {
+          const parsed = JSON.parse(rawExamSubs);
+          if (Array.isArray(parsed)) {
+            parsed.forEach(addSubKey);
+          }
+        }
+      } catch {}
+    }
+
     if (uniqueStudentKeys.size > 0) return uniqueStudentKeys.size;
-    if (typeof as.submittedCount === 'number') return as.submittedCount;
-    if (typeof as.completedCount === 'number') return as.completedCount;
+    if (typeof as.submittedCount === 'number' && as.submittedCount > 0) return as.submittedCount;
+    if (typeof as.completedCount === 'number' && as.completedCount > 0) return as.completedCount;
     return 0;
-  }, []);
+  }, [detailAssignment, liveSubmissions, submissionSyncTick]);
 
   // Dynamic tracking students derived from detailAssignment submissions and class roster
   const trackingStudentsList = useMemo(() => {
@@ -295,7 +513,10 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     const targetClassName = detailAssignment.targetClass || 'Lớp 3A';
     const classStudentsRoster = getStudentsFromLocalStorage(targetClassName) || [];
     
-    const subList: any[] = Array.isArray(detailAssignment.submissions) ? [...detailAssignment.submissions] : [];
+    const subList: any[] = [
+      ...(Array.isArray(detailAssignment.submissions) ? detailAssignment.submissions : []),
+      ...liveSubmissions
+    ];
     const subMap = new Map<string, any>();
 
     const indexSubmission = (sub: any) => {
@@ -318,15 +539,36 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
           const raw = cand.trim().toLowerCase();
           if (raw) {
             subMap.set(raw, sub);
-            // Normalized key (remove "st-", "hs-", accents/dashes/spaces)
-            const clean = raw.replace(/^(st|hs)[\-_]?/i, '').replace(/[\s\-_]/g, '');
+            // Normalized key (remove "st-", "hs-", "user-", accents/dashes/spaces)
+            const clean = raw.replace(/^(st|hs|user|u)[\-_]?/i, '').replace(/[\s\-_]/g, '');
             if (clean) subMap.set(clean, sub);
+
+            const stdCode = normalizeStudentCode(cand);
+            if (stdCode) {
+              subMap.set(stdCode, sub);
+              subMap.set(stdCode.toLowerCase(), sub);
+              const cleanStd = stdCode.toLowerCase().replace(/[\s\-_]/g, '');
+              if (cleanStd) subMap.set(cleanStd, sub);
+            }
+
+            const formatted = formatStandardStudentCode(cand, targetClassName);
+            if (formatted) {
+              subMap.set(formatted, sub);
+              subMap.set(formatted.toLowerCase(), sub);
+            }
           }
         }
       });
+
+      const sName = sub.studentName || sub.name || sub.fullName;
+      if (sName && typeof sName === 'string') {
+        const normName = normalizeStudentName(sName);
+        if (normName) subMap.set(normName, sub);
+        subMap.set(sName.trim().toLowerCase(), sub);
+      }
     };
 
-    // Index all existing submissions on detailAssignment
+    // Index all existing submissions on detailAssignment and liveSubmissions
     subList.forEach(sub => indexSubmission(sub));
 
     // Also scan localStorage for submissions of each student in this class
@@ -356,10 +598,13 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                   const localSub = {
                     id: matched.id || `sub-${st.code}`,
                     studentId: st.code,
+                    studentCode: st.code,
                     maHs: st.code,
                     studentName: st.fullName || st.name,
                     score: matched.score !== undefined ? matched.score : (matched.totalScore !== undefined ? matched.totalScore : '-'),
+                    totalScore: matched.totalScore !== undefined ? matched.totalScore : (matched.score !== undefined ? matched.score : '-'),
                     submittedAt: matched.submittedTime || matched.submittedAt || new Date().toLocaleString('vi-VN'),
+                    submittedTime: matched.submittedTime || matched.submittedAt || new Date().toLocaleString('vi-VN'),
                     answers: matched.answers || [],
                     status: 'submitted'
                   };
@@ -381,10 +626,17 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
         st.code,
         st.id,
         st.username,
+        normalizeStudentCode(st.code),
+        normalizeStudentCode(st.id),
+        formatStandardStudentCode(st.code, targetClassName),
+        formatStandardStudentCode(st.id, targetClassName),
         st.code?.toLowerCase(),
         st.id?.toLowerCase(),
-        st.id?.replace(/^(st|hs)[\-_]?/i, '').replace(/[\s\-_]/g, ''),
+        st.username?.toLowerCase(),
+        st.id?.replace(/^(st|hs|user|u)[\-_]?/i, '').replace(/[\s\-_]/g, ''),
         st.code?.toLowerCase().replace(/[\s\-_]/g, ''),
+        st.id?.toLowerCase().replace(/[\s\-_]/g, ''),
+        normalizeStudentName(st.fullName || st.name),
         st.fullName?.trim().toLowerCase(),
         st.name?.trim().toLowerCase(),
       ].filter(Boolean) as string[];
@@ -398,22 +650,41 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
       }
 
       if (submission) {
-        const rawAnswers = submission.answers || submission.studentAnswers;
-        const questionCount = questions.length > 0 ? questions.length : 5;
+        const rawAnswers = submission.answers || submission.studentAnswers || submission.answersById;
         const evaluatedAnswers: ('pass' | 'fail' | 'none')[] = Array.from({ length: questionCount }).map((_, qi) => {
           const q = questions[qi];
           let rawChoice: any = undefined;
           if (Array.isArray(rawAnswers)) {
             rawChoice = rawAnswers[qi];
           } else if (rawAnswers && typeof rawAnswers === 'object') {
-            rawChoice = rawAnswers[qi] !== undefined ? rawAnswers[qi] : rawAnswers[String(qi)];
+            rawChoice = rawAnswers[qi] !== undefined 
+              ? rawAnswers[qi] 
+              : (rawAnswers[String(qi)] !== undefined ? rawAnswers[String(qi)] : (q?.id ? rawAnswers[q.id] : undefined));
           }
+          if (rawChoice === undefined && submission.answersById && q?.id) {
+            rawChoice = submission.answersById[q.id];
+          }
+
+          // 1. Direct pass / fail values
           if (rawChoice === 'pass' || rawChoice === true || rawChoice === 'correct') return 'pass';
           if (rawChoice === 'fail' || rawChoice === false || rawChoice === 'incorrect') return 'fail';
+
+          // 2. Pre-evaluated questionResults if present
+          const preEvaluated = submission.questionResults || submission.results || submission.gradedAnswers;
+          if (Array.isArray(preEvaluated) && preEvaluated[qi] !== undefined) {
+            const p = preEvaluated[qi];
+            if (typeof p === 'boolean') return p ? 'pass' : 'fail';
+            if (p === 'pass' || p === 'fail') return p;
+            if (p && typeof p === 'object' && p.isCorrect !== undefined) return p.isCorrect ? 'pass' : 'fail';
+          }
+
+          // 3. Question-level evaluation via checkQuestionCorrectLocal
           if (q && rawChoice !== undefined && rawChoice !== null && rawChoice !== '') {
             try {
               return checkQuestionCorrectLocal(q, rawChoice) ? 'pass' : 'fail';
-            } catch {}
+            } catch (err) {
+              console.warn(`Lỗi chấm điểm câu ${qi}:`, err);
+            }
           }
           return 'fail';
         });
@@ -436,46 +707,10 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
         const numericScoreVal = typeof finalScore === 'number' ? finalScore : (finalScore !== '-' ? parseFloat(String(finalScore)) : 0);
         const isPassed = !isNaN(numericScoreVal) ? numericScoreVal >= 5 : false;
 
-        const answers: ('pass' | 'fail' | 'none')[] = Array.from({ length: questionCount }).map((_, qi) => {
-          const q = questions[qi];
-
-          let rawChoice: any = undefined;
-          if (Array.isArray(rawAnswers)) {
-            rawChoice = rawAnswers[qi];
-          } else if (rawAnswers && typeof rawAnswers === 'object') {
-            rawChoice = rawAnswers[qi] !== undefined ? rawAnswers[qi] : rawAnswers[String(qi)];
-          }
-
-          // 1. Direct pass / fail values
-          if (rawChoice === 'pass' || rawChoice === true || rawChoice === 'correct') return 'pass';
-          if (rawChoice === 'fail' || rawChoice === false || rawChoice === 'incorrect') return 'fail';
-
-          // 2. Pre-evaluated questionResults if present
-          const preEvaluated = submission.questionResults || submission.results || submission.gradedAnswers;
-          if (Array.isArray(preEvaluated) && preEvaluated[qi] !== undefined) {
-            const p = preEvaluated[qi];
-            if (typeof p === 'boolean') return p ? 'pass' : 'fail';
-            if (p === 'pass' || p === 'fail') return p;
-            if (p && typeof p === 'object' && p.isCorrect !== undefined) return p.isCorrect ? 'pass' : 'fail';
-          }
-
-          // 3. Question-level evaluation via checkQuestionCorrectLocal
-          if (q && rawChoice !== undefined && rawChoice !== null && rawChoice !== '') {
-            try {
-              const isCorrect = checkQuestionCorrectLocal(q, rawChoice);
-              return isCorrect ? 'pass' : 'fail';
-            } catch (err) {
-              console.warn(`Lỗi chấm điểm câu ${qi}:`, err);
-            }
-          }
-
-          return 'fail';
-        });
-
         return {
           code: st.code || `st-${idx + 1}`,
           name: st.name || st.fullName || `Học sinh ${idx + 1}`,
-          answers,
+          answers: evaluatedAnswers,
           totalScore: finalScore,
           aiStatus: isPassed ? ('pass' as const) : ('fail' as const),
           submittedTime: formatSubmissionDateTime(submission.submittedAt || submission.submittedTime || getCurrentSubmissionTimestamp()),
@@ -494,36 +729,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
         };
       }
     });
-  }, [detailAssignment, submissionSyncTick]);
-
-  const autoSyncedAssignmentsRef = useRef<Set<string>>(new Set());
-
-  // Requirement 3: Auto-recalculate & sync parent document count if mismatch is detected when teacher opens Modal
-  useEffect(() => {
-    if (!detailAssignment?.id || !db || trackingStudentsList.length === 0) return;
-    if (autoSyncedAssignmentsRef.current.has(detailAssignment.id)) return;
-
-    const actualSubmittedStudents = trackingStudentsList.filter(st => st.status === 'submitted');
-    const actualCount = actualSubmittedStudents.length;
-    const storedCount = detailAssignment.completedCount ?? detailAssignment.submittedCount ?? (detailAssignment.submissions?.length || 0);
-
-    if (actualCount !== storedCount && actualCount > 0) {
-      console.log(`🔄 [Auto-Recalculate Sync] Phát hiện lệch số bài nộp cho ID ${detailAssignment.id} (Đang lưu: ${storedCount}, Thực tế: ${actualCount}). Đang tự động đồng bộ lại...`);
-      autoSyncedAssignmentsRef.current.add(detailAssignment.id);
-
-      const assignRef = doc(db, 'assignments', detailAssignment.id);
-      const existingSubs = Array.isArray(detailAssignment.submissions) ? [...detailAssignment.submissions] : [];
-      
-      trackedSetDoc(assignRef, {
-        completedCount: actualCount,
-        submittedCount: actualCount,
-        submissions: existingSubs,
-        updatedAt: new Date().toISOString()
-      }, { merge: true }).catch(err => {
-        console.warn('Lỗi tự động recalculate bài tập:', err);
-      });
-    }
-  }, [detailAssignment?.id, trackingStudentsList, detailAssignment?.completedCount, detailAssignment?.submittedCount]);
+  }, [detailAssignment, liveSubmissions, submissionSyncTick]);
 
   const filteredTrackingStudents = useMemo(() => {
     if (trackingTab === 'needs_action') {
@@ -1201,15 +1407,6 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   // AI Grading State
   const [gradingSubId, setGradingSubId] = useState<string | null>(null);
 
-  // Toast Notification
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => {
-      setToastMessage(null);
-    }, 3000);
-  };
 
   // Chuẩn hóa danh sách bài tập: Mỗi dòng đại diện cho 1 lớp duy nhất (Mô hình 1 bài - N lần giao)
   const normalizedAssignments = useMemo(() => {
@@ -2953,6 +3150,17 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
               </div>
 
               <div className="flex items-center gap-2 self-end sm:self-auto">
+                <button
+                  type="button"
+                  onClick={() => handleSyncSubmissions(true)}
+                  disabled={isSyncingSubmissions}
+                  className="px-3.5 py-2 rounded-xl text-xs font-bold bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer active:scale-95 disabled:opacity-50"
+                  title="Làm mới và đồng bộ kết quả nộp bài mới nhất từ học sinh"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 text-sky-600 ${isSyncingSubmissions ? 'animate-spin' : ''}`} />
+                  <span>Đồng bộ kết quả</span>
+                </button>
+
                 <button
                   type="button"
                   onClick={() => handleSyncAssignment(detailAssignment)}

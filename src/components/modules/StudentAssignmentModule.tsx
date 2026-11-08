@@ -93,6 +93,21 @@ export const getCanonicalAssignmentKey = (item: any): string => {
   if (!item) return '';
   const as = item.assignment || item;
   const rawId = String(as.id || item.id || as.assignmentId || item.assignmentId || '').trim();
+  const cleanTitle = String(as.title || item.title || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^bài tập:\s*/i, '')
+    .replace(/^luyện tập:\s*/i, '')
+    .replace(/\s+/g, ' ');
+  const rootId = as.originalAssignmentId || as.groupId || (rawId && !rawId.startsWith('as-custom') ? rawId.replace(/-class-.*$/, '') : '');
+  if (rootId && rootId !== 'legacy' && !rootId.startsWith('as-custom')) {
+    return `root::${rootId}`;
+  }
+  if (cleanTitle) {
+    const subj = String(as.subject || item.subject || '').trim().toLowerCase();
+    const grade = String(as.grade || item.grade || '').trim().toLowerCase();
+    return `semantic::${cleanTitle}__${subj}__${grade}`;
+  }
   return rawId || 'unknown';
 };
 
@@ -671,7 +686,12 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       }
       return true;
     });
-    return deduplicateAssignmentSubmissions(list);
+    const deduplicated = deduplicateAssignmentSubmissions(list);
+    return deduplicated.sort((a, b) => {
+      const timeA = new Date(a.submittedTime || 0).getTime();
+      const timeB = new Date(b.submittedTime || 0).getTime();
+      return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
+    });
   }, [assignmentHistory]);
 
   // Thống kê 4 ô cho Phân hệ Nhiệm vụ học tập (Bộ đếm nhất quán: Tổng = số thẻ khác nhau, Đã hoàn thành = số bài có ít nhất 1 bài nộp, Cần làm = Tổng - Đã hoàn thành)

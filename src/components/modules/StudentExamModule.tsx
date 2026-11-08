@@ -1755,6 +1755,8 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                   const deduplicatedAsSubs = deduplicateExamSubmissions(asFiltered);
                   transaction.update(asRef, {
                     submissions: deduplicatedAsSubs,
+                    completedCount: deduplicatedAsSubs.length,
+                    submittedCount: deduplicatedAsSubs.length,
                     updatedAt: new Date().toISOString()
                   });
                 });
@@ -2632,6 +2634,8 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                   const deduplicatedAsSubs = deduplicateExamSubmissions(asFiltered);
                   transaction.update(asRef, {
                     submissions: deduplicatedAsSubs,
+                    completedCount: deduplicatedAsSubs.length,
+                    submittedCount: deduplicatedAsSubs.length,
                     updatedAt: new Date().toISOString()
                   });
                 });
