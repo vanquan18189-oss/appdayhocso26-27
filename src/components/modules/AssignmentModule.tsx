@@ -63,11 +63,12 @@ import { getLocalCachedQuestions, QUESTIONS_CACHE_KEY, saveQuestionsBatchToFires
 import { useScoreSort } from '../../lib/useScoreSort';
 import { StudentAssignmentModule } from './StudentAssignmentModule';
 import { studentResultService } from '../../services/studentResultService';
+import { resetOrDeleteStudentAssignmentSubmission } from '../../services/studentSubmissionResetService';
 import { syncAssignmentQuestions } from '../../services/assignmentSyncService';
 import { getCurrentTeacherProfile, resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
 import { getStudentsFromLocalStorage, getClassStudentCount, generateDefaultClassRoster } from '../../services/studentStorageService';
 import { auth, db } from '../../services/firebase';
-import { doc, onSnapshot, getDoc, setDoc, collection, getDocs } from 'firebase/firestore';
+import { doc, onSnapshot, getDoc, setDoc, collection, getDocs, deleteDoc, runTransaction } from 'firebase/firestore';
 import { trackedSetDoc } from '../../services/firestoreWriteTracker';
 import { normalizeStudentCode, formatStandardStudentCode, normalizeStudentName } from '../../services/studentCode';
 import { checkQuestionCorrectLocal } from './StudentExamModule';
@@ -227,6 +228,11 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   const [regradeToggle, setRegradeToggle] = useState(true);
   const [regradeScore, setRegradeScore] = useState('10');
   const [regradeComment, setRegradeComment] = useState('Chấm lại bởi AI thành công.');
+
+  // Delete submission confirmation modal states
+  const [deleteTarget, setDeleteTarget] = useState<StudentSubmissionRow | null>(null);
+  const [isDeletingSubmission, setIsDeletingSubmission] = useState<boolean>(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   // Live submissions synced from Firestore subcollection & local records
   const [liveSubmissions, setLiveSubmissions] = useState<any[]>([]);
@@ -426,10 +432,81 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     window.addEventListener('eduplay_student_submissions_updated', handleSubmissionsUpdated);
     window.addEventListener('storage', handleSubmissionsUpdated);
     return () => {
-      window.removeEventListener('eduplay_student_submissions_updated', handleSubmissionsUpdated);
       window.removeEventListener('storage', handleSubmissionsUpdated);
     };
   }, []);
+
+  // Async handler for confirming delete submission via React State Modal
+  const handleConfirmDeleteSubmission = async () => {
+    if (!deleteTarget || !detailAssignment?.id) {
+      console.warn('[Delete Submission] deleteTarget hoặc detailAssignment không có dữ liệu.', {
+        deleteTarget,
+        detailAssignmentId: detailAssignment?.id
+      });
+      return;
+    }
+
+    const targetCode = deleteTarget.code;
+    const targetName = deleteTarget.name;
+    const assignmentId = detailAssignment.id;
+
+    console.log(`[Delete Submission Start] Deleting assignment submission: StudentName="${targetName}", StudentCode="${targetCode}", AssignmentId="${assignmentId}"`);
+
+    setIsDeletingSubmission(true);
+    setDeleteError(null);
+
+    try {
+      const result = await resetOrDeleteStudentAssignmentSubmission({
+        studentCode: targetCode,
+        studentName: targetName,
+        studentId: targetCode,
+        assignmentId: assignmentId,
+        originalAssignmentId: detailAssignment.originalAssignmentId,
+        targetClass: detailAssignment.targetClass
+      });
+
+      console.log(`[Delete Submission Success] Resetted/deleted submission for ${targetName} (${targetCode}):`, result);
+
+      // 1. Immediately remove student's submission from liveSubmissions state
+      setLiveSubmissions(prev => prev.filter((s: any) => {
+        const code = normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || s.id || '');
+        return code !== normalizeStudentCode(targetCode);
+      }));
+
+      // 2. Update detailAssignment.submissions locally so tracking list re-evaluates
+      setDetailAssignment(prev => {
+        if (!prev) return null;
+        const subs = Array.isArray(prev.submissions) ? prev.submissions : [];
+        const updatedSubs = subs.filter((s: any) => {
+          const code = normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || s.id || '');
+          return code !== normalizeStudentCode(targetCode);
+        });
+        return {
+          ...prev,
+          submissions: updatedSubs,
+          submittedCount: Math.max(0, updatedSubs.length),
+          completedCount: Math.max(0, updatedSubs.length)
+        };
+      });
+
+      // 3. Force submissionSyncTick increment to trigger recalculation of trackingStudentsList
+      setSubmissionSyncTick(tick => tick + 1);
+
+      // 4. Also call handleSyncSubmissions to ensure complete state sync
+      await handleSyncSubmissions(false);
+
+      // 5. Show Toast notification on UI
+      showToast(`Đã xóa kết quả bài làm của ${targetName}`);
+
+      // 6. Close the delete target modal
+      setDeleteTarget(null);
+    } catch (err: any) {
+      console.error(`[Delete Submission Error] Lỗi khi xóa kết quả bài làm của ${targetName} (${targetCode}):`, err);
+      setDeleteError(err?.message || 'Không thể xóa kết quả bài làm. Vui lòng kiểm tra lại kết nối mạng!');
+    } finally {
+      setIsDeletingSubmission(false);
+    }
+  };
 
   // Helper calculating authentic unique submitted student count
   const getAssignmentSubmissionCount = useCallback((as: HomeworkAssignment): number => {
@@ -3288,7 +3365,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                     </th>
                     <th className="py-3 px-3 text-center whitespace-nowrap">AI THÔNG BÁO</th>
                     <th className="py-3 px-4 text-center whitespace-nowrap">THỜI GIAN NỘP</th>
-                    <th className="py-3 px-3 text-center whitespace-nowrap">CHẤM LẠI</th>
+                    <th className="py-3 px-3 text-center whitespace-nowrap">THAO TÁC</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -3391,22 +3468,38 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                         )}
                       </td>
 
-                      {/* Chấm lại */}
+                      {/* Thao tác: Chấm lại & Xóa nhanh */}
                       <td className="py-3 px-3 text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                        <button
-                          onClick={() => {
-                            setSelectedStudentDetail(st);
-                            setRegradeScore(st.totalScore !== '-' ? String(st.totalScore) : '10');
-                          }}
-                          className={`p-1.5 rounded-lg transition-all cursor-pointer inline-flex items-center justify-center ${
-                            st.status === 'submitted'
-                              ? 'hover:bg-indigo-100 text-slate-700 hover:text-indigo-700'
-                              : 'hover:bg-slate-100 text-slate-400 hover:text-slate-600'
-                          }`}
-                          title="Chấm lại bài tập"
-                        >
-                          <Eye className="w-4 h-4" />
-                        </button>
+                        <div className="flex items-center justify-center gap-1.5">
+                          <button
+                            onClick={() => {
+                              setSelectedStudentDetail(st);
+                              setRegradeScore(st.totalScore !== '-' ? String(st.totalScore) : '10');
+                            }}
+                            className={`p-1.5 rounded-lg transition-all cursor-pointer inline-flex items-center justify-center ${
+                              st.status === 'submitted'
+                                ? 'hover:bg-indigo-100 text-slate-700 hover:text-indigo-700'
+                                : 'hover:bg-slate-100 text-slate-400 hover:text-slate-600'
+                            }`}
+                            title="Chấm lại bài tập"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+
+                          {st.status === 'submitted' && (
+                            <button
+                              onClick={() => {
+                                console.log(`[Delete Button Clicked] Học sinh: ${st.name} (${st.code}), Assignment ID: ${detailAssignment?.id}`);
+                                setDeleteTarget(st);
+                                setDeleteError(null);
+                              }}
+                              className="p-1.5 rounded-lg hover:bg-rose-100 text-slate-400 hover:text-rose-600 transition-all cursor-pointer"
+                              title="Xóa bài làm của học sinh này"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -3421,6 +3514,86 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                 className="px-6 py-2 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all cursor-pointer"
               >
                 Đóng bảng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================== */}
+      {/* MODAL: XÁC NHẬN XÓA BÀI LÀM HỌC SINH       */}
+      {/* ========================================== */}
+      {deleteTarget && (
+        <div className="fixed inset-0 z-[70] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 overflow-hidden flex flex-col space-y-4 animate-scale-up relative">
+            {/* Modal Header */}
+            <div className="flex items-center gap-3 border-b border-slate-100 pb-3">
+              <div className="w-10 h-10 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5 text-rose-600" />
+              </div>
+              <div>
+                <h4 className="text-base font-extrabold text-slate-900 font-heading">
+                  Xác nhận xóa kết quả bài làm
+                </h4>
+                <p className="text-[11px] text-slate-500 font-medium">Thao tác xóa sẽ được lưu trực tiếp</p>
+              </div>
+            </div>
+
+            {/* Body Content */}
+            <div className="text-xs text-slate-700 leading-relaxed space-y-2.5">
+              <p>
+                Bạn có chắc muốn xóa kết quả bài làm của học sinh{' '}
+                <strong className="text-slate-900 font-black px-1.5 py-0.5 rounded bg-amber-100 text-amber-900">
+                  {deleteTarget.name}
+                </strong>{' '}
+                ({deleteTarget.code}) không?
+              </p>
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-[11px] font-semibold flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <span>Sau khi xóa, học sinh sẽ trở về trạng thái &quot;Chờ HS&quot; và phải làm lại bài.</span>
+              </div>
+            </div>
+
+            {/* Error display if deletion failed */}
+            {deleteError && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs font-bold flex items-center gap-2 animate-fade-in">
+                <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>{deleteError}</span>
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                disabled={isDeletingSubmission}
+                onClick={() => {
+                  if (!isDeletingSubmission) {
+                    setDeleteTarget(null);
+                    setDeleteError(null);
+                  }
+                }}
+                className="px-5 py-2.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all cursor-pointer disabled:opacity-50"
+              >
+                Hủy
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingSubmission}
+                onClick={handleConfirmDeleteSubmission}
+                className="px-5 py-2.5 rounded-xl text-xs font-black bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-600/20 transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50 active:scale-95"
+              >
+                {isDeletingSubmission ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Đang xử lý...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Xóa</span>
+                  </>
+                )}
               </button>
             </div>
           </div>
@@ -3443,6 +3616,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
           onDeleteSubmission={() => {
             showToast(`Đã xoá bài làm của học sinh ${selectedStudentDetail.name}`);
             setSelectedStudentDetail(null);
+            handleSyncSubmissions(false);
           }}
         />
       )}

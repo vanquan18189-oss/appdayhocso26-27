@@ -331,7 +331,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
     return () => unsub();
   }, [effectiveUserId, liveAssignments]);
 
-  // Re-sync assignment history from both LocalStorage AND Firestore liveAssignments (Single Source of Truth)
+  // Re-sync assignment history from LocalStorage, student_results, and assignments/{assignmentId}/submissions/{effectiveUserId} (Single Source of Truth)
   useEffect(() => {
     try {
       const saved = localStorage.getItem(`eduplay_student_submissions_${effectiveUserId}`);
@@ -356,7 +356,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
         }
       }
 
-      // Query & Sync from Firestore live assignments documents
+      // Query & Sync from Firestore live assignments documents & sub-collections
       const firestoreItems: AssignmentSubmissionItem[] = [];
       (liveAssignments || []).forEach((as) => {
         if (!as || !Array.isArray(as.submissions)) return;
@@ -421,35 +421,70 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
             assignment: as,
             answers
           });
-
-          // Self-heal: If Firestore had score === 0 but student actually scored points, update Firestore in background
-          if (db && as.id && (rawScore === 0 || rawScore === '0') && correctCount > 0) {
-            try {
-              const assignRef = doc(db, 'assignments', as.id);
-              const subDocRef = doc(db, 'assignments', as.id, 'submissions', effectiveUserId);
-              setDoc(subDocRef, { score: parsedScore, totalScore: parsedScore, updatedAt: new Date().toISOString() }, { merge: true }).catch(() => {});
-              getDoc(assignRef).then(snap => {
-                if (snap.exists()) {
-                  const data = snap.data();
-                  const existing = Array.isArray(data.submissions) ? [...data.submissions] : [];
-                  let modified = false;
-                  const updated = existing.map((s: any) => {
-                    const sid = (s.studentId || s.studentCode || s.maHs || '').trim().toLowerCase();
-                    if (sid === effectiveUserId.toLowerCase() && (s.score === 0 || s.score === '0')) {
-                      modified = true;
-                      return { ...s, score: parsedScore, totalScore: parsedScore };
-                    }
-                    return s;
-                  });
-                  if (modified) {
-                    setDoc(assignRef, { submissions: updated }, { merge: true }).catch(() => {});
-                  }
-                }
-              }).catch(() => {});
-            } catch {}
-          }
         }
       });
+
+      // Explicitly query assignments/{assignmentId}/submissions/{effectiveUserId} sub-collections in Firestore
+      if (db && effectiveUserId) {
+        Promise.all((liveAssignments || []).map(async (as) => {
+          if (!as || !as.id) return;
+          try {
+            const subDocRef = doc(db, 'assignments', as.id, 'submissions', effectiveUserId);
+            const subSnap = await getDoc(subDocRef);
+            if (subSnap.exists()) {
+              const subData = subSnap.data();
+              const questionsList = as.questions || [];
+              const totalQ = Math.max(1, questionsList.length);
+              let correctCount = 0;
+              const answers = subData.answers || {};
+              if (answers && Object.keys(answers).length > 0) {
+                questionsList.forEach((q, idx) => {
+                  const studentChoice = answers[idx];
+                  if (checkQuestionCorrectLocal(q, studentChoice)) {
+                    correctCount++;
+                  }
+                });
+              }
+
+              const rawScore = subData.score !== undefined ? subData.score : (subData.totalScore !== undefined ? subData.totalScore : '-');
+              let parsedScore = parseScoreValue(rawScore, correctCount, totalQ);
+              if ((parsedScore === 0 || isNaN(parsedScore)) && correctCount > 0) {
+                parsedScore = calculateExamScore(correctCount, totalQ);
+              }
+
+              const hasScore = isSubjectWithScore(as.subject);
+              const scoreDisplay = hasScore 
+                ? (parsedScore > 0 || correctCount > 0 ? String(parsedScore) : (rawScore !== '-' ? String(rawScore) : '0'))
+                : getQualitativeLabel(correctCount, totalQ);
+
+              const rankTier = subData.rank || (hasScore ? (parsedScore >= 8 ? 'Xuất sắc' : parsedScore >= 5 ? 'Đạt' : 'Cần cố gắng') : 'Hoàn thành');
+
+              const subItem: AssignmentSubmissionItem = {
+                id: subData.id || `sub-${as.id}-${effectiveUserId}`,
+                type: 'assignment' as const,
+                submissionType: 'assignment' as const,
+                studentId: effectiveUserId,
+                title: as.title,
+                subject: as.subject || 'Môn học',
+                rank: rankTier,
+                score: scoreDisplay,
+                submittedTime: formatSubmissionDateTime(subData.submittedAt || subData.submittedTime || getCurrentSubmissionTimestamp()),
+                assignment: as,
+                answers
+              };
+
+              setAssignmentHistory(prev => {
+                const map = new Map<string, AssignmentSubmissionItem>();
+                prev.forEach(item => map.set(getCanonicalAssignmentKey(item), item));
+                map.set(getCanonicalAssignmentKey(subItem), subItem);
+                const updated = deduplicateAssignmentSubmissions(Array.from(map.values()));
+                localStorage.setItem(`eduplay_student_submissions_${effectiveUserId}`, JSON.stringify(updated));
+                return updated;
+              });
+            }
+          } catch {}
+        })).catch(() => {});
+      }
 
       // Merge LocalStorage items and Firestore items (deduplicating by canonical assignment key)
       const mergedMap = new Map<string, AssignmentSubmissionItem>();
@@ -460,7 +495,6 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       firestoreItems.forEach(item => {
         const key = getCanonicalAssignmentKey(item);
         if (!key) return;
-        // Prefer Firestore item or merge missing fields
         const existing = mergedMap.get(key);
         if (!existing) {
           mergedMap.set(key, item);
@@ -1082,9 +1116,34 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
                 const matchingHistory = (assignmentHistory || []).filter(
                   sub => getCanonicalAssignmentKey(sub) === asKey || (sub.assignment?.id && sub.assignment.id === as.id) || (sub.id && sub.id === as.id) || (sub.title && sub.title === as.title)
                 );
-                const existingSub = matchingHistory[0];
+                const submissionsList = Array.isArray(as.submissions) ? as.submissions : [];
+                const directSubmission = submissionsList.find((s: any) => {
+                  if (!s) return false;
+                  const sid = String(s.studentId || s.studentCode || s.maHs || s.code || '').trim().toLowerCase();
+                  const targetKeys = [
+                    effectiveUserId.toLowerCase().trim(),
+                    (studentId || '').toLowerCase().trim(),
+                    (effectiveUserName || '').toLowerCase().trim()
+                  ].filter(Boolean);
+                  return targetKeys.includes(sid);
+                });
+
+                const existingSub = matchingHistory[0] || (directSubmission ? {
+                  id: directSubmission.id || `sub-${as.id}-${effectiveUserId}`,
+                  type: 'assignment' as const,
+                  submissionType: 'assignment' as const,
+                  studentId: effectiveUserId,
+                  title: as.title,
+                  subject: as.subject || 'Môn học',
+                  rank: (directSubmission as any).rank || 'Hoàn thành',
+                  score: directSubmission.score !== undefined ? String(directSubmission.score) : (directSubmission.totalScore !== undefined ? String(directSubmission.totalScore) : '-'),
+                  submittedTime: formatSubmissionDateTime(directSubmission.submittedAt || directSubmission.submittedTime || getCurrentSubmissionTimestamp()),
+                  assignment: as,
+                  answers: directSubmission.answers || {}
+                } : null);
+
                 const isDone = Boolean(existingSub);
-                const attemptCount = matchingHistory.length;
+                const attemptCount = Math.max(matchingHistory.length, directSubmission ? 1 : 0);
                 const maxAllowed = getMaxAllowedAttempts(as);
                 const isMaxReached = attemptCount >= maxAllowed;
 
@@ -1158,36 +1217,75 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
                     </div>
                   </div>
 
-                  {/* CTA Button */}
-                  <div className="pt-2 relative z-10">
-                    <button
-                      disabled={isDisabled}
-                      onClick={() => {
-                        if (isMaxReached) {
-                          showToast(`⚠️ Bài tập này giới hạn tối đa ${maxAllowed} lần làm. Em đã hoàn thành (${attemptCount}/${maxAllowed}) và không thể làm lại.`);
-                          return;
-                        }
-                        setSolvingAssignment(as);
-                      }}
-                      className={`w-full py-3 px-4 rounded-2xl text-xs sm:text-sm font-extrabold transition-all shadow-md flex items-center justify-center gap-2 ${
-                        isDisabled
-                          ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed shadow-none'
-                          : isDone
-                          ? 'bg-gradient-to-r from-teal-600 to-indigo-600 hover:from-teal-700 hover:to-indigo-700 text-white shadow-teal-600/20 cursor-pointer active:scale-98'
-                          : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-emerald-600/20 cursor-pointer active:scale-98'
-                      }`}
-                    >
-                      <span>
-                        {isExpired && !isDone 
-                          ? '🔒 Đã hết hạn làm bài' 
-                          : isMaxReached 
-                          ? `🔒 Đã khóa (Đã đủ ${maxAllowed} lượt làm)` 
-                          : isDone 
-                          ? `🔄 Luyện tập lại (${attemptCount}/${maxAllowed === Infinity ? '∞' : maxAllowed})` 
-                          : '⚡ Bắt đầu làm bài tập'}
-                      </span>
-                      {!isDisabled && <ChevronRight className="w-4 h-4" />}
-                    </button>
+                  {/* CTA Buttons */}
+                  <div className="pt-2 relative z-10 flex flex-col gap-2">
+                    {isDone && (
+                      <button
+                        onClick={() => {
+                          const qList = as.questions || [];
+                          const tQ = Math.max(1, qList.length);
+                          let cCount = 0;
+                          if (existingSub?.answers) {
+                            qList.forEach((q, idx) => {
+                              if (checkQuestionCorrectLocal(q, existingSub.answers[idx])) cCount++;
+                            });
+                          }
+                          const calcScore = calculateExamScore(cCount, tQ);
+                          let parsed = parseScoreValue(existingSub?.score, cCount, tQ);
+                          if ((parsed === 0 || isNaN(parsed)) && cCount > 0) {
+                            parsed = calcScore;
+                          }
+                          const fixedScore = isSubjectWithScore(as.subject)
+                            ? (parsed > 0 || cCount > 0 ? String(parsed) : (existingSub?.score || '0'))
+                            : (existingSub?.score || getQualitativeLabel(cCount, tQ));
+
+                          setDetailSubmission({
+                            assignment: as,
+                            score: fixedScore,
+                            time: formatSubmissionDateTime(existingSub?.submittedTime || getCurrentSubmissionTimestamp()),
+                            answers: existingSub?.answers || {},
+                            title: as.title,
+                            subject: as.subject || 'Môn học',
+                            rank: existingSub?.rank || 'Hoàn thành'
+                          });
+                        }}
+                        className="w-full py-3 px-4 rounded-2xl text-xs sm:text-sm font-extrabold bg-gradient-to-r from-teal-600 to-indigo-600 hover:from-teal-700 hover:to-indigo-700 text-white shadow-md shadow-teal-600/20 cursor-pointer active:scale-98 flex items-center justify-center gap-2 transition-all"
+                      >
+                        <Eye className="w-4 h-4" />
+                        <span>Xem lại bài</span>
+                      </button>
+                    )}
+
+                    {(!isDone || (!isMaxReached && maxAllowed > 1)) && (
+                      <button
+                        disabled={isDisabled}
+                        onClick={() => {
+                          if (isMaxReached) {
+                            showToast(`⚠️ Bài tập này giới hạn tối đa ${maxAllowed} lần làm. Em đã hoàn thành (${attemptCount}/${maxAllowed}) và không thể làm lại.`);
+                            return;
+                          }
+                          setSolvingAssignment(as);
+                        }}
+                        className={`w-full py-3 px-4 rounded-2xl text-xs sm:text-sm font-extrabold transition-all shadow-md flex items-center justify-center gap-2 ${
+                          isDisabled
+                            ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed shadow-none'
+                            : isDone
+                            ? 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 cursor-pointer active:scale-98'
+                            : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-emerald-600/20 cursor-pointer active:scale-98'
+                        }`}
+                      >
+                        <span>
+                          {isExpired && !isDone 
+                            ? '🔒 Đã hết hạn làm bài' 
+                            : isMaxReached 
+                            ? `🔒 Đã khóa (Đã đủ ${maxAllowed} lượt làm)` 
+                            : isDone 
+                            ? `🔄 Luyện tập lại (${attemptCount}/${maxAllowed === Infinity ? '∞' : maxAllowed})` 
+                            : '⚡ Bắt đầu làm bài tập'}
+                        </span>
+                        {!isDisabled && <ChevronRight className="w-4 h-4" />}
+                      </button>
+                    )}
                   </div>
                 </div>
               );

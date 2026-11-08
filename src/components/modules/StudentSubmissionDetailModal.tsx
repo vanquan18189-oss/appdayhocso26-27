@@ -156,6 +156,7 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
   const [hasChanges, setHasChanges] = useState<boolean>(false);
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<boolean>(false);
   const [isExportingPdf, setIsExportingPdf] = useState<boolean>(false);
 
@@ -502,9 +503,10 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
       }
 
       setHasChanges(false);
+      setActionError(null);
       setSaveSuccessMsg(`Đã lưu kết quả chấm lại cho học sinh ${studentName}: ${stats.correctCount}/${stats.totalCount} câu đúng (${newScoreNumber} điểm).`);
     } catch (err: any) {
-      alert(`Lưu chấm lại thất bại: ${err?.message || String(err)}`);
+      setActionError(`Lưu chấm lại thất bại: ${err?.message || String(err)}`);
     } finally {
       setIsSaving(false);
     }
@@ -514,33 +516,82 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
   const handleDeleteSubmission = async () => {
     if (!studentCode) return;
     try {
-      const examId = targetItem?.id || targetItem?.originalExamId || targetItem?.originalId || studentSubmission?.examId;
+      const targetId = targetItem?.id || targetItem?.originalId || targetItem?.originalAssignmentId || targetItem?.originalExamId || studentSubmission?.assignmentId || studentSubmission?.examId || '';
       const subId = studentSubmission?.id;
 
-      if (db && examId) {
+      if (db && targetId) {
         const docKeys = [subId, studentCode, studentSubmission?.studentId].filter(Boolean) as string[];
+        const colName = mode === 'assignment' ? 'assignments' : 'exams';
+        
+        // 1. Delete from sub-collection submissions
         for (const docKey of docKeys) {
           try {
-            await deleteDoc(doc(db, 'exams', examId, 'submissions', docKey));
+            await deleteDoc(doc(db, colName, targetId, 'submissions', docKey));
           } catch {}
         }
+
+        // 2. Update master document submissions array & remove score
         try {
-          const masterRef = doc(db, 'exams', examId);
+          const masterRef = doc(db, colName, targetId);
           await runTransaction(db, async (tx) => {
             const snap = await tx.get(masterRef);
             if (snap.exists()) {
               const d = snap.data();
               if (Array.isArray(d.submissions)) {
                 const updated = d.submissions.filter((s: any) => {
-                  const sCode = (s.studentCode || s.code || s.maHs || s.studentId || '').trim().toLowerCase();
-                  return sCode !== studentCode.trim().toLowerCase();
+                  const sCode = (s.studentCode || s.code || s.maHs || s.studentId || s.studentName || '').trim().toLowerCase();
+                  return sCode !== studentCode.trim().toLowerCase() && sCode !== (studentName || '').trim().toLowerCase();
                 });
-                tx.update(masterRef, { submissions: updated });
+                const uniqueStudentKeys = new Set(
+                  updated.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.studentName || '').trim().toLowerCase()).filter(Boolean)
+                );
+                const count = uniqueStudentKeys.size;
+                tx.update(masterRef, {
+                  submissions: updated,
+                  submittedIds: Array.from(uniqueStudentKeys),
+                  completedCount: count,
+                  submittedCount: count,
+                  updatedAt: new Date().toISOString()
+                });
               }
             }
           });
-        } catch {}
+        } catch (e) {
+          console.warn('Error updating master doc during delete:', e);
+        }
+
+        // 3. Clear from student_results/{studentCode} (Single Source of Truth)
+        try {
+          const studentResultRef = doc(db, 'student_results', studentCode);
+          const studentResultSnap = await getDoc(studentResultRef);
+          if (studentResultSnap.exists()) {
+            const data = studentResultSnap.data();
+            const assignmentsMap = data.assignments || {};
+            const examsMap = data.exams || {};
+            let modified = false;
+
+            if (mode === 'assignment' && assignmentsMap[targetId]) {
+              delete assignmentsMap[targetId];
+              modified = true;
+            }
+            if (mode === 'exam' && examsMap[targetId]) {
+              delete examsMap[targetId];
+              modified = true;
+            }
+
+            if (modified) {
+              await setDoc(studentResultRef, {
+                assignments: assignmentsMap,
+                exams: examsMap,
+                updatedAt: new Date().toISOString()
+              }, { merge: true });
+            }
+          }
+        } catch (e) {
+          console.warn('Error clearing student_results during delete:', e);
+        }
       }
+
       if (db && subId) {
         try { await deleteDoc(doc(db, 'submissions', subId)); } catch {}
       }
@@ -549,12 +600,44 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
       const keysToClean = [studentCode, studentSubmission?.studentId].filter(Boolean) as string[];
       keysToClean.forEach(key => {
         try {
-          const lsKey = `eduplay_student_exam_subs_${key}`;
-          const raw = localStorage.getItem(lsKey);
+          const lsKey1 = `eduplay_student_submissions_${key}`;
+          const raw1 = localStorage.getItem(lsKey1);
+          if (raw1) {
+            const parsed = JSON.parse(raw1);
+            if (Array.isArray(parsed)) {
+              localStorage.setItem(lsKey1, JSON.stringify(parsed.filter((s: any) => s.id !== subId && s.assignmentId !== targetId && s.id !== targetId)));
+            }
+          }
+
+          const lsKey2 = `eduplay_student_exam_subs_${key}`;
+          const raw2 = localStorage.getItem(lsKey2);
+          if (raw2) {
+            const parsed = JSON.parse(raw2);
+            if (Array.isArray(parsed)) {
+              localStorage.setItem(lsKey2, JSON.stringify(parsed.filter((s: any) => s.id !== subId && s.examId !== targetId && s.id !== targetId)));
+            }
+          }
+        } catch {}
+      });
+
+      // Clear from global all submissions cache
+      const allKeys = mode === 'assignment' 
+        ? ['eduplay_all_assignment_submissions'] 
+        : ['eduplay_all_exam_submissions'];
+      allKeys.forEach(allKey => {
+        try {
+          const raw = localStorage.getItem(allKey);
           if (raw) {
             const parsed = JSON.parse(raw);
             if (Array.isArray(parsed)) {
-              localStorage.setItem(lsKey, JSON.stringify(parsed.filter((s: any) => s.id !== subId && s.examId !== examId)));
+              const filtered = parsed.filter((s: any) => {
+                const sCode = (s.studentCode || s.maHs || s.studentId || '').trim().toLowerCase();
+                const sId = s.id || s.assignmentId || s.examId;
+                const isMatchStudent = sCode === studentCode.toLowerCase();
+                const isMatchItem = sId === targetId;
+                return !(isMatchStudent && isMatchItem);
+              });
+              localStorage.setItem(allKey, JSON.stringify(filtered));
             }
           }
         } catch {}
@@ -564,23 +647,27 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
       try { invalidateAllSubmissionsCache(); } catch {}
       window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
       window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
+      window.dispatchEvent(new Event('eduplay_assignments_updated'));
+      window.dispatchEvent(new Event('eduplay_exams_updated'));
 
       if (onDeleteSubmission) {
         await onDeleteSubmission(studentCode);
       }
-      setSaveSuccessMsg('Đã xóa lịch sử bài làm thành công!');
+      setActionError(null);
+      setSaveSuccessMsg('Đã xóa lịch sử bài làm thành công và làm mới trạng thái học sinh!');
       setTimeout(() => {
         onClose();
       }, 700);
     } catch (err: any) {
       console.error('Lỗi khi xoá bài làm:', err);
-      alert(`Không thể xóa lịch sử bài làm: ${err?.message || 'Lỗi kết nối cơ sở dữ liệu'}`);
+      setActionError(`Không thể xóa lịch sử bài làm: ${err?.message || 'Lỗi kết nối cơ sở dữ liệu'}`);
     }
   };
 
   // 7. XỬ LÝ TẢI BÀI LÀM (WORD)
   const handleExportWord = async () => {
     if (isExportingPdf) return;
+    setActionError(null);
     try {
       setIsExportingPdf(true);
       await downloadStudentSubmissionWord({
@@ -596,7 +683,7 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
       });
     } catch (err: any) {
       console.error('Lỗi khi tạo file Word:', err);
-      alert(`Không thể tạo file Word: ${err?.message || String(err)}`);
+      setActionError(`Không thể tạo file Word: ${err?.message || String(err)}`);
     } finally {
       setIsExportingPdf(false);
     }
@@ -730,11 +817,18 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
           </div>
         </div>
 
-        {/* 4. THÔNG BÁO LƯU THÀNH CÔNG */}
+        {/* 4. THÔNG BÁO LƯU THÀNH CÔNG / LỖI THAO TÁC */}
         {saveSuccessMsg && (
           <div className="p-3 bg-emerald-50 border border-emerald-300 text-emerald-800 rounded-xl text-xs font-bold flex items-center gap-2 animate-fade-in">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
             <span>{saveSuccessMsg}</span>
+          </div>
+        )}
+
+        {actionError && (
+          <div className="p-3 bg-rose-50 border border-rose-300 text-rose-800 rounded-xl text-xs font-bold flex items-center gap-2 animate-fade-in">
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>{actionError}</span>
           </div>
         )}
 
