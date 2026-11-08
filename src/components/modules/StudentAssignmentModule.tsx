@@ -40,7 +40,7 @@ import {
 import { syncAssignmentQuestions } from '../../services/assignmentSyncService';
 import { formatScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime, parseScoreValue, calculateExamScore } from '../../utils/scoreUtils';
 import { db } from '../../services/firebase';
-import { doc, getDoc, setDoc, runTransaction } from 'firebase/firestore';
+import { doc, getDoc, setDoc, runTransaction, onSnapshot } from 'firebase/firestore';
 
 interface StudentAssignmentModuleProps {
   assignments: HomeworkAssignment[];
@@ -279,6 +279,57 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
     }
     return [];
   });
+
+  // Real-time synchronization from student_results/{effectiveUserId} (Single Source of Truth)
+  useEffect(() => {
+    if (!effectiveUserId || !db) return;
+    const studentResultRef = doc(db, 'student_results', effectiveUserId);
+    const unsub = onSnapshot(studentResultRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        const assignmentsMap = data.assignments || {};
+        const resultItems: AssignmentSubmissionItem[] = [];
+
+        Object.entries(assignmentsMap).forEach(([assignmentId, resData]: [string, any]) => {
+          const matchingLive = liveAssignments.find(as => as.id === assignmentId);
+          const assignmentObj = matchingLive || (resData.assignment || {
+            id: assignmentId,
+            title: resData.title || 'Bài tập rèn luyện',
+            subject: resData.subject || 'Môn học',
+            questions: resData.questions || []
+          });
+
+          resultItems.push({
+            id: resData.id || `sub-${assignmentId}-${effectiveUserId}`,
+            type: 'assignment' as const,
+            submissionType: 'assignment' as const,
+            studentId: effectiveUserId,
+            title: assignmentObj.title,
+            subject: assignmentObj.subject || 'Môn học',
+            rank: resData.rank || 'Hoàn thành',
+            score: resData.score !== undefined ? String(resData.score) : '-',
+            submittedTime: formatSubmissionDateTime(resData.submittedAt || resData.submittedTime || getCurrentSubmissionTimestamp()),
+            assignment: assignmentObj,
+            answers: resData.answers || resData.lastAttempt?.answers || {}
+          });
+        });
+
+        if (resultItems.length > 0) {
+          setAssignmentHistory(prev => {
+            const map = new Map<string, AssignmentSubmissionItem>();
+            prev.forEach(item => map.set(getCanonicalAssignmentKey(item), item));
+            resultItems.push(...prev); // Keep existing as well
+            resultItems.forEach(item => map.set(getCanonicalAssignmentKey(item), item));
+            return deduplicateAssignmentSubmissions(Array.from(map.values()));
+          });
+        }
+      }
+    }, (err) => {
+      console.warn('Real-time student_results listener error:', err);
+    });
+
+    return () => unsub();
+  }, [effectiveUserId, liveAssignments]);
 
   // Re-sync assignment history from both LocalStorage AND Firestore liveAssignments (Single Source of Truth)
   useEffect(() => {
