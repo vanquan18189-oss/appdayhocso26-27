@@ -111,6 +111,20 @@ export const getCanonicalAssignmentKey = (item: any): string => {
   return rawId || 'unknown';
 };
 
+export const getMaxAllowedAttempts = (as: HomeworkAssignment): number => {
+  if (!as) return Infinity;
+  if (as.allowRepeat === false) return 1;
+  const maxStr = String(as.maxAttempts || '').trim().toLowerCase();
+  if (maxStr.includes('1 lần') || maxStr === '1') return 1;
+  if (maxStr.includes('2 lần') || maxStr === '2') return 2;
+  if (maxStr.includes('3 lần') || maxStr === '3') return 3;
+  if (maxStr.includes('5 lần') || maxStr === '5') return 5;
+  if (maxStr.includes('10 lần') || maxStr === '10') return 10;
+  if (maxStr.includes('không giới hạn') || maxStr.includes('nhiều lần') || !maxStr) return Infinity;
+  const parsed = parseInt(maxStr, 10);
+  return isNaN(parsed) ? Infinity : parsed;
+};
+
 export const deduplicateAssignmentSubmissions = (subs: AssignmentSubmissionItem[]): AssignmentSubmissionItem[] => {
   if (!Array.isArray(subs)) return [];
   const map = new Map<string, AssignmentSubmissionItem>();
@@ -1014,10 +1028,15 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
               {todoAssignments.map((as) => {
                 const subjColor = getSubjectColorStyles(as.subject);
                 const asKey = getCanonicalAssignmentKey(as);
-                const existingSub = historySubmissions.find(
-                  sub => getCanonicalAssignmentKey(sub) === asKey || (sub.assignment?.id && sub.assignment.id === as.id) || (sub.id && sub.id === as.id)
+                const matchingHistory = (assignmentHistory || []).filter(
+                  sub => getCanonicalAssignmentKey(sub) === asKey || (sub.assignment?.id && sub.assignment.id === as.id) || (sub.id && sub.id === as.id) || (sub.title && sub.title === as.title)
                 );
+                const existingSub = matchingHistory[0];
                 const isDone = Boolean(existingSub);
+                const attemptCount = matchingHistory.length;
+                const maxAllowed = getMaxAllowedAttempts(as);
+                const isMaxReached = attemptCount >= maxAllowed;
+
                 const isExpired = (() => {
                   if (!as.dueDate) return false;
                   try {
@@ -1028,6 +1047,8 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
                   } catch {}
                   return false;
                 })();
+
+                const isDisabled = (isExpired && !isDone) || isMaxReached;
 
                 return (
                 <div 
@@ -1048,8 +1069,13 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
                         </span>
                       </div>
                       {isDone ? (
-                        <span className="bg-emerald-100 text-emerald-800 text-[10px] font-extrabold px-2.5 py-1 rounded-full flex items-center gap-1 shadow-xs border border-emerald-200">
-                          <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Đã hoàn thành ({existingSub?.score})
+                        <span className={`text-[10px] font-extrabold px-2.5 py-1 rounded-full flex items-center gap-1 shadow-xs border ${
+                          isMaxReached && maxAllowed === 1 
+                            ? 'bg-rose-100 text-rose-800 border-rose-200' 
+                            : 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                        }`}>
+                          <CheckCircle2 className="w-3 h-3 text-emerald-600" /> 
+                          {isMaxReached ? `Đã hoàn thành (${attemptCount}/${maxAllowed} lần - Khóa)` : `Đã hoàn thành (${existingSub?.score})`}
                         </span>
                       ) : isExpired ? (
                         <span className="bg-rose-100 text-rose-800 text-[10px] font-extrabold px-2.5 py-1 rounded-full flex items-center gap-1 shadow-xs border border-rose-200">
@@ -1076,7 +1102,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
                     </div>
 
                     <div className="text-[11px] font-medium text-slate-500 flex items-center justify-between px-1">
-                      <span>Cho phép làm lại: <strong className="text-slate-800">Nhiều lần ♾️</strong></span>
+                      <span>Cho phép làm lại: <strong className="text-slate-800">{as.maxAttempts || (as.allowRepeat === false ? '1 lần' : 'Nhiều lần ♾️')}</strong></span>
                       <span className="text-indigo-600 font-semibold">Tự chấm điểm AI ⚡</span>
                     </div>
                   </div>
@@ -1084,18 +1110,32 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
                   {/* CTA Button */}
                   <div className="pt-2 relative z-10">
                     <button
-                      disabled={isExpired && !isDone}
-                      onClick={() => setSolvingAssignment(as)}
+                      disabled={isDisabled}
+                      onClick={() => {
+                        if (isMaxReached) {
+                          showToast(`⚠️ Bài tập này giới hạn tối đa ${maxAllowed} lần làm. Em đã hoàn thành (${attemptCount}/${maxAllowed}) và không thể làm lại.`);
+                          return;
+                        }
+                        setSolvingAssignment(as);
+                      }}
                       className={`w-full py-3 px-4 rounded-2xl text-xs sm:text-sm font-extrabold transition-all shadow-md flex items-center justify-center gap-2 ${
-                        isExpired && !isDone
+                        isDisabled
                           ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed shadow-none'
                           : isDone
                           ? 'bg-gradient-to-r from-teal-600 to-indigo-600 hover:from-teal-700 hover:to-indigo-700 text-white shadow-teal-600/20 cursor-pointer active:scale-98'
                           : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-emerald-600/20 cursor-pointer active:scale-98'
                       }`}
                     >
-                      <span>{isExpired && !isDone ? '🔒 Đã hết hạn làm bài' : isDone ? '🔄 Luyện tập lại bài này' : '⚡ Bắt đầu làm bài tập'}</span>
-                      {(!isExpired || isDone) && <ChevronRight className="w-4 h-4" />}
+                      <span>
+                        {isExpired && !isDone 
+                          ? '🔒 Đã hết hạn làm bài' 
+                          : isMaxReached 
+                          ? `🔒 Đã khóa (Đã đủ ${maxAllowed} lượt làm)` 
+                          : isDone 
+                          ? `🔄 Luyện tập lại (${attemptCount}/${maxAllowed === Infinity ? '∞' : maxAllowed})` 
+                          : '⚡ Bắt đầu làm bài tập'}
+                      </span>
+                      {!isDisabled && <ChevronRight className="w-4 h-4" />}
                     </button>
                   </div>
                 </div>
@@ -1460,6 +1500,16 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
                 <button
                   onClick={() => {
                     const assignmentToRetry = detailSubmission.assignment;
+                    const asKey = getCanonicalAssignmentKey(assignmentToRetry);
+                    const matchingHistory = (assignmentHistory || []).filter(
+                      sub => getCanonicalAssignmentKey(sub) === asKey || (sub.assignment?.id && sub.assignment.id === assignmentToRetry.id) || (sub.id && sub.id === assignmentToRetry.id)
+                    );
+                    const attemptCount = matchingHistory.length;
+                    const maxAllowed = getMaxAllowedAttempts(assignmentToRetry);
+                    if (attemptCount >= maxAllowed) {
+                      showToast(`⚠️ Bài tập này giới hạn tối đa ${maxAllowed} lần làm. Em đã hoàn thành (${attemptCount}/${maxAllowed}) và không thể làm lại.`);
+                      return;
+                    }
                     setDetailSubmission(null);
                     setSolvingAssignment(assignmentToRetry);
                   }}
