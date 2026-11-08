@@ -42,7 +42,22 @@ export async function fetchAndCacheFirestoreLessonProgress(lessonId: string): Pr
  * Helper to calculate stats from students
  */
 export function calculateStatsOverview(students: Student5EProgress[]): StatsOverview {
-  const total = students.length;
+  // Guarantee calculation strictly on unique students (not click/visit counts)
+  const uniqueStudentsMap = new Map<string, Student5EProgress>();
+  students.forEach(s => {
+    const key = (s.studentId || s.studentCode || `${s.className}-${s.stt}`).trim().toLowerCase();
+    if (!uniqueStudentsMap.has(key)) {
+      uniqueStudentsMap.set(key, s);
+    } else {
+      const existing = uniqueStudentsMap.get(key)!;
+      if (s.progressPct > existing.progressPct) {
+        uniqueStudentsMap.set(key, s);
+      }
+    }
+  });
+
+  const uniqueStudents = Array.from(uniqueStudentsMap.values());
+  const total = uniqueStudents.length;
   if (total === 0) {
     return {
       totalStudents: 0,
@@ -56,10 +71,10 @@ export function calculateStatsOverview(students: Student5EProgress[]): StatsOver
     };
   }
 
-  const completed = students.filter(s => s.progressPct >= 100).length;
-  const inProgress = students.filter(s => s.progressPct > 0 && s.progressPct < 100).length;
-  const notStarted = students.filter(s => s.progressPct === 0).length;
-  const sumProgress = students.reduce((acc, s) => acc + s.progressPct, 0);
+  const completed = uniqueStudents.filter(s => s.progressPct >= 100).length;
+  const inProgress = uniqueStudents.filter(s => s.progressPct > 0 && s.progressPct < 100).length;
+  const notStarted = uniqueStudents.filter(s => s.progressPct === 0).length;
+  const sumProgress = uniqueStudents.reduce((acc, s) => acc + s.progressPct, 0);
   const avg = Math.round(sumProgress / total);
 
   return {
@@ -78,7 +93,21 @@ export function calculateStatsOverview(students: Student5EProgress[]): StatsOver
  * Helper to calculate stats for the 5 5E activities
  */
 export function calculate5EActivityStats(students: Student5EProgress[]): Activity5EStats[] {
-  const total = students.length;
+  const uniqueStudentsMap = new Map<string, Student5EProgress>();
+  students.forEach(s => {
+    const key = (s.studentId || s.studentCode || `${s.className}-${s.stt}`).trim().toLowerCase();
+    if (!uniqueStudentsMap.has(key)) {
+      uniqueStudentsMap.set(key, s);
+    } else {
+      const existing = uniqueStudentsMap.get(key)!;
+      if (s.progressPct > existing.progressPct) {
+        uniqueStudentsMap.set(key, s);
+      }
+    }
+  });
+
+  const uniqueStudents = Array.from(uniqueStudentsMap.values());
+  const total = uniqueStudents.length;
   const activities: { key: 'engage' | 'explore' | 'explain' | 'elaborate' | 'evaluate'; name: string; stepCode: string }[] = [
     { key: 'engage', name: 'Khởi động', stepCode: 'Engage' },
     { key: 'explore', name: 'Khám phá', stepCode: 'Explore' },
@@ -88,7 +117,7 @@ export function calculate5EActivityStats(students: Student5EProgress[]): Activit
   ];
 
   return activities.map(act => {
-    const completedCount = students.filter(s => s[act.key].status === 'completed').length;
+    const completedCount = uniqueStudents.filter(s => s[act.key].status === 'completed').length;
     const completedPct = total > 0 ? Math.round((completedCount / total) * 100) : 0;
     return {
       key: act.key,
@@ -222,15 +251,18 @@ export function getLessonStudentsProgressData(
     }
   }
 
-  // 3. Fetch real students strictly belonging to the assigned classes
+  // 3. Fetch real students strictly belonging to the assigned classes (deduplicated by unique student identity)
   const rawStudents: StudentRecord[] = [];
   const seenStudentIds = new Set<string>();
 
-  targetClasses.forEach(cls => {
+  // Ensure unique target classes
+  const uniqueTargetClasses = Array.from(new Set(targetClasses.map(c => c.trim()).filter(Boolean)));
+
+  uniqueTargetClasses.forEach(cls => {
     const list = allDb[cls] || getStudentsFromLocalStorage(cls);
     if (Array.isArray(list)) {
       list.forEach(st => {
-        const idKey = st.id || st.code || st.username || `${cls}-${st.stt}`;
+        const idKey = (st.sddcn || st.id || st.code || st.username || `${cls}-${st.stt}`).trim().toLowerCase();
         if (!seenStudentIds.has(idKey)) {
           seenStudentIds.add(idKey);
           rawStudents.push({
@@ -368,10 +400,29 @@ export function getLessonStudentsProgressData(
     };
   });
 
+  // Ensure 100% unique students (no duplicate entries)
+  const uniqueStudentsMap = new Map<string, Student5EProgress>();
+  mappedStudents.forEach((st) => {
+    const key = (st.studentId || st.studentCode || `${st.className}-${st.stt}`).trim().toLowerCase();
+    if (!uniqueStudentsMap.has(key)) {
+      uniqueStudentsMap.set(key, st);
+    } else {
+      const existing = uniqueStudentsMap.get(key)!;
+      if (st.progressPct > existing.progressPct) {
+        uniqueStudentsMap.set(key, st);
+      }
+    }
+  });
+
+  const finalUniqueStudents = Array.from(uniqueStudentsMap.values()).map((s, idx) => ({
+    ...s,
+    stt: idx + 1
+  }));
+
   return {
-    students: mappedStudents,
-    targetClasses,
-    assignedDateStr: assignedDateStr || (mappedStudents.length > 0 ? '01/09/2026' : undefined)
+    students: finalUniqueStudents,
+    targetClasses: uniqueTargetClasses,
+    assignedDateStr: assignedDateStr || (finalUniqueStudents.length > 0 ? '01/09/2026' : undefined)
   };
 }
 

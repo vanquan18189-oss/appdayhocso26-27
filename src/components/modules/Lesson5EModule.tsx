@@ -326,9 +326,9 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
             />
             <StatCard
               variant="purple"
-              title="Lượt học tích luỹ"
-              value={`${totalViews.toLocaleString('vi-VN')} Lượt học`}
-              subtext="Tổng lượt học sinh tham gia học tập"
+              title="Lượt truy cập tích luỹ"
+              value={`${totalViews.toLocaleString('vi-VN')} Lượt truy cập`}
+              subtext="Tổng lượt truy cập tham gia học tập"
               icon={Users}
             />
           </div>
@@ -665,7 +665,7 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
                               <Clock className="w-3.5 h-3.5 text-blue-500" /> {lesson.duration || '35 phút'}
                             </span>
                             <span className="flex items-center gap-1 font-medium">
-                              <Users className="w-3.5 h-3.5 text-slate-400" /> {viewsCount} lượt học
+                              <Users className="w-3.5 h-3.5 text-slate-400" /> {viewsCount} Lượt truy cập
                             </span>
                           </div>
                           <span className="text-[10px] font-mono font-bold text-slate-400 bg-slate-100 px-2 py-0.5 rounded">
