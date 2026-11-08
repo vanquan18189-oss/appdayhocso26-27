@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Layers,
@@ -25,7 +25,7 @@ import {
 import { QuestionItem, CognitiveLevel } from '../../types';
 import { SUBJECTS, GRADES, CLASSES_BY_GRADE, QUESTION_TYPES, EXAM_TYPES, getQuestionTypeLabel, matchesQuestionType } from '../../lib/constants';
 import { useClassesList, extractGradeDigit } from '../../services/classStorageService';
-import { getLocalCachedQuestions } from '../../services/questionStorageService';
+import { getLocalCachedQuestions, subscribeToQuestionsFromFirestore } from '../../services/questionStorageService';
 import { isQuestionMatchingGrade } from './QuestionBankModule';
 
 export type TargetContext = 'exam' | 'assignment' | 'elaborate' | 'apply' | 'assessment' | 'game' | 'default';
@@ -217,11 +217,42 @@ export const UseQuestionBankModal: React.FC<UseQuestionBankModalProps> = ({
   // Feedback Notification Toast
   const [actionSuccessMsg, setActionSuccessMsg] = useState<string | null>(null);
 
-  // Effective questions source
-  const allBankQuestions = useMemo(() => {
+  // Effective questions source with live real-time sync from Firestore
+  const [liveQuestions, setLiveQuestions] = useState<QuestionItem[]>(() => {
     if (questions && questions.length > 0) return questions;
     return getLocalCachedQuestions();
-  }, [questions]);
+  });
+
+  // Sync with prop updates and local cache
+  useEffect(() => {
+    if (questions && questions.length > 0) {
+      setLiveQuestions(questions);
+    } else {
+      setLiveQuestions(getLocalCachedQuestions());
+    }
+  }, [questions, isOpen]);
+
+  // Subscribe to real-time changes from Firestore when modal is open
+  useEffect(() => {
+    if (!isOpen) return;
+    const unsubscribe = subscribeToQuestionsFromFirestore((updatedQuestions) => {
+      if (updatedQuestions && updatedQuestions.length > 0) {
+        setLiveQuestions(updatedQuestions);
+      }
+    });
+    return () => unsubscribe();
+  }, [isOpen]);
+
+  const allBankQuestions = useMemo(() => {
+    if (liveQuestions && liveQuestions.length > 0) return liveQuestions;
+    if (questions && questions.length > 0) return questions;
+    return getLocalCachedQuestions();
+  }, [liveQuestions, questions]);
+
+  // Reset selected lesson when subject or grade changes
+  useEffect(() => {
+    setSelectedLesson('all');
+  }, [subject, grade]);
 
   // Available classes for selected grade
   const availableClasses = getClassesForGrade(grade).map(c => c.name);
@@ -238,60 +269,71 @@ export const UseQuestionBankModal: React.FC<UseQuestionBankModalProps> = ({
     setSelectedClasses((prev) => prev.filter((c) => c !== cls));
   };
 
-  // Get available lessons based on subject and grade
+  // Get available lessons dynamically from questions in the question bank based on subject and grade
   const availableLessons = useMemo(() => {
-    const list = Array.from(
+    const matchingQuestions = allBankQuestions.filter(
+      (q) => (subject === 'all' || q.subject === subject) && isQuestionMatchingGrade(q.grade, grade)
+    );
+
+    const dynamicLessons = Array.from(
       new Set(
-        allBankQuestions
-          .filter((q) => (subject === 'all' || q.subject === subject) && isQuestionMatchingGrade(q.grade, grade))
-          .map((q) => q.lessonName)
+        matchingQuestions
+          .map((q) => (q.lessonName || '').trim())
           .filter(Boolean)
       )
     ) as string[];
 
-    if (list.length === 0) {
-      const gDigit = extractGradeDigit(grade);
-      if (subject === 'Công nghệ') {
-        if (gDigit === '4') {
-          return [
-            'Bài 1: Hoa và cây cảnh trong đời sống',
-            'Bài 2: Trồng hoa, cây cảnh trong chậu',
-            'Bài 3: Chăm sóc hoa, cây cảnh trong chậu',
-            'Bài 4: Giới thiệu bộ lắp ghép mô hình kỹ thuật',
-            'Bài 5: Lắp ghép mô hình kỹ thuật'
-          ];
-        }
-        if (gDigit === '5') {
-          return [
-            'Bài 1: Công nghệ trong đời sống',
-            'Bài 2: Sáng chế kĩ thuật',
-            'Bài 3: Sử dụng điện an toàn và tiết kiệm',
-            'Bài 4: Lắp ghép mô hình xe đạp'
-          ];
-        }
-        return ['Bài 1: Tự nhiên và công nghệ', 'Bài 2: Sử dụng đèn học', 'Bài 3: Sử dụng quạt điện'];
-      }
-      if (subject === 'Tin học') {
-        if (gDigit === '4') {
-          return [
-            'Bài 1: Phần cứng và phần mềm máy tính',
-            'Bài 2: Gõ bàn phím đúng cách',
-            'Bài 3: Tìm kiếm thông tin trên Internet',
-            'Bài 4: Tạo văn bản ngắn'
-          ];
-        }
-        if (gDigit === '5') {
-          return [
-            'Bài 1: Máy tính và mạng máy tính',
-            'Bài 2: An toàn thông tin trên mạng',
-            'Bài 3: Sử dụng phần mềm trình chiếu'
-          ];
-        }
-        return ['Thông tin và quyết định', 'Làm quen với máy tính', 'Bàn phím và chuột'];
-      }
-      return ['Bài 1: Tổng quan bài học', 'Bài 2: Kiến thức trọng tâm'];
+    // When questions exist with dynamic lesson names, strictly display those real topics from the bank
+    if (dynamicLessons.length > 0) {
+      return dynamicLessons;
     }
-    return list;
+
+    // If questions exist in this subject and grade but have no specific lessonName, do not return dummy topics
+    if (matchingQuestions.length > 0) {
+      return [];
+    }
+
+    // Only provide fallback suggestions when NO questions exist yet for this subject and grade
+    const gDigit = extractGradeDigit(grade);
+    if (subject === 'Công nghệ') {
+      if (gDigit === '4') {
+        return [
+          'Bài 1: Hoa và cây cảnh trong đời sống',
+          'Bài 2: Trồng hoa, cây cảnh trong chậu',
+          'Bài 3: Chăm sóc hoa, cây cảnh trong chậu',
+          'Bài 4: Giới thiệu bộ lắp ghép mô hình kỹ thuật',
+          'Bài 5: Lắp ghép mô hình kỹ thuật'
+        ];
+      }
+      if (gDigit === '5') {
+        return [
+          'Bài 1: Công nghệ trong đời sống',
+          'Bài 2: Sáng chế kĩ thuật',
+          'Bài 3: Sử dụng điện an toàn và tiết kiệm',
+          'Bài 4: Lắp ghép mô hình xe đạp'
+        ];
+      }
+      return ['Bài 1: Tự nhiên và công nghệ', 'Bài 2: Sử dụng đèn học', 'Bài 3: Sử dụng quạt điện'];
+    }
+    if (subject === 'Tin học') {
+      if (gDigit === '4') {
+        return [
+          'Bài 1: Phần cứng và phần mềm máy tính',
+          'Bài 2: Gõ bàn phím đúng cách',
+          'Bài 3: Tìm kiếm thông tin trên Internet',
+          'Bài 4: Tạo văn bản ngắn'
+        ];
+      }
+      if (gDigit === '5') {
+        return [
+          'Bài 1: Máy tính và mạng máy tính',
+          'Bài 2: An toàn thông tin trên mạng',
+          'Bài 3: Sử dụng phần mềm trình chiếu'
+        ];
+      }
+      return ['Thông tin và quyết định', 'Làm quen với máy tính', 'Bàn phím và chuột'];
+    }
+    return ['Bài 1: Tổng quan bài học', 'Bài 2: Kiến thức trọng tâm'];
   }, [allBankQuestions, subject, grade]);
 
   // Filter questions for Tab 2
@@ -302,11 +344,13 @@ export const UseQuestionBankModal: React.FC<UseQuestionBankModalProps> = ({
       // Grade match
       const matchGrade = isQuestionMatchingGrade(q.grade, grade);
       // Lesson match
+      const qLesson = (q.lessonName || '').trim();
+      const sLesson = (selectedLesson || '').trim();
       const matchLesson =
         selectedLesson === 'all' ||
         !selectedLesson ||
-        q.lessonName === selectedLesson ||
-        (selectedLesson === 'Bài 1: Tự nhiên và công nghệ' && extractGradeDigit(grade) === '3' && (!q.lessonName || q.lessonName.includes('Tự nhiên')));
+        qLesson === sLesson ||
+        (sLesson === 'Bài 1: Tự nhiên và công nghệ' && extractGradeDigit(grade) === '3' && (!qLesson || qLesson.includes('Tự nhiên')));
       // Type match
       const matchType = matchesQuestionType(q.type, tab2TypeFilter);
 
