@@ -1049,74 +1049,169 @@ export function downloadAssignmentPlanTemplate(className: string = 'Lớp 3A') {
 export function exportAssignmentResultsExcel(
   assignmentTitle: string,
   className: string,
-  studentsList: any[]
+  studentsList: any[],
+  customQuestionsCount?: number
 ) {
   const wb = XLSX.utils.book_new();
 
   const nowStr = new Date().toLocaleString('vi-VN');
 
+  // Determine actual question count dynamically
+  let qCount = customQuestionsCount && customQuestionsCount > 0 ? customQuestionsCount : 0;
+  if (!qCount) {
+    qCount = Math.max(
+      5,
+      ...studentsList.map((st) => (Array.isArray(st.answers) ? st.answers.length : 0))
+    );
+  }
+
+  const questionHeaders: string[] = [];
+  for (let i = 1; i <= qCount; i++) {
+    questionHeaders.push(`Câu ${i}`);
+  }
+
+  // Column "Trạng thái nộp" is completely removed per user request
+  const headers = [
+    'STT',
+    'Mã HS',
+    'Họ và tên học sinh',
+    ...questionHeaders,
+    'Tổng điểm',
+    'Đánh giá AI',
+    'Thời gian nộp bài',
+    'Nhận xét sư phạm của Giáo viên'
+  ];
+
   const sheetData: any[] = [
     ['BÁO CÁO THEO DÕI NỘP BÀI RÈN LUYỆN & CHẤM ĐIỂM TỰ ĐỘNG'],
     [`Bài tập: ${assignmentTitle}`],
     [`Lớp phụ trách: ${className} | Tổng số: ${studentsList.length} học sinh | Thời gian xuất báo cáo: ${nowStr}`],
-    [''],
-    [
-      'STT',
-      'Mã HS',
-      'Họ và tên học sinh',
-      'Câu 1',
-      'Câu 2',
-      'Câu 3',
-      'Câu 4',
-      'Câu 5',
-      'Tổng điểm',
-      'Đánh giá AI',
-      'Thời gian nộp bài',
-      'Trạng thái nộp',
-      'Nhận xét sư phạm của Giáo viên'
-    ]
+    [],
+    headers
   ];
 
   studentsList.forEach((st, idx) => {
-    const c1 = st.answers && st.answers[0] === 'pass' ? 'Đúng' : st.answers && st.answers[0] === 'fail' ? 'Sai' : 'Chưa làm';
-    const c2 = st.answers && st.answers[1] === 'pass' ? 'Đúng' : st.answers && st.answers[1] === 'fail' ? 'Sai' : 'Chưa làm';
-    const c3 = st.answers && st.answers[2] === 'pass' ? 'Đúng' : st.answers && st.answers[2] === 'fail' ? 'Sai' : 'Chưa làm';
-    const c4 = st.answers && st.answers[3] === 'pass' ? 'Đúng' : st.answers && st.answers[3] === 'fail' ? 'Sai' : 'Chưa làm';
-    const c5 = st.answers && st.answers[4] === 'pass' ? 'Đúng' : st.answers && st.answers[4] === 'fail' ? 'Sai' : 'Chưa làm';
+    const isSubmitted =
+      st.status === 'submitted' ||
+      (st.submittedTime && st.submittedTime !== 'Chờ HS' && st.submittedTime !== '-');
 
-    const aiStatusStr = st.aiStatus === 'pass' ? 'Đạt yêu cầu' : st.aiStatus === 'fail' ? 'Cần ôn tập thêm' : '-';
-    const statusStr = st.status === 'submitted' ? 'Đã nộp bài' : 'Chờ học sinh nộp';
-
-    let teacherNote = '';
-    if (st.totalScore !== '-') {
-      const scoreNum = Number(st.totalScore);
-      if (scoreNum >= 9) teacherNote = 'Xuất sắc, nắm chắc kiến thức bài học';
-      else if (scoreNum >= 7) teacherNote = 'Đạt yêu cầu, cần cẩn thận hơn ở câu vận dụng';
-      else if (scoreNum >= 5) teacherNote = 'Cần luyện tập thêm, giáo viên hỗ trợ chữa bài';
-      else teacherNote = 'Cần kèm cặp thêm ngoài giờ học';
-    } else {
-      teacherNote = 'Chưa nộp bài - Đã gửi thông báo nhắc nhở qua Zalo phụ huynh';
-    }
-
-    sheetData.push([
+    const rowData: any[] = [
       idx + 1,
       st.code || '',
-      st.name || '',
-      c1,
-      c2,
-      c3,
-      c4,
-      c5,
-      st.totalScore !== '-' ? st.totalScore : 'Chưa chấm',
-      aiStatusStr,
-      formatSubmissionDateTime(st.submittedTime),
-      statusStr,
-      teacherNote
-    ]);
+      st.name || st.fullName || ''
+    ];
+
+    if (isSubmitted) {
+      // Question answers formatted as "✓" or "✗"
+      for (let q = 0; q < qCount; q++) {
+        const ans = Array.isArray(st.answers) ? st.answers[q] : undefined;
+        if (ans === 'pass' || ans === true || ans === 'correct' || ans === 1) {
+          rowData.push('✓');
+        } else if (ans === 'fail' || ans === false || ans === 'wrong' || ans === 0) {
+          rowData.push('✗');
+        } else {
+          rowData.push('');
+        }
+      }
+
+      // Total Score
+      const rawScore = st.totalScore !== undefined && st.totalScore !== null ? st.totalScore : st.score;
+      const displayScore = rawScore !== undefined && rawScore !== '-' && rawScore !== 'Chưa chấm' ? rawScore : '';
+      rowData.push(displayScore);
+
+      // AI Evaluation
+      const aiStatusStr =
+        st.aiStatus === 'pass'
+          ? 'Đạt yêu cầu'
+          : st.aiStatus === 'fail'
+          ? 'Cần ôn tập thêm'
+          : '';
+      rowData.push(aiStatusStr);
+
+      // Submission Time
+      const subTimeStr =
+        st.submittedTime && st.submittedTime !== 'Chờ HS' && st.submittedTime !== '-'
+          ? formatSubmissionDateTime(st.submittedTime)
+          : '';
+      rowData.push(subTimeStr);
+
+      // Teacher Note
+      let teacherNote = '';
+      if (displayScore !== '') {
+        const scoreNum = Number(displayScore);
+        if (!isNaN(scoreNum)) {
+          if (scoreNum >= 9) teacherNote = 'Xuất sắc, nắm chắc kiến thức bài học';
+          else if (scoreNum >= 7) teacherNote = 'Đạt yêu cầu, cần cẩn thận hơn ở câu vận dụng';
+          else if (scoreNum >= 5) teacherNote = 'Cần luyện tập thêm, giáo viên hỗ trợ chữa bài';
+          else teacherNote = 'Cần kèm cặp thêm ngoài giờ học';
+        }
+      }
+      rowData.push(teacherNote);
+    } else {
+      // Unsubmitted student: all question columns and result columns MUST be completely empty ""
+      for (let q = 0; q < qCount; q++) {
+        rowData.push('');
+      }
+      rowData.push(''); // Tổng điểm
+      rowData.push(''); // Đánh giá AI
+      rowData.push(''); // Thời gian nộp bài
+      rowData.push(''); // Nhận xét sư phạm
+    }
+
+    sheetData.push(rowData);
   });
 
   const ws = XLSX.utils.aoa_to_sheet(sheetData);
-  setWorksheetColWidths(ws, [8, 14, 24, 12, 12, 12, 12, 12, 14, 18, 22, 18, 45]);
+
+  // Column width settings
+  const colWidths: number[] = [
+    8,  // STT
+    14, // Mã HS
+    26, // Họ và tên học sinh
+    ...Array(qCount).fill(10), // Câu 1..Câu N
+    14, // Tổng điểm
+    18, // Đánh giá AI
+    22, // Thời gian nộp bài
+    45  // Nhận xét sư phạm của Giáo viên
+  ];
+  setWorksheetColWidths(ws, colWidths);
+
+  // Merges for title banner
+  const lastColIdx = headers.length - 1;
+  ws['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: lastColIdx } },
+    { s: { r: 1, c: 0 }, e: { r: 1, c: lastColIdx } },
+    { s: { r: 2, c: 0 }, e: { r: 2, c: lastColIdx } }
+  ];
+
+  // Apply cell styling for question symbols (✓: bold green #16A34A, ✗: bold red #DC2626)
+  const dataStartRowIdx = 4; // Row 5 in 1-based index (0: banner 1, 1: banner 2, 2: banner 3, 3: empty row, 4: headers) -> data begins at index 5
+  studentsList.forEach((_, idx) => {
+    const rIdx = 5 + idx;
+    for (let q = 0; q < qCount; q++) {
+      const cIdx = 3 + q;
+      const cellAddress = XLSX.utils.encode_cell({ r: rIdx, c: cIdx });
+      const cell = ws[cellAddress];
+      if (cell) {
+        if (cell.v === '✓') {
+          cell.s = {
+            font: { bold: true, color: { rgb: '16A34A' }, sz: 14, name: 'Calibri' },
+            alignment: { horizontal: 'center', vertical: 'center' }
+          };
+        } else if (cell.v === '✗') {
+          cell.s = {
+            font: { bold: true, color: { rgb: 'DC2626' }, sz: 14, name: 'Calibri' },
+            alignment: { horizontal: 'center', vertical: 'center' }
+          };
+        } else {
+          cell.s = {
+            alignment: { horizontal: 'center', vertical: 'center' }
+          };
+        }
+      }
+    }
+  });
+
   XLSX.utils.book_append_sheet(wb, ws, 'Ket_Qua_Ren_Luyen');
 
   const cleanClass = className.replace(/[\s\/:*?"<>|]+/g, '_');

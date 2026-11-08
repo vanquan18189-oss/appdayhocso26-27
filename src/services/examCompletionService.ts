@@ -13,6 +13,7 @@ export interface ExamCompletionStats {
   validSubmissions: any[];
   realDocCount: number;
   lastRefreshedAt?: string;
+  error?: string;
 }
 
 // In-memory cache for direct Firestore completion stats
@@ -36,12 +37,28 @@ export function registerFirestoreExamSubs(examId: string, subs: any[], docCount?
 
 export function getCachedExamCompletion(examId: string): ExamCompletionStats | undefined {
   if (!examId) return undefined;
-  return examCompletionStatsCache.get(String(examId).trim().toLowerCase());
+  const key = String(examId).trim().toLowerCase();
+  const memory = examCompletionStatsCache.get(key);
+  if (memory) return memory;
+
+  if (typeof window !== 'undefined') {
+    try {
+      const sessionRaw = sessionStorage.getItem(`eduplay_exam_completion_${key}`);
+      if (sessionRaw) {
+        const parsed = JSON.parse(sessionRaw);
+        if (parsed && typeof parsed === 'object') {
+          examCompletionStatsCache.set(key, parsed);
+          return parsed;
+        }
+      }
+    } catch {}
+  }
+  return undefined;
 }
 
 /**
  * Đếm trực tiếp và truy vấn submissions từ Firestore subcollection exams/{examId}/submissions
- * Thực hiện mỗi khi vào trang, đổi bộ lọc, chuyển trang, đóng bảng chi tiết hoặc bấm "Làm mới".
+ * Thực hiện mỗi khi vào trang, đổi bộ lọc, chuyển trang, đóng bảng chi tiết hoặc bấm "Làm mới số liệu".
  * Chỉ đọc tối đa số đề trong trang hiện tại (tối đa 10 đề) để kiểm soát hạn mức quota.
  * Hoàn toàn READ-ONLY, không ghi Firestore.
  */
@@ -58,10 +75,16 @@ export async function fetchDirectExamCompletions(exams: ExamPaper[]): Promise<Ma
     // If no db, calculate from local/memory
     targetExams.forEach(exam => {
       if (!exam?.id) return;
-      const stats = getExamCompletion(exam.id, exam.targetClass || 'Lớp 3C', exam.submissions);
+      const stats = getExamCompletion(exam.id, exam.targetClass || '', exam.submissions);
       stats.lastRefreshedAt = nowTime;
       resultMap.set(exam.id, stats);
-      examCompletionStatsCache.set(exam.id.toLowerCase(), stats);
+      const key = exam.id.toLowerCase();
+      examCompletionStatsCache.set(key, stats);
+      if (typeof window !== 'undefined') {
+        try {
+          sessionStorage.setItem(`eduplay_exam_completion_${key}`, JSON.stringify(stats));
+        } catch {}
+      }
     });
     return resultMap;
   }
@@ -92,6 +115,7 @@ export async function fetchDirectExamCompletions(exams: ExamPaper[]): Promise<Ma
     const collectedSubs: any[] = [];
     const seenSubKeys = new Set<string>();
     let totalRealDocCount = 0;
+    let fetchError: string | undefined = undefined;
 
     for (const docId of candDocIds) {
       try {
@@ -107,9 +131,22 @@ export async function fetchDirectExamCompletions(exams: ExamPaper[]): Promise<Ma
             collectedSubs.push(subObj);
           }
         });
-      } catch (err) {
-        console.warn(`Lỗi đọc trực tiếp subcollection exams/${docId}/submissions:`, err);
+      } catch (err: any) {
+        console.error(`Lỗi khi đọc bài nộp cho đề ${exam.title || docId} (ID: ${docId}):`, err);
+        fetchError = err?.message || String(err);
       }
+    }
+
+    // Also include explicit submissions on exam paper object if available
+    if (Array.isArray(exam.submissions) && exam.submissions.length > 0) {
+      exam.submissions.forEach((sub: any) => {
+        if (!sub) return;
+        const subKey = `${sub.id || sub.studentCode}__${normalizeStudentCode(sub.studentCode || sub.maHs || sub.studentId || '')}`;
+        if (!seenSubKeys.has(subKey)) {
+          seenSubKeys.add(subKey);
+          collectedSubs.push(sub);
+        }
+      });
     }
 
     // Register into memory store
@@ -121,9 +158,18 @@ export async function fetchDirectExamCompletions(exams: ExamPaper[]): Promise<Ma
     // Compute unified completion stats
     const stats = getExamCompletion(examId, targetClass, collectedSubs, totalRealDocCount);
     stats.lastRefreshedAt = nowTime;
+    if (fetchError && collectedSubs.length === 0) {
+      stats.error = fetchError;
+    }
 
     resultMap.set(examId, stats);
-    examCompletionStatsCache.set(examId.toLowerCase(), stats);
+    const key = examId.toLowerCase();
+    examCompletionStatsCache.set(key, stats);
+    if (typeof window !== 'undefined') {
+      try {
+        sessionStorage.setItem(`eduplay_exam_completion_${key}`, JSON.stringify(stats));
+      } catch {}
+    }
   });
 
   await Promise.all(fetchPromises);
@@ -248,14 +294,17 @@ export function getExamCompletion(
     const subStudentId = normalizeStudentCode(String(sub.studentCode || sub.maHs || sub.studentId || sub.code || sub.sddcn || sub.fallbackCode || ''));
     const subStudentName = String(sub.studentName || sub.name || sub.fullName || '').trim().toLowerCase();
 
-    // QUY TẮC KHỚP BẮT BUỘC:
-    // Một bài nộp chỉ thuộc về một học sinh khi và chỉ khi studentCode (đã chuẩn hóa) bằng đúng Mã HS của học sinh đó.
-    // CẤM khớp lỏng theo tên hay dự phòng.
+    // Matching rule: match by standard student code
     const matchedRoster = classStudentsRoster.find(st => {
       const rosterCode = st.code.toUpperCase();
       const candCodes = [sub.studentCode, sub.maHs, sub.studentId, sub.code, sub.docId, sub.id]
         .filter(Boolean)
-        .map(c => normalizeStudentCode(String(c)));
+        .flatMap(c => {
+          const rawStr = String(c);
+          const norm = normalizeStudentCode(rawStr);
+          const std = formatStandardStudentCode(rawStr, cleanClass);
+          return [norm, std];
+        });
       return candCodes.some(c => c === rosterCode);
     });
 
@@ -270,7 +319,6 @@ export function getExamCompletion(
         });
       }
     } else {
-      // Unmatched submission
       let reason = 'Mã học sinh không tồn tại trong danh sách lớp';
       if (!subStudentId || subStudentId === 'u-4' || subStudentId === 'hs-temp') {
         reason = 'Sử dụng Auth UID hoặc mã tạm thời không khớp Mã HS chuẩn';

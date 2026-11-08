@@ -35,6 +35,7 @@ import {
   FileText,
   Download,
   AlertTriangle,
+  AlertCircle,
   FileSpreadsheet,
   RotateCcw,
   Trophy,
@@ -76,16 +77,86 @@ import { useAcademicYear } from '../../contexts/AcademicYearContext';
 import { formatScore, formatTotalScore, roundTotalScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
 
 import { StudentSubmissionDetailModal } from './StudentSubmissionDetailModal';
+import { createNotificationIfNotExists, LOW_SCORE_THRESHOLD } from '../../services/notificationService';
 
-interface StudentSubmissionRow {
+export interface StudentSubmissionRow {
   code: string;
   name: string;
   answers: ('pass' | 'fail' | 'none')[];
+  gradeStatuses?: ('ok' | 'error' | 'uncertain')[];
+  gradeNotes?: string[];
   totalScore: number | string;
   aiStatus: 'pass' | 'fail' | 'none';
   submittedTime: string;
-  status: 'submitted' | 'waiting';
+  status?: 'submitted' | 'waiting' | string;
   rawSubmission?: any;
+  hasOrangeAlert?: boolean;
+  hasRedAlert?: boolean;
+  errorQuestionsCount?: number;
+  errorDetails?: { questionIndex: number; status: 'error' | 'uncertain'; note: string }[];
+}
+
+/**
+ * Chuyển bất kỳ chuỗi Ngày giao / Ngày tạo / Date / Timestamp thành milliseconds để so sánh thời gian thực.
+ */
+export function parseAssignedDateToTime(rawDate?: any, rawCreatedAt?: any): number {
+  const tryParse = (val?: any): number | null => {
+    if (!val) return null;
+    if (typeof val === 'number' && !isNaN(val)) return val;
+    if (val instanceof Date && !isNaN(val.getTime())) return val.getTime();
+    if (typeof val !== 'string') return null;
+
+    const s = val.trim();
+    if (!s) return null;
+
+    // Định dạng dd/mm/yyyy [HH:mm[:ss]] hoặc dd-mm-yyyy [HH:mm[:ss]]
+    const ddmmyyyyMatch = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
+    if (ddmmyyyyMatch) {
+      const day = parseInt(ddmmyyyyMatch[1], 10);
+      const month = parseInt(ddmmyyyyMatch[2], 10) - 1;
+      const year = parseInt(ddmmyyyyMatch[3], 10);
+      const hour = ddmmyyyyMatch[4] ? parseInt(ddmmyyyyMatch[4], 10) : 0;
+      const minute = ddmmyyyyMatch[5] ? parseInt(ddmmyyyyMatch[5], 10) : 0;
+      const second = ddmmyyyyMatch[6] ? parseInt(ddmmyyyyMatch[6], 10) : 0;
+      const dateObj = new Date(year, month, day, hour, minute, second);
+      if (!isNaN(dateObj.getTime())) {
+        return dateObj.getTime();
+      }
+    }
+
+    // Thử Date.parse dành cho chuỗi ISO (e.g. 2026-11-08T19:05:00.000Z)
+    const parsed = Date.parse(s);
+    if (!isNaN(parsed)) {
+      return parsed;
+    }
+
+    return null;
+  };
+
+  const t1 = tryParse(rawDate);
+  if (t1 !== null) return t1;
+
+  const t2 = tryParse(rawCreatedAt);
+  if (t2 !== null) return t2;
+
+  return 0;
+}
+
+/**
+ * Chuẩn hóa hiển thị cột "NGÀY GIAO" theo đúng định dạng chuẩn: dd/mm/yyyy HH:mm
+ */
+export function formatAssignedDateDisplay(rawDate?: any, rawCreatedAt?: any): string {
+  const timeMs = parseAssignedDateToTime(rawDate, rawCreatedAt);
+  if (timeMs <= 0) {
+    return '18/08/2026 00:00';
+  }
+  const date = new Date(timeMs);
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = date.getFullYear();
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  return `${day}/${month}/${year} ${hour}:${minute}`;
 }
 
 const CLASS_3A_STUDENTS: StudentSubmissionRow[] = [
@@ -205,6 +276,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   const [selectedSubject, setSelectedSubject] = useState<string>('Tất cả các môn');
   const [selectedClass, setSelectedClass] = useState<string>('Tất cả các lớp');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
 
   // Pagination states
   const [itemsPerPage, setItemsPerPage] = useState<number>(10);
@@ -224,6 +296,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
 
   // Tracking modal states
   const [trackingTab, setTrackingTab] = useState<'all' | 'needs_action' | 'support'>('all');
+  const [needsActionSubFilter, setNeedsActionSubFilter] = useState<'all' | 'orange' | 'red'>('all');
   const [selectedStudentDetail, setSelectedStudentDetail] = useState<StudentSubmissionRow | null>(null);
   const [regradeToggle, setRegradeToggle] = useState(true);
   const [regradeScore, setRegradeScore] = useState('10');
@@ -233,6 +306,24 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   const [deleteTarget, setDeleteTarget] = useState<StudentSubmissionRow | null>(null);
   const [isDeletingSubmission, setIsDeletingSubmission] = useState<boolean>(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // Listener for opening tracking modal from Header notification
+  useEffect(() => {
+    const handleOpenTracking = (e: CustomEvent) => {
+      const { assignmentId } = e.detail || {};
+      if (assignmentId) {
+        const found = assignments.find(a => a.id === assignmentId);
+        if (found) {
+          setDetailAssignment(found);
+          setTrackingTab('needs_action');
+        }
+      }
+    };
+    window.addEventListener('eduplay_open_assignment_tracking', handleOpenTracking as EventListener);
+    return () => {
+      window.removeEventListener('eduplay_open_assignment_tracking', handleOpenTracking as EventListener);
+    };
+  }, [assignments]);
 
   // Live submissions synced from Firestore subcollection & local records
   const [liveSubmissions, setLiveSubmissions] = useState<any[]>([]);
@@ -782,17 +873,102 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
         }
 
         const numericScoreVal = typeof finalScore === 'number' ? finalScore : (finalScore !== '-' ? parseFloat(String(finalScore)) : 0);
-        const isPassed = !isNaN(numericScoreVal) ? numericScoreVal >= 5 : false;
+        const isPassed = !isNaN(numericScoreVal) ? numericScoreVal >= LOW_SCORE_THRESHOLD : false;
+
+        // Trạng thái chấm từng câu (gradeStatus: 'ok' | 'error' | 'uncertain') và lý do (gradeNote)
+        const rawGradeStatuses = submission.gradeStatuses || submission.questionStatuses || submission.gradeStatus;
+        const rawGradeNotes = submission.gradeNotes || submission.questionNotes;
+
+        const gradeStatuses: ('ok' | 'error' | 'uncertain')[] = Array.from({ length: questionCount }).map((_, qi) => {
+          if (Array.isArray(rawGradeStatuses) && rawGradeStatuses[qi]) {
+            return rawGradeStatuses[qi];
+          }
+          if (submission.aiFailedQuestions && Array.isArray(submission.aiFailedQuestions) && submission.aiFailedQuestions.includes(qi)) {
+            return 'error';
+          }
+          if (submission.uncertainQuestions && Array.isArray(submission.uncertainQuestions) && submission.uncertainQuestions.includes(qi)) {
+            return 'uncertain';
+          }
+          return 'ok';
+        });
+
+        const gradeNotes: string[] = Array.from({ length: questionCount }).map((_, qi) => {
+          if (Array.isArray(rawGradeNotes) && rawGradeNotes[qi]) {
+            return rawGradeNotes[qi];
+          }
+          const st = gradeStatuses[qi];
+          if (st === 'error') return `Câu ${qi + 1}: Lỗi kết nối mạng khi AI chấm bài`;
+          if (st === 'uncertain') return `Câu ${qi + 1}: Đáp án tự luận phức tạp, AI chưa khẳng định được`;
+          return '';
+        });
+
+        const errorDetails: { questionIndex: number; status: 'error' | 'uncertain'; note: string }[] = [];
+        gradeStatuses.forEach((st, qi) => {
+          if (st === 'error' || st === 'uncertain') {
+            errorDetails.push({
+              questionIndex: qi,
+              status: st,
+              note: gradeNotes[qi] || (st === 'error' ? 'Lỗi hệ thống khi chấm câu này' : 'Đáp án phức tạp, cần GV duyệt')
+            });
+          }
+        });
+
+        const hasOrangeAlert = errorDetails.length > 0;
+        const hasRedAlert = typeof numericScoreVal === 'number' && numericScoreVal < LOW_SCORE_THRESHOLD;
+        const stCode = st.code || `st-${idx + 1}`;
+        const stName = st.name || st.fullName || `Học sinh ${idx + 1}`;
+
+        // Auto trigger notifications for orange and red alerts
+        if (hasOrangeAlert) {
+          createNotificationIfNotExists({
+            teacherId: effectiveTeacherId,
+            studentId: stCode,
+            studentCode: stCode,
+            studentName: stName,
+            assignmentId: detailAssignment.id,
+            assignmentTitle: detailAssignment.title,
+            type: 'ai_failed',
+            message: `Bài làm của ${stName} có ${errorDetails.length} câu AI chưa chấm được.`,
+            targetClass: detailAssignment.targetClass,
+            details: {
+              failedQuestionIndexes: errorDetails.map(e => e.questionIndex),
+              gradeNotes: errorDetails.map(e => e.note)
+            }
+          });
+        }
+
+        if (hasRedAlert) {
+          createNotificationIfNotExists({
+            teacherId: effectiveTeacherId,
+            studentId: stCode,
+            studentCode: stCode,
+            studentName: stName,
+            assignmentId: detailAssignment.id,
+            assignmentTitle: detailAssignment.title,
+            type: 'low_score',
+            message: `Học sinh ${stName} làm bài đạt điểm dưới ${LOW_SCORE_THRESHOLD} (${numericScoreVal} điểm).`,
+            targetClass: detailAssignment.targetClass,
+            details: {
+              score: numericScoreVal
+            }
+          });
+        }
 
         return {
-          code: st.code || `st-${idx + 1}`,
-          name: st.name || st.fullName || `Học sinh ${idx + 1}`,
+          code: stCode,
+          name: stName,
           answers: evaluatedAnswers,
+          gradeStatuses,
+          gradeNotes,
           totalScore: finalScore,
           aiStatus: isPassed ? ('pass' as const) : ('fail' as const),
           submittedTime: formatSubmissionDateTime(submission.submittedAt || submission.submittedTime || getCurrentSubmissionTimestamp()),
           status: 'submitted' as const,
-          rawSubmission: submission
+          rawSubmission: submission,
+          hasOrangeAlert,
+          hasRedAlert,
+          errorQuestionsCount: errorDetails.length,
+          errorDetails
         };
       } else {
         return {
@@ -810,13 +986,29 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
 
   const filteredTrackingStudents = useMemo(() => {
     if (trackingTab === 'needs_action') {
-      return trackingStudentsList.filter(st => st.status === 'submitted' && (st.answers.includes('fail') || st.aiStatus === 'fail'));
+      const candidates = trackingStudentsList.filter(
+        st => st.status === 'submitted' && (st.hasOrangeAlert || st.hasRedAlert)
+      );
+
+      let subFiltered = candidates;
+      if (needsActionSubFilter === 'orange') {
+        subFiltered = candidates.filter(st => st.hasOrangeAlert);
+      } else if (needsActionSubFilter === 'red') {
+        subFiltered = candidates.filter(st => st.hasRedAlert);
+      }
+
+      // Priority sort: Orange alert first, then Red alert second
+      return [...subFiltered].sort((a, b) => {
+        if (a.hasOrangeAlert && !b.hasOrangeAlert) return -1;
+        if (!a.hasOrangeAlert && b.hasOrangeAlert) return 1;
+        return 0;
+      });
     }
     if (trackingTab === 'support') {
-      return trackingStudentsList.filter(st => st.totalScore !== '-' && Number(st.totalScore) < 5);
+      return trackingStudentsList.filter(st => st.totalScore !== '-' && Number(st.totalScore) < LOW_SCORE_THRESHOLD);
     }
     return trackingStudentsList;
-  }, [trackingStudentsList, trackingTab]);
+  }, [trackingStudentsList, trackingTab, needsActionSubFilter]);
 
   const getAssignmentScoreInfo = useCallback((st: StudentSubmissionRow) => ({
     isSubmitted: st.status === 'submitted',
@@ -1326,7 +1518,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   const handleExportExcel = () => {
     const title = detailAssignment?.title || 'Luyện tập: bài 1: Tự nhiên và công nghệ';
     const targetClass = detailAssignment?.targetClass || (selectedClass !== 'Tất cả các lớp' ? selectedClass : 'Lớp 3A');
-    exportAssignmentResultsExcel(title, targetClass, trackingStudentsList.length > 0 ? trackingStudentsList : CLASS_3A_STUDENTS);
+    exportAssignmentResultsExcel(title, targetClass, trackingStudentsList.length > 0 ? trackingStudentsList : CLASS_3A_STUDENTS, detailAssignment?.questions?.length);
     showToast(`✅ Đã xuất danh sách kết quả ${targetClass} (.xlsx chuẩn) thành công!`);
   };
 
@@ -1538,43 +1730,72 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     (as) => as.authorType === 'colleague' || isAssignmentShared(as)
   ).length;
 
-  // Filter Logic
-  const filteredAssignments = normalizedAssignments.filter((as) => {
-    const isShared = isAssignmentShared(as);
+  // Filter & Sort Logic (Sắp xếp theo NGÀY GIAO thực tế giảm dần/tăng dần TRƯỚC khi phân trang)
+  const filteredAssignments = useMemo(() => {
+    const list = normalizedAssignments.filter((as) => {
+      const isShared = isAssignmentShared(as);
 
-    // Category tab filter
-    if (activeTab === 'my') {
-      if (as.authorType && as.authorType !== 'my') return false;
-    } else if (activeTab === 'colleague') {
-      if (as.authorType !== 'colleague' && !isShared) return false;
-    }
+      // Category tab filter
+      if (activeTab === 'my') {
+        if (as.authorType && as.authorType !== 'my') return false;
+      } else if (activeTab === 'colleague') {
+        if (as.authorType !== 'colleague' && !isShared) return false;
+      }
 
-    // Grade filter
-    if (selectedGrade !== 'Tất cả các khối') {
-      if (as.grade && !isGradeMatching(as.grade, selectedGrade)) return false;
-    }
+      // Grade filter
+      if (selectedGrade !== 'Tất cả các khối') {
+        if (as.grade && !isGradeMatching(as.grade, selectedGrade)) return false;
+      }
 
-    // Subject filter
-    if (selectedSubject !== 'Tất cả các môn') {
-      if (as.subject.toLowerCase() !== selectedSubject.toLowerCase()) return false;
-    }
+      // Subject filter
+      if (selectedSubject !== 'Tất cả các môn') {
+        if (as.subject.toLowerCase() !== selectedSubject.toLowerCase()) return false;
+      }
 
-    // Class filter (chuẩn xác 1 lớp duy nhất)
-    if (selectedClass !== 'Tất cả các lớp') {
-      if (as.targetClass !== selectedClass) return false;
-    }
+      // Class filter (chuẩn xác 1 lớp duy nhất)
+      if (selectedClass !== 'Tất cả các lớp') {
+        if (as.targetClass !== selectedClass) return false;
+      }
 
-    // Search query
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      const matchTitle = as.title.toLowerCase().includes(q);
-      const matchTeacher = (as.teacherName || '').toLowerCase().includes(q);
-      const matchSubject = as.subject.toLowerCase().includes(q);
-      if (!matchTitle && !matchTeacher && !matchSubject) return false;
-    }
+      // Search query
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const matchTitle = as.title.toLowerCase().includes(q);
+        const matchTeacher = (as.teacherName || '').toLowerCase().includes(q);
+        const matchSubject = as.subject.toLowerCase().includes(q);
+        if (!matchTitle && !matchTeacher && !matchSubject) return false;
+      }
 
-    return true;
-  });
+      return true;
+    });
+
+    // Sắp xếp theo NGÀY GIAO thực tế (Date/Timestamp/ms) giảm dần (mặc định) hoặc tăng dần
+    return [...list].sort((a, b) => {
+      const timeA = parseAssignedDateToTime(a.assignedDate || a.startDate, a.createdAt);
+      const timeB = parseAssignedDateToTime(b.assignedDate || b.startDate, b.createdAt);
+
+      if (timeA !== timeB) {
+        return sortOrder === 'desc' ? timeB - timeA : timeA - timeB;
+      }
+
+      // Nếu trùng thời điểm giao, so sánh tiếp theo thời gian tạo (createdAt) mới nhất lên trên
+      const createdA = parseAssignedDateToTime(a.createdAt);
+      const createdB = parseAssignedDateToTime(b.createdAt);
+      if (createdA !== createdB) {
+        return sortOrder === 'desc' ? createdB - createdA : createdA - createdB;
+      }
+
+      return (a.id || '').localeCompare(b.id || '');
+    });
+  }, [
+    normalizedAssignments,
+    activeTab,
+    selectedGrade,
+    selectedSubject,
+    selectedClass,
+    searchQuery,
+    sortOrder
+  ]);
 
   // Pagination calculation
   const totalItems = filteredAssignments.length;
@@ -2033,7 +2254,20 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                 <th className="py-3.5 px-4">TIÊU ĐỀ BÀI GIAO</th>
                 <th className="py-3.5 px-4 whitespace-nowrap">GIÁO VIÊN GIAO</th>
                 <th className="py-3.5 px-4 whitespace-nowrap">LỚP</th>
-                <th className="py-3.5 px-4 whitespace-nowrap">NGÀY GIAO</th>
+                <th 
+                  onClick={() => setSortOrder(prev => prev === 'desc' ? 'asc' : 'desc')}
+                  className="py-3.5 px-4 whitespace-nowrap cursor-pointer select-none hover:text-indigo-900 transition-colors group/sort"
+                  title="Bấm để đổi chiều sắp xếp theo Ngày giao (Mặc định: Giảm dần - Mới nhất lên đầu)"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span>NGÀY GIAO</span>
+                    {sortOrder === 'desc' ? (
+                      <ArrowDown className="w-3.5 h-3.5 text-indigo-600 font-bold" />
+                    ) : (
+                      <ArrowUp className="w-3.5 h-3.5 text-indigo-600 font-bold" />
+                    )}
+                  </div>
+                </th>
                 <th className="py-3.5 px-4 whitespace-nowrap">ĐÃ LÀM</th>
                 <th className="py-3.5 px-4 text-center whitespace-nowrap">THAO TÁC</th>
               </tr>
@@ -2121,8 +2355,8 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                       </td>
 
                       {/* Ngày giao */}
-                      <td className="py-4 px-4 whitespace-nowrap text-slate-600 font-medium">
-                        {as.assignedDate || '18/8/2026'}
+                      <td className="py-4 px-4 whitespace-nowrap text-slate-700 font-semibold font-mono text-xs">
+                        {formatAssignedDateDisplay(as.assignedDate || as.startDate, as.createdAt)}
                       </td>
 
                       {/* Đã làm */}
@@ -3267,53 +3501,115 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
               </div>
             </div>
 
-            {/* 2. TOOLBAR & FILTER TABS */}
+            {/* 2. TOOLBAR & FILTER TABS & WARNING BANNER */}
             {(() => {
-              const needsActionCount = trackingStudentsList.filter(st => st.status === 'submitted' && (st.answers.includes('fail') || st.aiStatus === 'fail')).length;
-              const supportCount = trackingStudentsList.filter(st => st.totalScore !== '-' && Number(st.totalScore) < 5).length;
+              const orangeCount = trackingStudentsList.filter(st => st.status === 'submitted' && st.hasOrangeAlert).length;
+              const redCount = trackingStudentsList.filter(st => st.status === 'submitted' && st.hasRedAlert).length;
+              const totalNeedsAction = trackingStudentsList.filter(st => st.status === 'submitted' && (st.hasOrangeAlert || st.hasRedAlert)).length;
+              const supportCount = trackingStudentsList.filter(st => st.totalScore !== '-' && Number(st.totalScore) < LOW_SCORE_THRESHOLD).length;
 
               return (
-                <div className="bg-slate-50/90 p-2.5 rounded-2xl border border-slate-200/80 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      onClick={() => setTrackingTab('all')}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                        trackingTab === 'all'
-                          ? 'bg-sky-100/90 text-sky-900 border border-sky-300 shadow-2xs'
-                          : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-                      }`}
+                <div className="space-y-2.5">
+                  {/* Top Warning Banner */}
+                  {(orangeCount > 0 || redCount > 0) && (
+                    <div
+                      onClick={() => { setTrackingTab('needs_action'); setNeedsActionSubFilter('all'); }}
+                      className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-2xl flex items-center justify-between text-xs font-bold text-amber-900 cursor-pointer hover:bg-amber-500/20 transition-all shadow-xs animate-pulse-subtle"
                     >
-                      Tất cả ({trackingStudentsList.length})
-                    </button>
+                      <div className="flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                        <span>
+                          Có <strong className="text-amber-700 font-extrabold">{orangeCount}</strong> bài AI chưa chấm được, <strong className="text-rose-700 font-extrabold">{redCount}</strong> bài dưới 5 điểm. Bấm để xem.
+                        </span>
+                      </div>
+                      <span className="text-[11px] bg-amber-200 text-amber-800 px-2.5 py-0.5 rounded-full font-extrabold">
+                        Xem ngay ➔
+                      </span>
+                    </div>
+                  )}
 
-                    <button
-                      onClick={() => setTrackingTab('needs_action')}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                        trackingTab === 'needs_action'
-                          ? 'bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs'
-                          : 'bg-white text-amber-800 hover:bg-amber-50 border border-amber-200'
-                      }`}
-                    >
-                      <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-                      Cần xử lý bài tập ({needsActionCount})
-                    </button>
+                  {/* Filter Tabs Toolbar */}
+                  <div className="bg-slate-50/90 p-2.5 rounded-2xl border border-slate-200/80 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={() => { setTrackingTab('all'); setNeedsActionSubFilter('all'); }}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                          trackingTab === 'all'
+                            ? 'bg-sky-100/90 text-sky-900 border border-sky-300 shadow-2xs'
+                            : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+                        }`}
+                      >
+                        Tất cả ({trackingStudentsList.length})
+                      </button>
 
-                    <button
-                      onClick={() => setTrackingTab('support')}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                        trackingTab === 'support'
-                          ? 'bg-rose-100 text-rose-950 border border-rose-300 shadow-2xs'
-                          : 'bg-white text-rose-700 hover:bg-rose-50 border border-rose-200'
-                      }`}
-                    >
-                      <HeartHandshake className="w-3.5 h-3.5 text-rose-600" />
-                      <span>🆘 Danh sách hỗ trợ ({supportCount})</span>
-                    </button>
+                      <button
+                        onClick={() => setTrackingTab('needs_action')}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                          trackingTab === 'needs_action'
+                            ? 'bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs'
+                            : 'bg-white text-amber-800 hover:bg-amber-50 border border-amber-200'
+                        }`}
+                      >
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                        Cần xử lý bài tập ({totalNeedsAction})
+                      </button>
+
+                      <button
+                        onClick={() => setTrackingTab('support')}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                          trackingTab === 'support'
+                            ? 'bg-rose-100 text-rose-950 border border-rose-300 shadow-2xs'
+                            : 'bg-white text-rose-700 hover:bg-rose-50 border border-rose-200'
+                        }`}
+                      >
+                        <HeartHandshake className="w-3.5 h-3.5 text-rose-600" />
+                        <span>🆘 Danh sách hỗ trợ ({supportCount})</span>
+                      </button>
+                    </div>
+
+                    <div className="text-[11px] text-slate-500 italic font-medium flex items-center gap-1">
+                      <span>Mẹo: Giáo viên xem danh sách cần hỗ trợ để kịp thời kèm cặp các em điểm dưới 5.</span>
+                    </div>
                   </div>
 
-                  <div className="text-[11px] text-slate-500 italic font-medium flex items-center gap-1">
-                    <span>Mẹo: Giáo viên xem danh sách cần hỗ trợ để kịp thời kèm cặp các em điểm dưới 5.</span>
-                  </div>
+                  {/* Sub-filter Pills inside "Cần xử lý bài tập" */}
+                  {trackingTab === 'needs_action' && (
+                    <div className="flex items-center gap-2 pt-1 animate-fade-in">
+                      <span className="text-xs font-bold text-slate-600">Lọc theo loại:</span>
+                      <button
+                        onClick={() => setNeedsActionSubFilter('all')}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                          needsActionSubFilter === 'all'
+                            ? 'bg-slate-800 text-white shadow-2xs'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        Tất cả ({totalNeedsAction})
+                      </button>
+                      <button
+                        onClick={() => setNeedsActionSubFilter('orange')}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                          needsActionSubFilter === 'orange'
+                            ? 'bg-amber-500 text-white shadow-2xs'
+                            : 'bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100'
+                        }`}
+                      >
+                        <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+                        AI chưa chấm được ({orangeCount})
+                      </button>
+                      <button
+                        onClick={() => setNeedsActionSubFilter('red')}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                          needsActionSubFilter === 'red'
+                            ? 'bg-rose-600 text-white shadow-2xs'
+                            : 'bg-rose-50 text-rose-800 border border-rose-200 hover:bg-rose-100'
+                        }`}
+                      >
+                        <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                        Dưới 5 điểm ({redCount})
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })()}
@@ -3369,90 +3665,133 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {sortedTrackingStudents.map((st, index) => (
-                    <tr
-                      key={st.code}
-                      onClick={() => {
-                        setSelectedStudentDetail(st);
-                        setRegradeScore(st.totalScore !== '-' ? String(st.totalScore) : '10');
-                      }}
-                      className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
-                    >
-                      {/* STT */}
-                      <td className="py-3 px-2 text-center whitespace-nowrap font-bold text-slate-500">
-                        {index + 1}
-                      </td>
+                  {sortedTrackingStudents.map((st, index) => {
+                    const rowBgClass = st.hasOrangeAlert
+                      ? 'bg-amber-50/60 hover:bg-amber-100/60'
+                      : (st.hasRedAlert
+                          ? 'bg-rose-50/60 hover:bg-rose-100/60'
+                          : 'hover:bg-slate-50/80');
 
-                      {/* Mã HS */}
-                      <td className="py-3 px-3 whitespace-nowrap font-extrabold text-fuchsia-700">
-                        {st.code}
-                      </td>
+                    return (
+                      <tr
+                        key={st.code}
+                        onClick={() => {
+                          setSelectedStudentDetail(st);
+                          setRegradeScore(st.totalScore !== '-' ? String(st.totalScore) : '10');
+                        }}
+                        className={`transition-colors cursor-pointer group ${rowBgClass}`}
+                      >
+                        {/* STT */}
+                        <td className="py-3 px-2 text-center whitespace-nowrap font-bold text-slate-500">
+                          {index + 1}
+                        </td>
 
-                      {/* Tên HS */}
-                      <td className="py-3 px-4 whitespace-nowrap font-bold text-slate-900 group-hover:text-indigo-900 transition-colors">
-                        {st.name}
-                      </td>
+                        {/* Mã HS */}
+                        <td className="py-3 px-3 whitespace-nowrap font-extrabold text-fuchsia-700">
+                          {st.code}
+                        </td>
 
-                      {/* Cột câu hỏi động */}
-                      {Array.from({ length: detailAssignment?.questions?.length || 5 }).map((_, qIdx) => {
-                        const ans = st.answers[qIdx] || 'none';
-                        return (
-                          <td key={qIdx} className="py-3 px-2 text-center whitespace-nowrap">
-                            {ans === 'pass' && (
-                              <span className="inline-flex w-5 h-5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-700 items-center justify-center text-[10px] font-black">
-                                ✓
-                              </span>
-                            )}
-                            {ans === 'fail' && (
-                              <span className="inline-flex w-5 h-5 rounded-full bg-rose-100 border border-rose-300 text-rose-700 items-center justify-center text-[10px] font-black">
-                                ✗
-                              </span>
-                            )}
-                            {ans === 'none' && (
-                              <span className="text-slate-300 font-semibold">-</span>
-                            )}
-                          </td>
-                        );
-                      })}
+                        {/* Tên HS */}
+                        <td className="py-3 px-4 whitespace-nowrap font-bold text-slate-900 group-hover:text-indigo-900 transition-colors">
+                          {st.name}
+                        </td>
 
-                      {/* Tổng điểm / Mức đạt */}
-                      <td className="py-3 px-3 text-center whitespace-nowrap">
-                        {st.totalScore !== '-' ? (
-                          isSubjectWithScore(detailAssignment?.subject) ? (
-                            <span className="px-2.5 py-0.5 rounded-md bg-indigo-100/90 text-indigo-800 font-black text-xs border border-indigo-200">
-                              {formatTotalScore(st.totalScore)}
-                            </span>
-                          ) : (
-                            (() => {
-                              const correctCount = Array.isArray(st.answers) ? st.answers.filter((a: any) => a === 'pass').length : 0;
-                              const totalQ = detailAssignment?.questions?.length || st.answers.length || 1;
-                              const lvl = getQualitativeLabel(correctCount, totalQ);
-                              return (
-                                <span className={`px-2.5 py-0.5 rounded-md font-black text-xs border ${
-                                  lvl === 'Tốt' ? 'bg-emerald-100 text-emerald-800 border-emerald-200' :
-                                  lvl === 'Hoàn thành' ? 'bg-sky-100 text-sky-800 border-sky-200' :
-                                  'bg-rose-100 text-rose-800 border-rose-200'
-                                }`}>
-                                  {lvl}
+                        {/* Cột câu hỏi động */}
+                        {Array.from({ length: detailAssignment?.questions?.length || 5 }).map((_, qIdx) => {
+                          const qStatus = st.gradeStatuses?.[qIdx] || 'ok';
+                          const qNote = st.gradeNotes?.[qIdx] || '';
+                          const ans = st.answers[qIdx] || 'none';
+
+                          return (
+                            <td key={qIdx} className="py-3 px-2 text-center whitespace-nowrap">
+                              {(qStatus === 'error' || qStatus === 'uncertain') ? (
+                                <span
+                                  className="inline-flex w-5 h-5 rounded-full bg-amber-100 border border-amber-400 text-amber-900 items-center justify-center text-[11px] font-extrabold cursor-help"
+                                  title={qNote || 'AI chưa chấm được câu này'}
+                                >
+                                  ?
                                 </span>
-                              );
-                            })()
-                          )
-                        ) : (
-                          <span className="text-slate-300 font-semibold">-</span>
-                        )}
-                      </td>
+                              ) : ans === 'pass' ? (
+                                <span className="inline-flex w-5 h-5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-700 items-center justify-center text-[10px] font-black">
+                                  ✓
+                                </span>
+                              ) : ans === 'fail' ? (
+                                <span className="inline-flex w-5 h-5 rounded-full bg-rose-100 border border-rose-300 text-rose-700 items-center justify-center text-[10px] font-black">
+                                  ✗
+                                </span>
+                              ) : (
+                                <span className="text-slate-300 font-semibold">-</span>
+                              )}
+                            </td>
+                          );
+                        })}
 
-                      {/* AI Thông báo */}
-                      <td className="py-3 px-3 text-center whitespace-nowrap">
-                        {st.aiStatus === 'pass' ? (
-                          <span className="inline-flex w-5 h-5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-700 items-center justify-center text-[10px] font-black">
-                            ✓
-                          </span>
-                        ) : (
-                          <span className="text-slate-300 font-semibold">-</span>
-                        )}
-                      </td>
+                        {/* Tổng điểm / Mức đạt */}
+                        <td className="py-3 px-3 text-center whitespace-nowrap">
+                          {st.totalScore !== '-' ? (
+                            isSubjectWithScore(detailAssignment?.subject) ? (
+                              <span className={`px-2.5 py-0.5 rounded-md font-black text-xs border ${
+                                typeof st.totalScore === 'number' && st.totalScore < LOW_SCORE_THRESHOLD
+                                  ? 'bg-rose-100 text-rose-800 border-rose-300'
+                                  : 'bg-indigo-100/90 text-indigo-800 border-indigo-200'
+                              }`}>
+                                {formatTotalScore(st.totalScore)}
+                              </span>
+                            ) : (
+                              (() => {
+                                const correctCount = Array.isArray(st.answers) ? st.answers.filter((a: any) => a === 'pass').length : 0;
+                                const totalQ = detailAssignment?.questions?.length || st.answers.length || 1;
+                                const lvl = getQualitativeLabel(correctCount, totalQ);
+                                return (
+                                  <span className={`px-2.5 py-0.5 rounded-md font-black text-xs border ${
+                                    lvl === 'Tốt' ? 'bg-emerald-100 text-emerald-800 border-emerald-200' :
+                                    lvl === 'Hoàn thành' ? 'bg-sky-100 text-sky-800 border-sky-200' :
+                                    'bg-rose-100 text-rose-800 border-rose-200'
+                                  }`}>
+                                    {lvl}
+                                  </span>
+                                );
+                              })()
+                            )
+                          ) : (
+                            <span className="text-slate-300 font-semibold">-</span>
+                          )}
+                        </td>
+
+                        {/* AI Thông báo */}
+                        <td className="py-3 px-3 text-center whitespace-nowrap">
+                          {st.status === 'submitted' ? (
+                            <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                              {st.hasOrangeAlert && (
+                                <span
+                                  className="px-2 py-0.5 rounded-md bg-amber-100 border border-amber-300 text-amber-900 font-extrabold text-[10px] inline-flex items-center gap-1 cursor-help"
+                                  title={`AI chưa chấm được ${st.errorQuestionsCount || 1} câu:\n${(st.errorDetails || []).map(e => `• Câu ${e.questionIndex + 1}: ${e.note}`).join('\n')}`}
+                                >
+                                  <AlertTriangle className="w-3 h-3 text-amber-600 shrink-0" />
+                                  <span>AI chưa chấm được ({st.errorQuestionsCount || 1} câu)</span>
+                                </span>
+                              )}
+
+                              {st.hasRedAlert && (
+                                <span
+                                  className="px-2 py-0.5 rounded-md bg-rose-100 border border-rose-300 text-rose-900 font-extrabold text-[10px] inline-flex items-center gap-1 cursor-help"
+                                  title={`Điểm bài làm dưới 5: ${st.totalScore} điểm.`}
+                                >
+                                  <AlertCircle className="w-3 h-3 text-rose-600 shrink-0" />
+                                  <span>Dưới 5 điểm</span>
+                                </span>
+                              )}
+
+                              {!st.hasOrangeAlert && !st.hasRedAlert && (
+                                <span className="inline-flex w-5 h-5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-700 items-center justify-center text-[10px] font-black">
+                                  ✓
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-slate-300 font-semibold">-</span>
+                          )}
+                        </td>
 
                       {/* Thời gian nộp */}
                       <td className="py-3 px-4 text-center whitespace-nowrap">
@@ -3502,7 +3841,8 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                         </div>
                       </td>
                     </tr>
-                  ))}
+                  );
+                })}
                 </tbody>
               </table>
             </div>

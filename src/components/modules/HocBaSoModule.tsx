@@ -42,7 +42,8 @@ import {
   Info,
   AlertTriangle,
   Edit3,
-  UserCheck
+  UserCheck,
+  RefreshCw
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -106,6 +107,15 @@ import { db } from '../../services/firebase';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { normalizeStudentCode, isValidStudentCode, formatStandardStudentCode } from '../../services/studentCode';
 import { getCurrentTeacherProfile } from '../../services/teacherStorageService';
+import {
+  generateStudentCommentAI,
+  extractStudentMetricsForAI,
+  validateCommentForLevel,
+  StudentDataForCommentAI,
+  generateRuleBasedExamComment,
+  generateSubjectSummaryCommentRuleBased,
+  batchUpdateOldExamComments
+} from '../../services/studentCommentAiService';
 
 interface StudentRecord {
   id: string;
@@ -121,6 +131,8 @@ interface StudentRecord {
     totalQuestions: number;
     strengths: string;
     reminders: string;
+    fullComment?: string;
+    isManuallyEdited?: boolean;
     overallDat: 'T' | 'HT' | 'CHT' | 'H' | 'C';
     score: number;
     hasCommented: boolean;
@@ -460,6 +472,8 @@ const StudentHocBaSoView: React.FC<StudentHocBaSoViewProps> = memo(({
 
   // Lắng nghe các sự kiện nộp bài tập & bài kiểm tra để tự động cập nhật tiến độ huy hiệu theo thời gian thực
   const [submissionsVersion, setSubmissionsVersion] = useState<number>(0);
+
+
 
   useEffect(() => {
     const handleSubmissionsUpdated = () => {
@@ -2552,6 +2566,8 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
 
   const [selectedStudentDetail, setSelectedStudentDetail] = useState<StudentRecord | null>(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState<boolean>(false);
+  const [isGeneratingAi, setIsGeneratingAi] = useState<boolean>(false);
+  const [confirmOverrideStudent, setConfirmOverrideStudent] = useState<StudentRecord | null>(null);
 
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
@@ -2678,6 +2694,25 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
   const [modalTotalQuestions, setModalTotalQuestions] = useState<number>(10);
   const [modalStrengths, setModalStrengths] = useState<string>('');
   const [modalReminders, setModalReminders] = useState<string>('');
+
+  const [isBatchUpdateModalOpen, setIsBatchUpdateModalOpen] = useState(false);
+  const [isUpdatingBatchComments, setIsUpdatingBatchComments] = useState(false);
+  const [batchUpdateProgress, setBatchUpdateProgress] = useState('');
+
+  const handleRunBatchUpdateComments = async () => {
+    setIsUpdatingBatchComments(true);
+    setBatchUpdateProgress('Đang quét danh sách bài kiểm tra cũ...');
+    try {
+      const res = await batchUpdateOldExamComments((msg) => setBatchUpdateProgress(msg));
+      showToast(`✅ Đã cập nhật thành công ${res.totalUpdated} bài nhận xét cũ!`, 'success');
+      setIsBatchUpdateModalOpen(false);
+    } catch (err: any) {
+      showToast(`⚠️ Lỗi khi cập nhật nhận xét cũ: ${err?.message || String(err)}`, 'error');
+    } finally {
+      setIsUpdatingBatchComments(false);
+      setBatchUpdateProgress('');
+    }
+  };
 
   useEffect(() => {
     const handleStudentsUpdated = () => {
@@ -2969,8 +3004,9 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
     return count;
   }, [studentSubmissionStatusMap]);
 
-  const handleGenerateMissingComments = useCallback(() => {
+  const handleGenerateMissingComments = useCallback(async () => {
     const missingStudents = filteredStudents1.filter(st => {
+      if (st.commentDetail?.isManuallyEdited) return false;
       const status = studentSubmissionStatusMap.get(st.code);
       return status?.hasSubmitted && !status?.hasComment;
     });
@@ -2980,70 +3016,205 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
       return;
     }
 
-    showToast(`⏳ Đang tạo nhận xét cho ${missingStudents.length} học sinh còn thiếu...`);
+    showToast(`⏳ Đang tạo nhận xét AI cho ${missingStudents.length} học sinh còn thiếu...`);
+    setIsGeneratingAi(true);
 
     const updatedDb = { ...allStudentsDb };
     let count = 0;
 
-    missingStudents.forEach(st => {
-      const subs = getStudentExamSubmissions({
-        studentId: st.id,
-        studentName: `${st.lastName} ${st.firstName}`,
-        studentCode: st.code,
-        exams
-      });
-      const matched = subs.filter(ex => isExamTypeMatch(ex.examType, ex.title, selectedExamType1) && isSubjectMatch(ex.subject, selectedSubject1));
-      if (matched.length > 0) {
-        const examSub = matched[0];
-        const scoreVal = examSub.score !== undefined ? examSub.score : 8.0;
-        const datVal = scoreVal >= 5 ? 'T' : 'H';
-        const comment = {
-          correctCount: Math.round((scoreVal / 10) * 10),
-          totalQuestions: 10,
-          strengths: examSub.title || 'Bài kiểm tra định kỳ',
-          reminders: scoreVal >= 8 ? `Đã hoàn thành xuất sắc bài kiểm tra ${selectedExamType1}.` : 'Cần chú ý ôn tập thêm nội dung bài học.',
-          overallDat: datVal as 'T' | 'H' | 'CHT',
-          score: scoreVal,
-          hasCommented: true,
-          testTitle: examSub.title
-        };
+    for (const st of missingStudents) {
+      const params = extractStudentMetricsForAI(st, selectedSubject1, selectedExamType1, exams, assignments);
+      const result = await generateStudentCommentAI(params);
 
-        st.commentDetail = comment;
-        if (!st.evaluations) st.evaluations = {};
-        st.evaluations[selectedSubject1] = {
-          dat: datVal,
-          score: formatTotalScore(scoreVal)
-        };
+      const comment = {
+        correctCount: result.correctCount,
+        totalQuestions: result.totalQuestions,
+        strengths: result.strengths,
+        reminders: result.reminders,
+        fullComment: result.fullComment,
+        overallDat: result.overallDat,
+        score: result.score,
+        hasCommented: true,
+        isManuallyEdited: false,
+        testTitle: params.testTitle
+      };
 
-        const cls = st.className || selectedClass1;
-        if (updatedDb[cls]) {
-          updatedDb[cls] = updatedDb[cls].map((item: any) => {
-            const itemCode = normalizeStudentCode(item.code || item.studentCode || item.maHs || item.id);
-            if (itemCode === st.code) {
-              return {
-                ...item,
-                commentDetail: comment,
-                evaluations: {
-                  ...(item.evaluations || {}),
-                  [selectedSubject1]: { dat: datVal, score: formatTotalScore(scoreVal) }
-                },
-                commentDetailByExamType: {
-                  ...(item.commentDetailByExamType || {}),
-                  [selectedExamType1]: comment
-                }
-              };
-            }
-            return item;
-          });
-        }
-        count++;
+      st.commentDetail = comment;
+      if (!st.evaluations) st.evaluations = {};
+      st.evaluations[selectedSubject1] = {
+        dat: result.overallDat,
+        score: formatTotalScore(result.score)
+      };
+
+      const cls = st.className || selectedClass1;
+      if (updatedDb[cls]) {
+        updatedDb[cls] = updatedDb[cls].map((item: any) => {
+          const itemCode = normalizeStudentCode(item.code || item.studentCode || item.maHs || item.id);
+          if (itemCode === st.code) {
+            return {
+              ...item,
+              commentDetail: comment,
+              evaluations: {
+                ...(item.evaluations || {}),
+                [selectedSubject1]: { dat: result.overallDat, score: formatTotalScore(result.score) }
+              },
+              commentDetailByExamType: {
+                ...(item.commentDetailByExamType || {}),
+                [selectedExamType1]: comment
+              }
+            };
+          }
+          return item;
+        });
       }
-    });
+      count++;
+    }
 
     setAllStudentsDb(updatedDb);
     saveAllStudentsToLocalStorage(updatedDb);
-    showToast(`✅ Đã tạo thành công nhận xét cho ${count} học sinh còn thiếu!`, 'success');
-  }, [filteredStudents1, studentSubmissionStatusMap, allStudentsDb, exams, selectedExamType1, selectedSubject1, selectedClass1]);
+    setIsGeneratingAi(false);
+    showToast(`✅ Đã tạo thành công nhận xét AI cho ${count} học sinh còn thiếu!`, 'success');
+  }, [filteredStudents1, studentSubmissionStatusMap, allStudentsDb, exams, assignments, selectedExamType1, selectedSubject1, selectedClass1]);
+
+  const handleRegenerateMismatchedComments = useCallback(async () => {
+    const mismatchedStudents = filteredStudents1.filter(st => {
+      const comment = st.commentDetail;
+      if (comment?.isManuallyEdited) return false;
+
+      if (!comment || !comment.hasCommented) return true;
+
+      const textToValidate = comment.fullComment || `${comment.strengths || ''} ${comment.reminders || ''}`;
+      const level = comment.overallDat || st.evaluations?.[selectedSubject1]?.dat || 'H';
+
+      const val = validateCommentForLevel(textToValidate, level);
+      return !val.valid;
+    });
+
+    if (mismatchedStudents.length === 0) {
+      showToast('✨ Tất cả nhận xét đang lọc đều đã khớp mức đánh giá và từ vựng chuẩn!');
+      return;
+    }
+
+    showToast(`⏳ Đang tạo lại ${mismatchedStudents.length} nhận xét sai mức hoặc vi phạm quy tắc...`);
+    setIsGeneratingAi(true);
+
+    const updatedDb = { ...allStudentsDb };
+    let count = 0;
+
+    for (const st of mismatchedStudents) {
+      const params = extractStudentMetricsForAI(st, selectedSubject1, selectedExamType1, exams, assignments);
+      const result = await generateStudentCommentAI(params);
+
+      const comment = {
+        correctCount: result.correctCount,
+        totalQuestions: result.totalQuestions,
+        strengths: result.strengths,
+        reminders: result.reminders,
+        fullComment: result.fullComment,
+        overallDat: result.overallDat,
+        score: result.score,
+        hasCommented: true,
+        isManuallyEdited: false,
+        testTitle: params.testTitle
+      };
+
+      st.commentDetail = comment;
+      if (!st.evaluations) st.evaluations = {};
+      st.evaluations[selectedSubject1] = {
+        dat: result.overallDat,
+        score: formatTotalScore(result.score)
+      };
+
+      const cls = st.className || selectedClass1;
+      if (updatedDb[cls]) {
+        updatedDb[cls] = updatedDb[cls].map((item: any) => {
+          const itemCode = normalizeStudentCode(item.code || item.studentCode || item.maHs || item.id);
+          if (itemCode === st.code) {
+            return {
+              ...item,
+              commentDetail: comment,
+              evaluations: {
+                ...(item.evaluations || {}),
+                [selectedSubject1]: { dat: result.overallDat, score: formatTotalScore(result.score) }
+              },
+              commentDetailByExamType: {
+                ...(item.commentDetailByExamType || {}),
+                [selectedExamType1]: comment
+              }
+            };
+          }
+          return item;
+        });
+      }
+      count++;
+    }
+
+    setAllStudentsDb(updatedDb);
+    saveAllStudentsToLocalStorage(updatedDb);
+    setIsGeneratingAi(false);
+    showToast(`✅ Đã sinh lại thành công ${count} nhận xét khớp mức đánh giá!`, 'success');
+  }, [filteredStudents1, allStudentsDb, exams, assignments, selectedExamType1, selectedSubject1, selectedClass1]);
+
+  const handleRegenerateSingleStudentComment = useCallback(async (st: StudentRecord, forceOverride: boolean = false) => {
+    if (st.commentDetail?.isManuallyEdited && !forceOverride) {
+      setConfirmOverrideStudent(st);
+      return;
+    }
+
+    showToast(`⏳ Đang sinh nhận xét AI cho em ${st.lastName} ${st.firstName}...`);
+    setIsGeneratingAi(true);
+
+    try {
+      const params = extractStudentMetricsForAI(st, selectedSubject1, selectedExamType1, exams, assignments);
+      const result = await generateStudentCommentAI(params);
+
+      const comment = {
+        correctCount: result.correctCount,
+        totalQuestions: result.totalQuestions,
+        strengths: result.strengths,
+        reminders: result.reminders,
+        fullComment: result.fullComment,
+        overallDat: result.overallDat,
+        score: result.score,
+        hasCommented: true,
+        isManuallyEdited: false,
+        testTitle: params.testTitle
+      };
+
+      const updatedDb = { ...allStudentsDb };
+      const cls = st.className || selectedClass1;
+      if (updatedDb[cls]) {
+        updatedDb[cls] = updatedDb[cls].map((item: any) => {
+          const itemCode = normalizeStudentCode(item.code || item.studentCode || item.maHs || item.id);
+          if (itemCode === st.code) {
+            return {
+              ...item,
+              commentDetail: comment,
+              evaluations: {
+                ...(item.evaluations || {}),
+                [selectedSubject1]: { dat: result.overallDat, score: formatTotalScore(result.score) }
+              },
+              commentDetailByExamType: {
+                ...(item.commentDetailByExamType || {}),
+                [selectedExamType1]: comment
+              }
+            };
+          }
+          return item;
+        });
+      }
+
+      setAllStudentsDb(updatedDb);
+      saveAllStudentsToLocalStorage(updatedDb);
+      showToast(`✅ Đã sinh nhận xét AI thành công cho em ${st.lastName} ${st.firstName}!`, 'success');
+    } catch (err: any) {
+      console.error('Single AI comment generation error:', err);
+      showToast(`⚠️ Không thể tạo nhận xét AI: ${err?.message || String(err)}`, 'error');
+    } finally {
+      setIsGeneratingAi(false);
+      setConfirmOverrideStudent(null);
+    }
+  }, [selectedSubject1, selectedExamType1, exams, assignments, allStudentsDb, selectedClass1]);
 
   /**
    * Helper function: Tra cứu GVCN chính xác của từng lớp từ Firestore classes collection
@@ -3439,11 +3610,32 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
 
             <button
               onClick={handleGenerateMissingComments}
-              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-teal-600 hover:bg-teal-700 text-white transition-all flex items-center gap-2 cursor-pointer shadow-xs shadow-teal-200"
+              disabled={isGeneratingAi}
+              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-teal-600 hover:bg-teal-700 text-white transition-all flex items-center gap-2 cursor-pointer shadow-xs shadow-teal-200 disabled:opacity-50"
               title="Tự động tạo nhận xét cho các em đã làm bài nhưng chưa có nhận xét"
             >
-              <Sparkles className="w-4 h-4" />
+              <Sparkles className={`w-4 h-4 ${isGeneratingAi ? 'animate-spin' : ''}`} />
               <span>Tạo nhận xét thiếu</span>
+            </button>
+
+            <button
+              onClick={handleRegenerateMismatchedComments}
+              disabled={isGeneratingAi}
+              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white transition-all flex items-center gap-2 cursor-pointer shadow-xs shadow-amber-200 disabled:opacity-50"
+              title="Tự động quét và sinh lại các nhận xét bị sai lệch giữa từ ngữ với mức đánh giá (không ghi đè nhận xét đã khóa sửa tay)"
+            >
+              <RefreshCw className={`w-4 h-4 ${isGeneratingAi ? 'animate-spin' : ''}`} />
+              <span>Tạo lại nhận xét sai mức</span>
+            </button>
+
+            <button
+              onClick={() => setIsBatchUpdateModalOpen(true)}
+              disabled={isUpdatingBatchComments}
+              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white transition-all flex items-center gap-2 cursor-pointer shadow-xs shadow-rose-200 disabled:opacity-50"
+              title="Tự động quét toàn bộ bài kiểm tra cũ trong hệ thống và chuẩn hóa lại nhận xét theo quy tắc mới"
+            >
+              <RefreshCw className={`w-4 h-4 ${isUpdatingBatchComments ? 'animate-spin' : ''}`} />
+              <span>Cập nhật nhận xét cũ</span>
             </button>
 
             <button
@@ -3625,36 +3817,90 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
                             )}
                           </td>
                           <td className="p-3 text-center border-r border-slate-200 text-slate-600 font-mono text-[11px]">{st.dob}</td>
-                          <td className="p-3.5 border-r border-slate-200 text-slate-700 leading-relaxed">
+                          <td className="p-3.5 border-r border-slate-200 text-slate-700 leading-relaxed group">
                             {hasComment && comment ? (
-                              <div className="space-y-1">
-                                <div className="flex items-start gap-1.5">
-                                  <span className="shrink-0 pt-0.5">👏</span>
-                                  <span>
-                                    Khen ngợi em đã hoàn thành đúng <b>{comment.correctCount}/{comment.totalQuestions} câu</b>. Làm tốt các câu: <b className="text-slate-900">{comment.strengths}</b>.
-                                  </span>
-                                </div>
-                                {comment.reminders && (
-                                  <div className="flex items-start gap-1.5 text-slate-600">
-                                    <span className="shrink-0 pt-0.5">⚠️</span>
-                                    <span>Cần ôn tập kỹ hơn ở {comment.reminders}</span>
+                              <div className="space-y-1.5">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div
+                                    onClick={() => handleViewDetail(st)}
+                                    className="flex items-start gap-1.5 cursor-pointer hover:text-teal-900 transition-colors"
+                                    title="Bấm để xem chi tiết hoặc sửa tay nhận xét"
+                                  >
+                                    <span className="shrink-0 pt-0.5">
+                                      {displayDat === 'T' ? '👏' : displayDat === 'H' || displayDat === 'HT' ? '👍' : '⚠️'}
+                                    </span>
+                                    <span className="text-slate-800 font-medium">
+                                      {comment.fullComment ? (
+                                        comment.fullComment
+                                      ) : (
+                                        <>
+                                          Khen ngợi em đã hoàn thành đúng <b>{comment.correctCount}/{comment.totalQuestions} câu</b>. Làm tốt các câu: <b className="text-slate-900">{comment.strengths}</b>.
+                                          {comment.reminders && (
+                                            <span className="block text-slate-600 mt-0.5">⚠️ Cần ôn tập kỹ hơn ở {comment.reminders}</span>
+                                          )}
+                                        </>
+                                      )}
+                                    </span>
                                   </div>
-                                )}
+
+                                  <div className="flex items-center gap-1 shrink-0 opacity-80 group-hover:opacity-100 transition-opacity">
+                                    {comment.isManuallyEdited && (
+                                      <span
+                                        className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-amber-100 text-amber-800 border border-amber-200"
+                                        title="Nhận xét đã được giáo viên sửa tay và khóa an toàn (Không tự động ghi đè)"
+                                      >
+                                        <Lock className="w-3 h-3 text-amber-700" /> Khóa
+                                      </span>
+                                    )}
+
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleRegenerateSingleStudentComment(st);
+                                      }}
+                                      disabled={isGeneratingAi}
+                                      className="p-1.5 rounded-lg hover:bg-teal-100 text-teal-700 transition-colors cursor-pointer border border-teal-200/60 bg-teal-50/50"
+                                      title="Tạo lại nhận xét AI cho riêng học sinh này"
+                                    >
+                                      <Sparkles className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </div>
                               </div>
                             ) : hasSubmitted ? (
                               <div className="flex items-center justify-between gap-2 bg-amber-50 border border-amber-200 px-3 py-2 rounded-xl text-xs">
                                 <span className="font-semibold text-amber-800">⚠️ Đã làm bài, chưa có nhận xét</span>
-                                <button
-                                  onClick={() => handleViewDetail(st)}
-                                  className="px-2.5 py-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold transition-all shadow-2xs cursor-pointer shrink-0"
-                                >
-                                  Tạo nhận xét
-                                </button>
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    onClick={() => handleRegenerateSingleStudentComment(st)}
+                                    disabled={isGeneratingAi}
+                                    className="px-2.5 py-1 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold transition-all shadow-2xs cursor-pointer shrink-0 flex items-center gap-1 text-[11px]"
+                                  >
+                                    <Sparkles className="w-3 h-3" /> AI Tạo ngay
+                                  </button>
+                                  <button
+                                    onClick={() => handleViewDetail(st)}
+                                    className="px-2 py-1 rounded-lg bg-white border border-amber-300 hover:bg-amber-100 text-amber-800 font-bold transition-all shadow-2xs cursor-pointer shrink-0 text-[11px]"
+                                  >
+                                    Tự viết
+                                  </button>
+                                </div>
                               </div>
                             ) : (
-                              <div className="text-slate-400 italic text-[11px] flex items-center gap-1.5 py-1">
-                                <span className="w-1.5 h-1.5 rounded-full bg-slate-300"></span>
-                                <span>— Chưa làm bài —</span>
+                              <div className="text-slate-400 italic text-[11px] flex items-center justify-between gap-1.5 py-1">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-slate-300"></span>
+                                  <span>— Chưa làm bài —</span>
+                                </div>
+                                <button
+                                  onClick={() => handleRegenerateSingleStudentComment(st)}
+                                  disabled={isGeneratingAi}
+                                  className="px-2 py-0.5 rounded-md bg-slate-100 hover:bg-teal-50 text-slate-600 hover:text-teal-700 text-[10px] font-bold border border-slate-200 transition-colors cursor-pointer flex items-center gap-1"
+                                  title="Thử tạo nhận xét AI cho học sinh này"
+                                >
+                                  <Sparkles className="w-3 h-3" /> Tạo AI
+                                </button>
                               </div>
                             )}
                           </td>
@@ -4178,9 +4424,11 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
                       totalQuestions: Number(modalTotalQuestions) || 10,
                       strengths: modalStrengths.trim(),
                       reminders: modalReminders.trim(),
+                      fullComment: `${modalStrengths.trim()} ${modalReminders.trim()}`.trim(),
                       overallDat: modalOverallDat,
                       score: Number(modalScore) || 0,
-                      hasCommented: true
+                      hasCommented: true,
+                      isManuallyEdited: true
                     };
 
                     const updatedRoster = currentRoster.map((st) => {
@@ -4424,6 +4672,101 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
                   Xác nhận Ghi Dữ Liệu ✨
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmOverrideStudent && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-[60] flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl border border-slate-200">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center font-bold text-lg">
+                🔒
+              </div>
+              <div>
+                <h3 className="text-sm font-extrabold text-slate-900 font-heading">Xác Nhận Ghi Đè Nhận Xét Khóa</h3>
+                <p className="text-[11px] text-slate-500">Học sinh: <strong className="text-slate-800 font-bold">{confirmOverrideStudent.lastName} {confirmOverrideStudent.firstName}</strong> ({confirmOverrideStudent.className})</p>
+              </div>
+            </div>
+
+            <div className="text-xs text-slate-700 leading-relaxed bg-amber-50 p-3.5 rounded-2xl border border-amber-200 space-y-1.5">
+              <p className="font-semibold text-amber-900">
+                ⚠️ Lời nhận xét này đã được giáo viên chỉnh sửa tay và khóa an toàn.
+              </p>
+              <p>
+                Bạn có chắc chắn muốn cho phép hệ thống AI sinh lại nhận xét mới và ghi đè lên nhận xét hiện tại không?
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-2.5 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setConfirmOverrideStudent(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs cursor-pointer transition-colors"
+              >
+                Hủy bỏ (Giữ nguyên)
+              </button>
+              <button
+                type="button"
+                onClick={() => handleRegenerateSingleStudentComment(confirmOverrideStudent, true)}
+                className="px-4.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs shadow-md shadow-amber-200 cursor-pointer transition-all"
+              >
+                Đồng ý tạo lại AI ✨
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Xác nhận Cập nhật nhận xét cũ */}
+      {isBatchUpdateModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl border border-slate-200">
+            <div className="flex items-center gap-3 text-amber-600 border-b border-slate-100 pb-3">
+              <div className="w-10 h-10 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center shrink-0">
+                <RefreshCw className="w-5 h-5 text-amber-600" />
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-slate-900">Xác nhận cập nhật nhận xét cũ</h3>
+                <p className="text-xs text-slate-500">Chuẩn hóa dữ liệu nhận xét bài kiểm tra</p>
+              </div>
+            </div>
+
+            <div className="space-y-3 text-xs text-slate-600 leading-relaxed bg-amber-50/50 p-3.5 rounded-2xl border border-amber-100">
+              <p>
+                Hệ thống sẽ quét toàn bộ các bản ghi bài nộp kiểm tra trong Firestore và LocalStorage:
+              </p>
+              <ul className="list-disc pl-4 space-y-1 text-slate-700">
+                <li>Phân tích điểm số và quy đổi theo chuẩn 3 mức T/H/C.</li>
+                <li>Khôi phục nhận xét chuẩn rule-based không sai lệch từ ngữ.</li>
+                <li><strong className="text-amber-800">Bỏ qua</strong> các bài nộp đã được giáo viên chỉnh sửa thủ công (<code className="bg-amber-100 px-1 rounded font-mono text-[10px]">isManuallyEdited = true</code>).</li>
+              </ul>
+              {batchUpdateProgress && (
+                <div className="p-2 rounded-xl bg-teal-50 border border-teal-200 text-teal-800 font-semibold text-center animate-pulse">
+                  {batchUpdateProgress}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setIsBatchUpdateModalOpen(false)}
+                disabled={isUpdatingBatchComments}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors cursor-pointer"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                type="button"
+                onClick={handleRunBatchUpdateComments}
+                disabled={isUpdatingBatchComments}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-teal-600 hover:bg-teal-700 text-white transition-all flex items-center gap-1.5 shadow-md shadow-teal-200 cursor-pointer disabled:opacity-50"
+              >
+                {isUpdatingBatchComments ? <Sparkles className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                <span>{isUpdatingBatchComments ? 'Đang cập nhật...' : 'Đồng ý cập nhật'}</span>
+              </button>
             </div>
           </div>
         </div>

@@ -401,7 +401,7 @@ export async function testGeminiLatency(
 /**
  * Core AI generation call routed to server endpoint with direct client fallback for static hosts (Vercel)
  */
-async function callGeminiApi(
+export async function callGeminiApi(
   prompt: string,
   systemInstruction?: string,
   responseJson: boolean = false,

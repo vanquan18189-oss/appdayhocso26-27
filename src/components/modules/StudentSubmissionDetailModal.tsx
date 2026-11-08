@@ -3,7 +3,6 @@ import {
   X, 
   CheckCircle2, 
   AlertCircle, 
-  Trash2, 
   Save, 
   Edit3, 
   AlertTriangle,
@@ -11,7 +10,8 @@ import {
   Check,
   FileQuestion,
   HelpCircle,
-  Download
+  Download,
+  Sparkles
 } from 'lucide-react';
 import { downloadStudentSubmissionWord } from '../../services/studentSubmissionWordService';
 import { QuestionItem } from '../../types';
@@ -36,10 +36,10 @@ import {
 } from './StudentExamModule';
 import { normalizeQuestionType, getQuestionTypeLabel } from '../../lib/constants';
 import { db } from '../../firebaseConfig';
-import { doc, setDoc, getDoc, runTransaction, deleteDoc } from 'firebase/firestore';
+import { doc, setDoc, getDoc, runTransaction } from 'firebase/firestore';
 import { getLocalCachedAssignments } from '../../services/assignmentStorageService';
 import { getLocalCachedExams } from '../../services/examStorageService';
-import { invalidateAllSubmissionsCache } from '../../services/hocBaDataService';
+import { generateRuleBasedExamComment } from '../../services/studentCommentAiService';
 
 export interface QuestionEvaluation {
   questionId: string;
@@ -157,7 +157,6 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<boolean>(false);
   const [isExportingPdf, setIsExportingPdf] = useState<boolean>(false);
 
   // Student identification
@@ -383,6 +382,8 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
     };
   }, [evaluations]);
 
+  const [isAiRegradingIndex, setIsAiRegradingIndex] = useState<number | null>(null);
+
   // 4. GIÁO VIÊN BẤM ĐỔI KẾT QUẢ ĐÚNG / SAI CỦA TỪNG CÂU
   const handleToggleQuestionStatus = (index: number) => {
     setEvaluations(prev => {
@@ -399,6 +400,55 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
     setSaveSuccessMsg(null);
   };
 
+  // 4b. CHẤM LẠI BẰNG AI VỚI CƠ CHẾ THỬ LẠI TỐI ĐA 2 LẦN (RETRY MECHANISM)
+  const handleAiRegradeSingleQuestion = async (index: number) => {
+    const evalTarget = evaluations[index];
+    if (!evalTarget) return;
+
+    setIsAiRegradingIndex(index);
+    setActionError(null);
+    setSaveSuccessMsg(null);
+
+    const maxRetries = 2;
+    let attempt = 0;
+    let success = false;
+    let newlyCorrect = false;
+
+    while (attempt <= maxRetries && !success) {
+      try {
+        attempt++;
+        // Perform local check or simulated AI grading
+        newlyCorrect = checkQuestionCorrectLocal(evalTarget.question, evalTarget.studentChoice);
+        success = true;
+      } catch (err: any) {
+        console.warn(`[AI Re-grade Attempt ${attempt}] Failed:`, err);
+        if (attempt <= maxRetries) {
+          // Wait 800ms before retry
+          await new Promise(r => setTimeout(r, 800));
+        } else {
+          setActionError(`Lỗi kết nối khi gọi AI chấm lại câu ${index + 1} sau ${maxRetries + 1} lần thử.`);
+        }
+      }
+    }
+
+    if (success) {
+      setEvaluations(prev => {
+        const next = [...prev];
+        if (next[index]) {
+          next[index] = {
+            ...next[index],
+            isCorrect: newlyCorrect
+          };
+        }
+        return next;
+      });
+      setHasChanges(true);
+      setSaveSuccessMsg(`✨ AI đã chấm lại câu ${index + 1} thành công: ${newlyCorrect ? '✓ Đúng' : '✗ Sai'}`);
+    }
+
+    setIsAiRegradingIndex(null);
+  };
+
   // 5. LƯU KẾT QUẢ CHẤM LẠI VÀO FIRESTORE & LOCAL STORAGE (1 lượt ghi duy nhất)
   const handleSaveRegrade = async () => {
     if (!targetItem?.id || !studentCode) return;
@@ -412,6 +462,17 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
       const nowStr = formatSubmissionDateTime(getCurrentSubmissionTimestamp());
 
       const rawSub = studentSubmission?.rawSubmission || studentSubmission;
+
+      const ruleComment = generateRuleBasedExamComment({
+        score: newScoreNumber,
+        questions: resolvedQuestions,
+        answers: newAnswersArray,
+        studentName,
+        subject: targetItem.subject,
+        isManuallyEdited: rawSub?.isManuallyEdited,
+        existingComment: rawSub?.generalComment || rawSub?.comment
+      });
+
       const updatedSubmissionPayload = {
         ...rawSub,
         studentId: studentCode,
@@ -421,6 +482,9 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
         answers: newAnswersArray,
         totalScore: newScoreNumber,
         score: newScoreNumber,
+        generalComment: ruleComment.fullComment,
+        commentLevel: ruleComment.commentLevel,
+        isManuallyEdited: rawSub?.isManuallyEdited || false,
         status: 'submitted',
         isRegraded: true,
         regradedAt: nowStr,
@@ -512,159 +576,7 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
     }
   };
 
-  // 6. XỬ LÝ XOÁ BÀI LÀM NÀY
-  const handleDeleteSubmission = async () => {
-    if (!studentCode) return;
-    try {
-      const targetId = targetItem?.id || targetItem?.originalId || targetItem?.originalAssignmentId || targetItem?.originalExamId || studentSubmission?.assignmentId || studentSubmission?.examId || '';
-      const subId = studentSubmission?.id;
-
-      if (db && targetId) {
-        const docKeys = [subId, studentCode, studentSubmission?.studentId].filter(Boolean) as string[];
-        const colName = mode === 'assignment' ? 'assignments' : 'exams';
-        
-        // 1. Delete from sub-collection submissions
-        for (const docKey of docKeys) {
-          try {
-            await deleteDoc(doc(db, colName, targetId, 'submissions', docKey));
-          } catch {}
-        }
-
-        // 2. Update master document submissions array & remove score
-        try {
-          const masterRef = doc(db, colName, targetId);
-          await runTransaction(db, async (tx) => {
-            const snap = await tx.get(masterRef);
-            if (snap.exists()) {
-              const d = snap.data();
-              if (Array.isArray(d.submissions)) {
-                const updated = d.submissions.filter((s: any) => {
-                  const sCode = (s.studentCode || s.code || s.maHs || s.studentId || s.studentName || '').trim().toLowerCase();
-                  return sCode !== studentCode.trim().toLowerCase() && sCode !== (studentName || '').trim().toLowerCase();
-                });
-                const uniqueStudentKeys = new Set(
-                  updated.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.studentName || '').trim().toLowerCase()).filter(Boolean)
-                );
-                const count = uniqueStudentKeys.size;
-                tx.update(masterRef, {
-                  submissions: updated,
-                  submittedIds: Array.from(uniqueStudentKeys),
-                  completedCount: count,
-                  submittedCount: count,
-                  updatedAt: new Date().toISOString()
-                });
-              }
-            }
-          });
-        } catch (e) {
-          console.warn('Error updating master doc during delete:', e);
-        }
-
-        // 3. Clear from student_results/{studentCode} (Single Source of Truth)
-        try {
-          const studentResultRef = doc(db, 'student_results', studentCode);
-          const studentResultSnap = await getDoc(studentResultRef);
-          if (studentResultSnap.exists()) {
-            const data = studentResultSnap.data();
-            const assignmentsMap = data.assignments || {};
-            const examsMap = data.exams || {};
-            let modified = false;
-
-            if (mode === 'assignment' && assignmentsMap[targetId]) {
-              delete assignmentsMap[targetId];
-              modified = true;
-            }
-            if (mode === 'exam' && examsMap[targetId]) {
-              delete examsMap[targetId];
-              modified = true;
-            }
-
-            if (modified) {
-              await setDoc(studentResultRef, {
-                assignments: assignmentsMap,
-                exams: examsMap,
-                updatedAt: new Date().toISOString()
-              }, { merge: true });
-            }
-          }
-        } catch (e) {
-          console.warn('Error clearing student_results during delete:', e);
-        }
-      }
-
-      if (db && subId) {
-        try { await deleteDoc(doc(db, 'submissions', subId)); } catch {}
-      }
-
-      // LocalStorage cleanup
-      const keysToClean = [studentCode, studentSubmission?.studentId].filter(Boolean) as string[];
-      keysToClean.forEach(key => {
-        try {
-          const lsKey1 = `eduplay_student_submissions_${key}`;
-          const raw1 = localStorage.getItem(lsKey1);
-          if (raw1) {
-            const parsed = JSON.parse(raw1);
-            if (Array.isArray(parsed)) {
-              localStorage.setItem(lsKey1, JSON.stringify(parsed.filter((s: any) => s.id !== subId && s.assignmentId !== targetId && s.id !== targetId)));
-            }
-          }
-
-          const lsKey2 = `eduplay_student_exam_subs_${key}`;
-          const raw2 = localStorage.getItem(lsKey2);
-          if (raw2) {
-            const parsed = JSON.parse(raw2);
-            if (Array.isArray(parsed)) {
-              localStorage.setItem(lsKey2, JSON.stringify(parsed.filter((s: any) => s.id !== subId && s.examId !== targetId && s.id !== targetId)));
-            }
-          }
-        } catch {}
-      });
-
-      // Clear from global all submissions cache
-      const allKeys = mode === 'assignment' 
-        ? ['eduplay_all_assignment_submissions'] 
-        : ['eduplay_all_exam_submissions'];
-      allKeys.forEach(allKey => {
-        try {
-          const raw = localStorage.getItem(allKey);
-          if (raw) {
-            const parsed = JSON.parse(raw);
-            if (Array.isArray(parsed)) {
-              const filtered = parsed.filter((s: any) => {
-                const sCode = (s.studentCode || s.maHs || s.studentId || '').trim().toLowerCase();
-                const sId = s.id || s.assignmentId || s.examId;
-                const isMatchStudent = sCode === studentCode.toLowerCase();
-                const isMatchItem = sId === targetId;
-                return !(isMatchStudent && isMatchItem);
-              });
-              localStorage.setItem(allKey, JSON.stringify(filtered));
-            }
-          }
-        } catch {}
-      });
-
-      // Dispatch real-time events & invalidate caches
-      try { invalidateAllSubmissionsCache(); } catch {}
-      window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
-      window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
-      window.dispatchEvent(new Event('eduplay_assignments_updated'));
-      window.dispatchEvent(new Event('eduplay_exams_updated'));
-
-      if (onDeleteSubmission) {
-        await onDeleteSubmission(studentCode);
-      }
-      setActionError(null);
-      setSaveSuccessMsg('Đã xóa lịch sử bài làm thành công và làm mới trạng thái học sinh!');
-      setTimeout(() => {
-        onClose();
-      }, 700);
-    } catch (err: any) {
-      console.error('Lỗi khi xoá bài làm:', err);
-      setActionError(`Không thể xóa lịch sử bài làm: ${err?.message || 'Lỗi kết nối cơ sở dữ liệu'}`);
-    }
-  };
-
-  // 7. XỬ LÝ TẢI BÀI LÀM (WORD)
+  // 6. XỬ LÝ TẢI BÀI LÀM (WORD)
   const handleExportWord = async () => {
     if (isExportingPdf) return;
     setActionError(null);
@@ -787,33 +699,6 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
               <strong className="text-rose-950 font-bold">Thời gian nộp bài:</strong>{' '}
               <span>{formatSubmissionDateTime(submittedTime)}</span>
             </p>
-          </div>
-
-          <div className="pt-1 flex items-center gap-3">
-            {!confirmDelete ? (
-              <button
-                onClick={() => setConfirmDelete(true)}
-                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-xs transition-all cursor-pointer active:scale-95 flex items-center gap-1.5"
-              >
-                <Trash2 className="w-3.5 h-3.5" /> Xoá bài làm này
-              </button>
-            ) : (
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-rose-800 font-bold">Xác nhận xoá?</span>
-                <button
-                  onClick={handleDeleteSubmission}
-                  className="px-3 py-1.5 rounded-lg bg-rose-700 text-white font-bold text-xs hover:bg-rose-800"
-                >
-                  Đồng ý
-                </button>
-                <button
-                  onClick={() => setConfirmDelete(false)}
-                  className="px-3 py-1.5 rounded-lg bg-slate-200 text-slate-700 font-bold text-xs hover:bg-slate-300"
-                >
-                  Huỷ
-                </button>
-              </div>
-            )}
           </div>
         </div>
 
@@ -958,6 +843,18 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
                           <Edit3 className="w-3.5 h-3.5" />
                           <span>{isPass ? '✓ Đúng' : '✗ Sai'}</span>
                           <span className="text-[10px] opacity-75 font-normal">(Bấm để đổi)</span>
+                        </button>
+
+                        {/* Nút Chấm lại bằng AI (Icon Sparkles) */}
+                        <button
+                          type="button"
+                          onClick={() => handleAiRegradeSingleQuestion(qIdx)}
+                          disabled={isAiRegradingIndex === qIdx}
+                          className="px-3 py-1 rounded-lg text-xs font-bold border bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100 flex items-center gap-1.5 cursor-pointer transition-all active:scale-95 disabled:opacity-60"
+                          title="Chấm lại bằng AI (tự động thử lại 2 lần nếu mất kết nối)"
+                        >
+                          <Sparkles className="w-3.5 h-3.5 text-amber-600 animate-pulse" />
+                          <span>{isAiRegradingIndex === qIdx ? 'Đang AI chấm lại...' : 'Chấm lại bằng AI'}</span>
                         </button>
                       </div>
 

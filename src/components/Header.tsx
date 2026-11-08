@@ -15,7 +15,10 @@ import {
   LogIn,
   Calendar,
   ChevronDown,
-  AlertTriangle
+  AlertTriangle,
+  Bell,
+  CheckCheck,
+  AlertCircle
 } from 'lucide-react';
 import { UserRole, LatencyTestResult } from '../types';
 import { APP_NAME, APP_SUBTITLE } from '../config/appConfig';
@@ -39,6 +42,13 @@ import { resolveTeacherNameByEmail, verifyTeacherAuthorization } from '../servic
 import { getStudentAvatarSource } from './common/AnimalAvatars';
 import { FirestoreConnectivityBanner } from './common/FirestoreConnectivityBanner';
 import { FirestoreDebugOverlay } from './FirestoreDebugOverlay';
+import {
+  getLocalNotifications,
+  markNotificationAsRead,
+  markAllNotificationsAsRead,
+  syncNotificationsFromFirestore,
+  AppNotification
+} from '../services/notificationService';
 
 interface HeaderProps {
   currentRole?: UserRole;
@@ -80,6 +90,43 @@ export const Header: React.FC<HeaderProps> = ({
   const [tempYear, setTempYear] = useState(selectedAcademicYear);
   const [tempSemester, setTempSemester] = useState(selectedSemester);
   const [yearWarningToast, setYearWarningToast] = useState<string | null>(null);
+
+  // Notifications Popover & State
+  const [isNotifPopoverOpen, setIsNotifPopoverOpen] = useState(false);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+
+  const refreshNotifications = () => {
+    setNotifications(getLocalNotifications());
+  };
+
+  useEffect(() => {
+    refreshNotifications();
+    syncNotificationsFromFirestore().then(setNotifications);
+
+    const handleUpdate = () => refreshNotifications();
+    window.addEventListener('eduplay_notifications_updated', handleUpdate);
+    return () => {
+      window.removeEventListener('eduplay_notifications_updated', handleUpdate);
+    };
+  }, []);
+
+  const unreadCount = notifications.filter(n => !n.read).length;
+
+  const handleNotificationClick = async (notif: AppNotification) => {
+    if (!notif.read) {
+      await markNotificationAsRead(notif.id);
+      refreshNotifications();
+    }
+    setIsNotifPopoverOpen(false);
+    window.dispatchEvent(new CustomEvent('eduplay_open_assignment_tracking', {
+      detail: { assignmentId: notif.assignmentId, studentCode: notif.studentCode }
+    }));
+  };
+
+  const handleMarkAllRead = async () => {
+    await markAllNotificationsAsRead();
+    refreshNotifications();
+  };
 
   useEffect(() => {
     if (isPeriodPopoverOpen) {
@@ -370,9 +417,100 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         </div>
 
-        {/* Right Controls: Academic Period & API Key Config */}
+        {/* Right Controls: Bell Notifications, Academic Period & API Key Config */}
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-          
+
+          {/* Intelligent AI Bell Notifications Button */}
+          <div className="relative">
+            <button
+              onClick={() => setIsNotifPopoverOpen(!isNotifPopoverOpen)}
+              className="relative p-2 rounded-lg text-gray-600 hover:text-indigo-600 hover:bg-indigo-50 border border-gray-200 hover:border-indigo-200 transition-all cursor-pointer shadow-xs"
+              title="Thông báo AI Cần Xử Lý"
+            >
+              <Bell className="w-4 h-4" />
+              {unreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 bg-rose-600 text-white text-[10px] font-extrabold w-4 h-4 rounded-full flex items-center justify-center animate-pulse">
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </span>
+              )}
+            </button>
+
+            {/* Notifications Popover Dropdown */}
+            {isNotifPopoverOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-40"
+                  onClick={() => setIsNotifPopoverOpen(false)}
+                />
+                <div className="absolute right-0 mt-2 w-80 sm:w-96 bg-white rounded-2xl shadow-2xl border border-gray-200 z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+                  <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-gray-100">
+                    <div className="flex items-center gap-2 font-bold text-xs text-slate-800">
+                      <Bell className="w-4 h-4 text-indigo-600" />
+                      <span>Thông Báo AI Bài Tập</span>
+                      {unreadCount > 0 && (
+                        <span className="bg-rose-100 text-rose-700 text-[10px] font-extrabold px-1.5 py-0.5 rounded-full">
+                          {unreadCount} mới
+                        </span>
+                      )}
+                    </div>
+                    {unreadCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleMarkAllRead}
+                        className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 cursor-pointer"
+                      >
+                        <CheckCheck className="w-3.5 h-3.5" />
+                        Đã đọc tất cả
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="max-h-80 overflow-y-auto divide-y divide-gray-100">
+                    {notifications.length === 0 ? (
+                      <div className="p-6 text-center text-xs text-gray-400 font-medium">
+                        Không có thông báo mới nào.
+                      </div>
+                    ) : (
+                      notifications.map((n) => (
+                        <div
+                          key={n.id}
+                          onClick={() => handleNotificationClick(n)}
+                          className={`p-3 text-xs transition-colors cursor-pointer hover:bg-slate-50 flex items-start gap-2.5 ${
+                            !n.read ? 'bg-indigo-50/50 font-semibold' : 'opacity-80'
+                          }`}
+                        >
+                          <div className={`w-2 h-2 rounded-full shrink-0 mt-1.5 ${
+                            n.type === 'ai_failed' ? 'bg-amber-500' : 'bg-rose-500'
+                          }`} />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-1 mb-0.5">
+                              <span className={`text-[10px] font-extrabold uppercase px-1.5 py-0.2 rounded border ${
+                                n.type === 'ai_failed'
+                                  ? 'bg-amber-100 text-amber-800 border-amber-200'
+                                  : 'bg-rose-100 text-rose-800 border-rose-200'
+                              }`}>
+                                {n.type === 'ai_failed' ? 'AI Chưa Chấm' : 'Dưới 5 Điểm'}
+                              </span>
+                              <span className="text-[10px] text-gray-400 font-normal">
+                                {new Date(n.createdAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            </div>
+                            <p className="text-gray-800 text-[11px] leading-snug line-clamp-2">
+                              {n.message}
+                            </p>
+                            <p className="text-[10px] text-indigo-600 font-medium mt-1">
+                              Bài: {n.assignmentTitle} {n.targetClass ? `(${n.targetClass})` : ''} ➔ Bấm để xem
+                            </p>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
           {/* Academic Period Selector Button */}
           <div className="relative">
             <button
