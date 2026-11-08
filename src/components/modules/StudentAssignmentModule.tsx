@@ -37,6 +37,7 @@ import {
   getAssignmentsFromFirestore,
   getLocalCachedAssignments
 } from '../../services/assignmentStorageService';
+import { syncAssignmentQuestions } from '../../services/assignmentSyncService';
 import { formatScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime, parseScoreValue, calculateExamScore } from '../../utils/scoreUtils';
 import { db } from '../../services/firebase';
 import { doc, getDoc, setDoc, runTransaction } from 'firebase/firestore';
@@ -708,6 +709,11 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
 
   // Nếu đang làm bài, render component StudentExamModule chuyên biệt để hỗ trợ đầy đủ các dạng câu hỏi (phân loại, ghép nối...)
   if (solvingAssignment) {
+    const syncRes = syncAssignmentQuestions(solvingAssignment);
+    const activeQuestions = (syncRes.changed && syncRes.updatedAssignment.questions && syncRes.updatedAssignment.questions.length > 0)
+      ? syncRes.updatedAssignment.questions
+      : (solvingAssignment.questions || []);
+
     const examFromAssignment: ExamPaper = {
       id: solvingAssignment.id,
       title: solvingAssignment.title,
@@ -715,7 +721,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       grade: solvingAssignment.grade || 'Khối 3',
       durationMinutes: 45,
       matrix: { nhanBiet: 0, thongHieu: 0, vanDung: 0, vanDungCao: 0 },
-      questions: solvingAssignment.questions || [],
+      questions: activeQuestions,
       createdBy: solvingAssignment.teacherName || 'Giáo viên',
       createdAt: solvingAssignment.createdAt || new Date().toISOString(),
       enableRealtimeLeaderboard: solvingAssignment.enableRealtimeLeaderboard

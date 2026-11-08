@@ -247,6 +247,7 @@ export interface HomeworkAssignment {
   leaderboardScope?: 'all' | 'since_enabled';
   leaderboardEnabledAt?: string;
   groupId?: string;
+  updatedAt?: string;
 }
 
 export type GameType = 'golden_bell' | 'speed_quiz' | 'lucky_wheel' | 'flashcards';

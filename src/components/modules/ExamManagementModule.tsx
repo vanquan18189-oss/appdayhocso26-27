@@ -76,6 +76,7 @@ import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { getLocalCachedQuestions, QUESTIONS_CACHE_KEY, saveQuestionsBatchToFirestore } from '../../services/questionStorageService';
 import { useScoreSort } from '../../lib/useScoreSort';
 import { ExamQuestionEditorCard, normalizeQuestionType } from './ExamQuestionEditorCard';
+import { syncAssignmentsForExam } from '../../services/assignmentSyncService';
 import { StudentSubmissionDetailModal } from './StudentSubmissionDetailModal';
 import { 
   resetOrDeleteStudentExamSubmission, 
@@ -1630,9 +1631,14 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
 
     try {
       onSaveExam(updatedExam);
+      const syncedCount = syncAssignmentsForExam(updatedExam);
       setEditingExam(null);
       setEditingExamTab('questions');
-      showToast("✅ Đã cập nhật thành công đề kiểm tra vào hệ thống!", "success");
+      if (syncedCount > 0) {
+        showToast(`✅ Đã cập nhật đề thi & tự động đồng bộ câu hỏi sang ${syncedCount} bài tập đã giao!`, "success");
+      } else {
+        showToast("✅ Đã cập nhật thành công đề kiểm tra vào hệ thống!", "success");
+      }
     } catch (err) {
       showToast("Lưu thất bại, vui lòng kiểm tra lại!", "error");
     }

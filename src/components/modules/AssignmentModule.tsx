@@ -63,6 +63,7 @@ import { getLocalCachedQuestions, QUESTIONS_CACHE_KEY, saveQuestionsBatchToFires
 import { useScoreSort } from '../../lib/useScoreSort';
 import { StudentAssignmentModule } from './StudentAssignmentModule';
 import { studentResultService } from '../../services/studentResultService';
+import { syncAssignmentQuestions } from '../../services/assignmentSyncService';
 import { getCurrentTeacherProfile, resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
 import { getStudentsFromLocalStorage, getClassStudentCount, generateDefaultClassRoster } from '../../services/studentStorageService';
 import { auth, db } from '../../services/firebase';
@@ -1048,6 +1049,58 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
 
 
 
+  // Synchronization state
+  const [syncingAssignmentId, setSyncingAssignmentId] = useState<string | null>(null);
+  const [isSyncingAll, setIsSyncingAll] = useState<boolean>(false);
+
+  const handleSyncAssignment = (as: HomeworkAssignment) => {
+    setSyncingAssignmentId(as.id);
+    try {
+      const result = syncAssignmentQuestions(as);
+      if (result.changed) {
+        onSaveAssignment(result.updatedAssignment);
+        if (detailAssignment && detailAssignment.id === as.id) {
+          setDetailAssignment(result.updatedAssignment);
+        }
+        if (editingConfigAssignment && editingConfigAssignment.id === as.id) {
+          setEditingConfigAssignment(result.updatedAssignment);
+        }
+        showToast(`✅ ${result.message}`);
+      } else {
+        showToast(`ℹ️ ${result.message}`);
+      }
+    } catch (err) {
+      console.error('Lỗi khi đồng bộ câu hỏi:', err);
+      showToast('❌ Đồng bộ câu hỏi thất bại!');
+    } finally {
+      setSyncingAssignmentId(null);
+    }
+  };
+
+  const handleSyncAllAssignments = () => {
+    setIsSyncingAll(true);
+    try {
+      let updatedCount = 0;
+      assignments.forEach((as) => {
+        const result = syncAssignmentQuestions(as);
+        if (result.changed) {
+          onSaveAssignment(result.updatedAssignment);
+          updatedCount++;
+        }
+      });
+      if (updatedCount > 0) {
+        showToast(`✅ Đã đồng bộ câu hỏi mới nhất từ đề gốc/ngân hàng cho ${updatedCount} bài tập!`);
+      } else {
+        showToast('ℹ️ Toàn bộ bài tập đã ở phiên bản câu hỏi mới nhất!');
+      }
+    } catch (err) {
+      console.error(err);
+      showToast('❌ Quá trình đồng bộ câu hỏi thất bại!');
+    } finally {
+      setIsSyncingAll(false);
+    }
+  };
+
   // Action Menu Popup per row ID
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
 
@@ -1532,6 +1585,15 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
               </button>
             )}
             <button
+              onClick={handleSyncAllAssignments}
+              disabled={isSyncingAll}
+              className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer shadow-sm transition-all disabled:opacity-50"
+              title="Đồng bộ lại câu hỏi mới nhất từ đề gốc hoặc ngân hàng cho tất cả bài tập đã giao"
+            >
+              <RefreshCw className={`w-4 h-4 ${isSyncingAll ? 'animate-spin' : ''}`} />
+              <span>{isSyncingAll ? 'Đang đồng bộ...' : 'Đồng bộ câu hỏi từ đề gốc'}</span>
+            </button>
+            <button
               onClick={() => setIsBankAssignmentModalOpen(true)}
               className="px-4 py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer shadow-sm transition-all"
             >
@@ -1847,6 +1909,19 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                                       title="Chỉnh sửa hạn nộp, lịch giao, tráo đề hoặc bật/tắt thi đấu trực tiếp"
                                     >
                                       <Settings className="w-4 h-4 text-indigo-600" /> ⚙️ Sửa cài đặt giao bài
+                                    </button>
+
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleSyncAssignment(as);
+                                        setOpenActionMenuId(null);
+                                      }}
+                                      className="w-full px-3.5 py-2 text-left hover:bg-emerald-50 flex items-center gap-2.5 font-bold text-emerald-800 cursor-pointer"
+                                      title="Cập nhật các thay đổi thêm/xóa/sửa câu hỏi từ bộ đề gốc hoặc ngân hàng câu hỏi"
+                                    >
+                                      <RefreshCw className={`w-4 h-4 text-emerald-600 ${syncingAssignmentId === as.id ? 'animate-spin' : ''}`} />
+                                      <span>🔄 Cập nhật lại danh sách câu hỏi</span>
                                     </button>
 
                                     <button
@@ -2878,6 +2953,17 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
               </div>
 
               <div className="flex items-center gap-2 self-end sm:self-auto">
+                <button
+                  type="button"
+                  onClick={() => handleSyncAssignment(detailAssignment)}
+                  disabled={syncingAssignmentId === detailAssignment.id}
+                  className="px-3.5 py-2 rounded-xl text-xs font-bold bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer active:scale-95 disabled:opacity-50"
+                  title="Đồng bộ cập nhật câu hỏi mới nhất từ đề gốc hoặc ngân hàng"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${syncingAssignmentId === detailAssignment.id ? 'animate-spin' : ''}`} />
+                  <span>Đồng bộ câu hỏi ({detailAssignment.questions?.length || 0})</span>
+                </button>
+
                 <button
                   onClick={handleExportExcel}
                   className="px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
@@ -3994,6 +4080,29 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                   </div>
                 );
               })()}
+
+              {/* Đồng bộ nội dung câu hỏi từ đề gốc / Ngân hàng câu hỏi */}
+              <div className="p-4 bg-emerald-50/90 border border-emerald-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-950">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 font-bold text-emerald-900">
+                    <RefreshCw className={`w-4 h-4 text-emerald-600 ${syncingAssignmentId === editingConfigAssignment.id ? 'animate-spin' : ''}`} />
+                    <span>Nội dung câu hỏi: {editingConfigAssignment.questions?.length || 0} câu</span>
+                  </div>
+                  <p className="text-[11px] text-emerald-700">
+                    Nếu bạn vừa thêm, sửa hoặc xóa câu hỏi trong bộ đề gốc hoặc ngân hàng câu hỏi, hãy bấm nút này để cập nhật ngay cho bài tập đã giao.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleSyncAssignment(editingConfigAssignment)}
+                  disabled={syncingAssignmentId === editingConfigAssignment.id}
+                  className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold flex items-center justify-center gap-2 cursor-pointer shadow-sm transition-all shrink-0 disabled:opacity-50"
+                  title="Cập nhật lại danh sách câu hỏi từ đề gốc hoặc ngân hàng câu hỏi"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${syncingAssignmentId === editingConfigAssignment.id ? 'animate-spin' : ''}`} />
+                  <span>Cập nhật lại danh sách câu hỏi</span>
+                </button>
+              </div>
 
               {/* Lên lịch & Đặt hạn làm bài */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

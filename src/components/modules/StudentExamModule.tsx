@@ -3130,6 +3130,9 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
       if (isEssayQuestion(q)) {
         return 'Chưa hoàn thành hoặc chưa đạt yêu cầu nội dung trình bày.';
       }
+      if (isFillBlankQuestion(q)) {
+        return q.correctAnswer ? `Chưa chính xác. Đáp án chuẩn xác là: "${q.correctAnswer}".` : 'Chưa điền câu trả lời.';
+      }
       if (q.correctAnswer && q.options && q.correctAnswer.length === 1) {
         const code = q.correctAnswer.charCodeAt(0);
         if (code >= 65 && code <= 90) {
@@ -3143,6 +3146,10 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     };
 
     const getCorrectAnswerFull = (q: QuestionItem) => {
+      if (isFillBlankQuestion(q)) {
+        return q.correctAnswer || (q.options && q.options.length > 0 ? q.options.join(', ') : 'Theo hướng dẫn');
+      }
+
       if (isMatchingQuestion(q)) {
         const pairs = q.matchingPairs || [];
         return pairs.map((pair, pIdx) => {
@@ -4465,6 +4472,77 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                               </button>
                             </div>
                           )
+                        ) : isFillBlankQuestion(q) ? (
+                          <div className="space-y-4 pt-1">
+                            <div className="bg-amber-50/80 border border-amber-200/90 p-3.5 rounded-2xl text-amber-950 text-xs sm:text-sm font-semibold flex items-center gap-2">
+                              <span>✏️</span>
+                              <span>Điền từ hoặc câu trả lời ngắn phù hợp vào ô trống bên dưới:</span>
+                            </div>
+                            
+                            <div className="relative">
+                              <input
+                                type="text"
+                                value={activeExamSession.answers[idx] !== undefined && activeExamSession.answers[idx] !== null ? String(activeExamSession.answers[idx]) : ''}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setActiveExamSession(prev => {
+                                    if (!prev) return null;
+                                    const answers = { ...prev.answers };
+                                    answers[idx] = val as any;
+                                    return { ...prev, answers, currentQuestionIndex: idx };
+                                  });
+                                }}
+                                placeholder="Gõ câu trả lời của em vào đây..."
+                                className="w-full px-4 py-3.5 pr-28 border-2 border-slate-200 rounded-2xl text-xs sm:text-sm font-bold text-slate-800 placeholder-slate-400 bg-white focus:outline-none focus:border-indigo-600 focus:ring-3 focus:ring-indigo-100 transition-all shadow-xs"
+                              />
+                              {activeExamSession.answers[idx] !== undefined && activeExamSession.answers[idx] !== null && String(activeExamSession.answers[idx]).trim().length > 0 ? (
+                                <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1 px-2.5 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-[11px] font-black pointer-events-none animate-fade-in">
+                                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                  <span>Đã ghi nhận</span>
+                                </div>
+                              ) : (
+                                <div className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 text-[11px] font-semibold pointer-events-none hidden sm:block">
+                                  Chưa nhập
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Gợi ý từ khóa nếu câu hỏi có chứa options danh sách gợi ý */}
+                            {q.options && q.options.length > 0 && (
+                              <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-2xl space-y-2">
+                                <span className="text-[11px] font-black text-slate-500 uppercase tracking-wider block">
+                                  💡 Gợi ý từ khóa (bấm để chọn nhanh):
+                                </span>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {q.options.map((opt, oIdx) => {
+                                    const isSelected = String(activeExamSession.answers[idx] || '').trim().toLowerCase() === String(opt).trim().toLowerCase();
+                                    return (
+                                      <button
+                                        key={oIdx}
+                                        type="button"
+                                        onClick={() => {
+                                          setActiveExamSession(prev => {
+                                            if (!prev) return null;
+                                            const answers = { ...prev.answers };
+                                            answers[idx] = opt as any;
+                                            return { ...prev, answers, currentQuestionIndex: idx };
+                                          });
+                                        }}
+                                        className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all border cursor-pointer active:scale-95 flex items-center gap-1.5 ${
+                                          isSelected
+                                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm shadow-indigo-600/30'
+                                            : 'bg-white hover:bg-indigo-50 text-slate-700 hover:text-indigo-700 border-slate-200'
+                                        }`}
+                                      >
+                                        <span>{opt}</span>
+                                        {isSelected && <Check className="w-3.5 h-3.5 text-white" />}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                          </div>
                         ) : isEssayQuestion(q) ? (
                           <div className="space-y-3">
                             <textarea
@@ -4483,7 +4561,26 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                             ></textarea>
                           </div>
                         ) : (
-                          <div className="text-slate-400 text-xs italic">Định dạng câu hỏi chưa được hỗ trợ.</div>
+                          <div className="space-y-3 pt-1">
+                            <div className="bg-slate-50 border border-slate-200 p-3 rounded-2xl text-slate-700 text-xs font-medium">
+                              Nhập câu trả lời của em vào ô bên dưới:
+                            </div>
+                            <input
+                              type="text"
+                              value={activeExamSession.answers[idx] !== undefined && activeExamSession.answers[idx] !== null ? String(activeExamSession.answers[idx]) : ''}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setActiveExamSession(prev => {
+                                  if (!prev) return null;
+                                  const answers = { ...prev.answers };
+                                  answers[idx] = val as any;
+                                  return { ...prev, answers, currentQuestionIndex: idx };
+                                });
+                              }}
+                              placeholder="Gõ câu trả lời của em vào đây..."
+                              className="w-full px-4 py-3 border-2 border-slate-200 rounded-2xl text-xs sm:text-sm font-bold text-slate-800 placeholder-slate-400 bg-white focus:outline-none focus:border-indigo-600"
+                            />
+                          </div>
                         )}
                       </div>
                     </div>
