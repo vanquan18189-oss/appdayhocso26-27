@@ -41,8 +41,9 @@ import {
 import { getStudentGameProfile } from '../../services/studentGameStoreService';
 import { getEffectiveStudentClassAndGrade, getCurrentStudentSession, getAuthenticStudentCode, normalizeClassKey } from '../../services/studentSessionService';
 import { studentResultService } from '../../services/studentResultService';
-import { normalizeStudentCode, formatStandardStudentCode, normalizeStudentName } from '../../services/studentCode';
+import { normalizeStudentCode, formatStandardStudentCode, normalizeStudentName, getRecordType } from '../../services/studentCode';
 import { saveExamDraft, deleteExamDraft, loadAllActiveDraftsForStudent, ExamDraftRecord } from '../../services/examDraftService';
+import { generateRuleBasedExamComment } from '../../services/studentCommentAiService';
 import { subscribeToExamsFromFirestore, getExamsFromFirestore, getLocalCachedExams, isExamDeleted, isValidOfficialExam } from '../../services/examStorageService';
 import { removeUndefined } from '../../services/teacherStorageService';
 import { db } from '../../services/firebase';
@@ -75,24 +76,7 @@ export interface ExamSubmissionItem {
 
 const isExamSubmission = (sub: any): boolean => {
   if (!sub) return false;
-  if (sub.type === 'assignment' || sub.submissionType === 'assignment') return false;
-  if (sub.type === 'exam' || sub.submissionType === 'exam') return true;
-
-  const title = (sub.title || sub.exam?.title || '').toLowerCase().trim();
-  if (
-    title.startsWith('bài tập tự luyện') || 
-    title.startsWith('bài tập:') || 
-    title.startsWith('luyện tập:') ||
-    title.includes('bài tập rèn luyện')
-  ) {
-    return false;
-  }
-
-  if (sub.assignment && !sub.exam) {
-    return false;
-  }
-
-  return true;
+  return getRecordType(sub) === 'exam';
 };
 
 /**
@@ -1591,6 +1575,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         try {
           const rawExamRecord = {
             ...examSub,
+            recordType: 'exam' as const,
             id: fixedDocId,
             studentId: authenticStudentCode,
             attemptNumber,
@@ -2478,6 +2463,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         try {
           const rawExamRecord = {
             ...examSub,
+            recordType: 'exam' as const,
             id: fixedDocId,
             studentId: authenticStudentCode,
             attemptNumber,
@@ -3386,24 +3372,37 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
               <div className="absolute -right-10 -bottom-10 w-40 h-40 bg-white/5 rounded-full blur-2xl"></div>
             </div>
 
-            {/* Nhận xét chung Box style matching image_18.png exactly */}
-            <div className="bg-[#F0FDFA] border border-teal-200 rounded-2xl p-5 space-y-2">
-              <h4 className="text-xs sm:text-sm font-extrabold text-teal-950 flex items-center gap-2 uppercase tracking-wider">
-                <span>💬</span> Nhận xét chung:
-              </h4>
-              <div className="text-xs sm:text-sm text-teal-900 leading-relaxed font-semibold space-y-2">
-                <p className="flex items-start gap-2">
-                  <span>👏</span>
-                  <span>Khen ngợi em đã hoàn thành đúng {correctCount}/{totalQ} câu. {correctQuestionNums.length > 0 && <>Em làm rất tốt các câu: <strong className="text-teal-950 font-black">Câu {correctQuestionNums.join(', ')}</strong>.</>}</span>
-                </p>
-                {incorrectQuestionIndices.length > 0 && (
-                  <p className="flex items-start gap-2 text-amber-800 font-semibold border-t border-teal-200/50 pt-2">
-                    <span>⚠️</span>
-                    <span>Em cần lưu ý xem lại bài và ôn tập kỹ hơn ở các câu chưa chính xác: <strong className="text-amber-950 font-black">Câu {incorrectQuestionIndices.map(i => i + 1).join(', ')}</strong>.</span>
-                  </p>
-                )}
-              </div>
-            </div>
+            {/* Nhận xét chung Box chuẩn Rule-based */}
+            {(() => {
+              const subAny = detailSubmission as any;
+              const commentObj = generateRuleBasedExamComment({
+                score: numericScore,
+                questions: questionsList,
+                answers: subAny?.answers,
+                existingComment: subAny?.generalComment || subAny?.comment || subAny?.teacherComment,
+                isManuallyEdited: subAny?.isManuallyEdited
+              });
+              const displayCommentText = subAny?.generalComment || commentObj.fullComment;
+              const lvl = subAny?.commentLevel || commentObj.commentLevel;
+
+              return (
+                <div className={`rounded-2xl p-5 space-y-2 border ${
+                  lvl === 'T' ? 'bg-[#F0FDF4] border-emerald-200 text-emerald-950' :
+                  lvl === 'H' ? 'bg-[#F0FDFA] border-teal-200 text-teal-950' :
+                  'bg-[#FFF1F2] border-rose-200 text-rose-950'
+                }`}>
+                  <h4 className="text-xs sm:text-sm font-extrabold flex items-center gap-2 uppercase tracking-wider">
+                    <span>💬</span> Nhận xét chung:
+                  </h4>
+                  <div className="text-xs sm:text-sm leading-relaxed font-semibold">
+                    <p className="flex items-start gap-2">
+                      <span>{lvl === 'T' ? '🌟' : lvl === 'H' ? '👍' : '📌'}</span>
+                      <span>{displayCommentText}</span>
+                    </p>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Detailed Questions Breakdown */}
             <div className="space-y-4 pt-2 border-t border-slate-200/60">

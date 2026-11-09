@@ -1,8 +1,8 @@
-import { callGeminiApi } from './geminiService';
-import { ExamPaper, HomeworkAssignment } from '../types';
-import { getStudentExamSubmissions, isExamTypeMatch } from './hocBaDataService';
-import { isSubjectMatch } from './studentSessionService';
+import { QuestionItem } from '../types';
+import { db } from './firebase';
+import { collection, getDocs, doc, writeBatch, setDoc } from 'firebase/firestore';
 import { normalizeStudentCode } from './studentCode';
+import { checkQuestionCorrectLocal } from '../components/modules/StudentExamModule';
 
 export interface StudentDataForCommentAI {
   studentId: string;
@@ -36,11 +36,54 @@ export interface GeneratedCommentResult {
   usedFallback: boolean;
 }
 
+export function extractStudentMetricsForAI(
+  st: any,
+  subject: string,
+  examType: string,
+  exams: any[],
+  assignments: any[]
+): StudentDataForCommentAI {
+  const code = normalizeStudentCode(st.code || st.studentCode || st.maHs || st.id || '');
+  const name = st.fullName || st.name || `${st.lastName || ''} ${st.firstName || ''}`.trim() || 'Học sinh';
+  const className = st.className || '';
+  const evalLevel = st.evaluations?.[subject]?.dat || 'H';
+  const scoreVal = st.commentDetail?.score !== undefined ? st.commentDetail.score : (st.evaluations?.[subject]?.score ? parseFloat(st.evaluations[subject].score) : 8);
+
+  return {
+    studentId: st.id || code,
+    studentCode: code,
+    studentName: name,
+    className,
+    subject,
+    examType,
+    evalLevel,
+    examScore: scoreVal,
+    homeworkAvg: scoreVal,
+    completedCount: 1,
+    assignedCount: 1,
+    unsubmittedCount: 0,
+    testTitle: `${examType} - Môn ${subject}`
+  };
+}
+
+export interface RuleBasedCommentResult {
+  fullComment: string;
+  commentLevel: 'T' | 'H' | 'C';
+  strengths: string;
+  reminders: string;
+  correctCount: number;
+  totalQuestions: number;
+  score: number;
+  isManuallyEdited: boolean;
+}
+
 /**
- * Danh sách từ khen cấm kỵ áp dụng cho học sinh mức Chưa hoàn thành (C / CHT)
+ * Danh sách từ khen cấm kỵ áp dụng cho học sinh mức Chưa hoàn thành (C / CHT / Cần Ôn Lại)
  * Theo quy tắc kiểm soát từ vựng nghiêm ngặt (Anti-False Praise Rule)
  */
 export const FORBIDDEN_C_WORDS = [
+  'khen ngợi',
+  'khen',
   'xuất sắc',
   'tuyệt vời',
   'rất tốt',
@@ -56,7 +99,7 @@ export const FORBIDDEN_C_WORDS = [
 ] as const;
 
 /**
- * Kiểm tra chéo nhận xét AI với mức đánh giá (Self-Correction & Validation)
+ * Kiểm tra chéo nhận xét với mức đánh giá
  */
 export function validateCommentForLevel(
   commentText: string,
@@ -65,7 +108,7 @@ export function validateCommentForLevel(
   const normLevel = level === 'CHT' || level === 'C' ? 'C' : level === 'HT' || level === 'H' ? 'H' : 'T';
   const textLower = (commentText || '').toLowerCase().trim();
 
-  if (!textLower || textLower.length < 15) {
+  if (!textLower || textLower.length < 10) {
     return { valid: false, reason: 'Nội dung nhận xét quá ngắn' };
   }
 
@@ -84,207 +127,245 @@ export function validateCommentForLevel(
 }
 
 /**
- * Mẫu nhận xét dự phòng (Fallback Templates) chuẩn Thông tư 27
- * Sử dụng khi AI không khả dụng hoặc sinh lỗi quá 2 lần
+ * Trích xuất thứ tự câu hỏi ngắn gọn theo dạng:
+ * - <= 6 câu: "2, 5, 8"
+ * - > 6 câu: "1, 2, 3 và 4 câu khác"
  */
-export function getFallbackComment(
-  params: StudentDataForCommentAI
-): GeneratedCommentResult {
-  const normLevel = params.evalLevel === 'CHT' || params.evalLevel === 'C' ? 'C' : params.evalLevel === 'HT' || params.evalLevel === 'H' ? 'H' : 'T';
-  const scoreNum = typeof params.examScore === 'number' ? params.examScore : (parseFloat(String(params.examScore || '')) || 0);
-
-  let fullComment = '';
-  let strengths = '';
-  let reminders = '';
-
-  if (normLevel === 'T') {
-    strengths = `Khen ngợi em ${params.studentName} đã hoàn thành xuất sắc các nội dung học tập và bài kiểm tra môn ${params.subject}. Em nắm chắc kiến thức bài học và làm bài rất cẩn thận.`;
-    reminders = `Cần tiếp tục giữ vững phong độ học tập và tích cực phát huy trong các giờ học tiếp theo.`;
-    fullComment = `${strengths} ${reminders}`;
-  } else if (normLevel === 'H') {
-    strengths = `Em ${params.studentName} đã hoàn thành các nội dung bài học và bài kiểm tra môn ${params.subject}.`;
-    reminders = `Cần đọc kỹ đề bài và rèn luyện thêm kỹ năng tính toán, vận dụng để đạt kết quả cao hơn.`;
-    fullComment = `${strengths} ${reminders}`;
-  } else {
-    // Level C / CHT
-    const unsubText = params.unsubmittedCount && params.unsubmittedCount > 0 ? ` và hoàn thành ${params.unsubmittedCount} bài tập còn thiếu` : ' và làm lại các bài tập chưa đạt';
-    const weakText = params.weakTopics ? ` ở nội dung ${params.weakTopics}` : '';
-    strengths = `Em ${params.studentName} chưa nắm vững một số kiến thức cơ bản môn ${params.subject}${weakText}.`;
-    reminders = `Cần tăng cường ôn tập lại bài học${unsubText}. Cô tin em sẽ tiến bộ hơn nếu kiên trì cố gắng.`;
-    fullComment = `${strengths} ${reminders}`;
-  }
-
-  return {
-    fullComment,
-    strengths,
-    reminders,
-    correctCount: normLevel === 'T' ? 9 : normLevel === 'H' ? 7 : 4,
-    totalQuestions: 10,
-    overallDat: params.evalLevel,
-    score: scoreNum || (normLevel === 'T' ? 9.0 : normLevel === 'H' ? 7.0 : 4.0),
-    hasCommented: true,
-    isManuallyEdited: false,
-    isValidated: true,
-    usedFallback: true
-  };
+export function formatQuestionNumbersList(nums: number[]): string {
+  if (!nums || nums.length === 0) return '';
+  if (nums.length <= 6) return nums.join(', ');
+  const first3 = nums.slice(0, 3).join(', ');
+  const remaining = nums.length - 3;
+  return `${first3} và ${remaining} câu khác`;
 }
 
 /**
- * Xây dựng Prompt AI chi tiết chứa đầy đủ dữ liệu thực tế của học sinh
+ * Trích xuất chủ đề các câu hỏi bị làm sai
+ * Lấy từ q.topic, q.lessonTopic, q.category, q.skill.
+ * Loại bỏ các từ khóa mặc định/trùng tên bài (Công nghệ, Tin học, Đề kiểm tra, v.v.).
+ * Nếu không có chủ đề hợp lệ, trả về chuỗi rỗng "".
  */
-export function buildStudentCommentPrompt(
-  params: StudentDataForCommentAI,
-  isRetry: boolean = false
-): { prompt: string; systemInstruction: string } {
-  const normLevel = params.evalLevel === 'CHT' || params.evalLevel === 'C' ? 'C' : params.evalLevel === 'HT' || params.evalLevel === 'H' ? 'H' : 'T';
-
-  const systemInstruction = `Bạn là một giáo viên tiểu học Việt Nam tận tụy, ân cần. Hãy viết lời nhận xét sư phạm cá nhân hóa cho học sinh theo đúng tinh thần Thông tư 27/2020/TT-BGDĐT.
-Yêu cầu nghiêm ngặt:
-- Văn phong chuẩn mực sư phạm tiểu học, xưng "em", độ dài ngắn gọn 2-3 câu (khoảng 40-70 từ).
-- Tuyệt đối căn cứ vào dữ liệu thực tế được cung cấp, không tự bịa thông tin.
-- QUY TẮC GIỌNG VĂN THEO MỨC ĐÁNH GIÁ:
-  + Mức Hoàn thành tốt (T): Khen ngợi cụ thể thành tích, ghi nhận điểm mạnh nổi bật, khuyến khích phát huy.
-  + Mức Hoàn thành (H): Ghi nhận mặt đạt được, nêu nhẹ nhàng 1 điểm cần chú ý cẩn thận hoặc cố gắng hơn.
-  + Mức Chưa hoàn thành (C): TUYỆT ĐỐI KHÔNG DÙNG TỪ KHEN CHUNG CHUNG ("xuất sắc", "tuyệt vời", "rất tốt", "nắm vững kiến thức", "tích cực", "chăm chỉ"). Nêu thẳng thắn nhưng nhẹ nhàng hạn chế (chưa nắm vững nội dung gì, nợ bao nhiêu bài), kèm hướng cải thiện cụ thể và lời động viên tiến bộ (ví dụ: "Em cần ôn lại... và hoàn thành các bài tập còn thiếu. Cô tin em sẽ tiến bộ nếu cố gắng hơn.").
-  + Nếu chưa có dữ liệu bài làm: Viết "Chưa có đủ dữ liệu để nhận xét", không tự bịa.`;
-
-  let retryWarning = '';
-  if (isRetry && normLevel === 'C') {
-    retryWarning = `\nCẢNH BÁO ĐẶC BIỆT: Lần tạo trước đã bị hệ thống từ chối do vi phạm Quy tắc chống khen sai (Anti-False Praise Rule). Bắt buộc KHÔNG ĐƯỢC dùng các từ khen: "xuất sắc", "tuyệt vời", "rất tốt", "nắm vững kiến thức", "tích cực", "chăm chỉ". Hãy tập trung chỉ ra thẳng thắn nhưng nhẹ nhàng hạn chế và hướng cải thiện!`;
+export function extractIncorrectQuestionTopics(questions: any[], incorrectNums: number[]): string {
+  if (!Array.isArray(questions) || questions.length === 0 || !incorrectNums || incorrectNums.length === 0) {
+    return '';
   }
+  const rawTopics: string[] = [];
+  const ignoredKeywords = [
+    'bài tập', 'đề kiểm tra', 'bài làm', 'chưa chính xác', 'cần chú ý',
+    'công nghệ', 'tin học', 'toán', 'tiếng việt', 'lớp', 'kiểm tra', 'nội dung bài'
+  ];
 
-  const prompt = `DỮ LIỆU THỰC TẾ HỌC SINH:
-- Họ và tên học sinh: ${params.studentName}
-- Lớp: ${params.className}
-- Môn học: ${params.subject}
-- Đợt đánh giá: ${params.examType}
-- Mức đánh giá môn: ${normLevel === 'T' ? 'Hoàn thành tốt (T)' : normLevel === 'H' ? 'Hoàn thành (H)' : 'Chưa hoàn thành (C)'}
-- Điểm kiểm tra định kỳ: ${params.examScore !== undefined && params.examScore !== '' ? params.examScore : 'Chưa có'}
-- Điểm trung bình bài tập rèn luyện: ${params.homeworkAvg !== undefined ? params.homeworkAvg : 'Chưa có'}
-- Số bài tập đã nộp: ${params.completedCount !== undefined ? `${params.completedCount}/${params.assignedCount || 0} bài` : 'Chưa có dữ liệu'}
-- Số bài tập chưa nộp (nợ bài): ${params.unsubmittedCount !== undefined ? `${params.unsubmittedCount} bài` : '0 bài'}
-- Nội dung/câu hay sai: ${params.weakTopics || 'Không có ghi nhận lỗi sai đặc biệt'}
-${retryWarning}
-
-Hãy trả về phản hồi định dạng JSON hợp lệ chứa 3 trường:
-{
-  "strengths": "Nội dung ghi nhận mặt đạt được hoặc điểm mạnh...",
-  "reminders": "Nội dung cần cố gắng, hướng cải thiện hoặc lời động viên...",
-  "fullComment": "Lời nhận xét hoàn chỉnh 2-3 câu gộp cả mặt đạt được và lời nhắc cải thiện..."
-}`;
-
-  return { prompt, systemInstruction };
-}
-
-/**
- * Trích xuất dữ liệu thực tế từ hệ thống để truyền vào AI Prompt
- */
-export function extractStudentMetricsForAI(
-  st: any,
-  subject: string,
-  examType: string,
-  exams: ExamPaper[],
-  assignments: HomeworkAssignment[]
-): StudentDataForCommentAI {
-  const studentName = `${st.lastName || ''} ${st.firstName || ''}`.trim() || st.fullName || st.name || 'Học sinh';
-  const className = st.className || 'Lớp 3A';
-
-  // 1. Get Exam Submission
-  const studentExamSubs = getStudentExamSubmissions({
-    studentId: st.id,
-    studentName,
-    studentCode: st.code,
-    exams
-  });
-  const matchedExam = studentExamSubs.find(ex =>
-    isExamTypeMatch(ex.examType, ex.title, examType) && isSubjectMatch(ex.subject, subject)
-  );
-
-  const examScore = matchedExam ? (matchedExam.score !== undefined ? matchedExam.score : 8.0) : (st.commentDetail?.score !== undefined ? st.commentDetail.score : 'Chưa làm');
-
-  // 2. Get Homework Assignments matching class & subject
-  const classAssignments = (assignments || []).filter(as => {
-    const matchesClass = !as.targetClass || as.targetClass.includes(className) || as.targetClass === 'Tất cả các lớp';
-    const matchesSubj = isSubjectMatch(as.subject, subject);
-    return matchesClass && matchesSubj;
-  });
-
-  const assignedCount = classAssignments.length;
-  let completedCount = 0;
-  let totalScoreSum = 0;
-  const weakTopicsList: string[] = [];
-
-  classAssignments.forEach(as => {
-    const subs = Array.isArray(as.submissions) ? as.submissions : [];
-    const userSub = subs.find((sub: any) => {
-      const code = normalizeStudentCode(sub.studentCode || sub.code || sub.maHs || sub.studentId || '');
-      return code === st.code || sub.studentName === studentName;
-    });
-
-    if (userSub) {
-      completedCount++;
-      const s = typeof userSub.score === 'number' ? userSub.score : (parseFloat(String(userSub.score || '')) || 0);
-      totalScoreSum += s;
-
-      if (userSub.answers && Array.isArray(userSub.answers) && as.questions) {
-        userSub.answers.forEach((ans: any, qIdx: number) => {
-          if (ans === 'fail' || ans === false || ans === 0) {
-            const qContent = as.questions[qIdx]?.content;
-            if (qContent && !weakTopicsList.includes(qContent)) {
-              weakTopicsList.push(qContent.length > 30 ? qContent.substring(0, 30) + '...' : qContent);
-            }
-          }
-        });
+  incorrectNums.forEach(num => {
+    const q = questions[num - 1];
+    if (q) {
+      const t = (q.topic || (q as any).lessonTopic || (q as any).category || (q as any).skill || '').trim();
+      if (t && t.length > 2) {
+        const lower = t.toLowerCase();
+        const isIgnored = ignoredKeywords.some(kw => lower === kw || lower.includes('đề kiểm tra'));
+        if (!isIgnored && !rawTopics.includes(t)) {
+          rawTopics.push(t);
+        }
       }
     }
   });
 
-  const unsubmittedCount = Math.max(0, assignedCount - completedCount);
-  const homeworkAvg = completedCount > 0 ? Number((totalScoreSum / completedCount).toFixed(1)) : undefined;
+  if (rawTopics.length === 0) return '';
+  if (rawTopics.length <= 2) return rawTopics.join(', ');
+  return `${rawTopics.slice(0, 2).join(', ')} và các nội dung liên quan`;
+}
 
-  // 3. Determine Eval Level (T / H / C)
-  let evalLevel: 'T' | 'H' | 'C' = 'H';
-  const commentDat = st.commentDetail?.overallDat;
-  const evalDat = st.evaluations ? st.evaluations[subject]?.dat : undefined;
-
-  if (commentDat === 'T' || commentDat === 'HT' || evalDat === 'T') {
-    evalLevel = 'T';
-  } else if (commentDat === 'C' || commentDat === 'CHT' || evalDat === 'C' || evalDat === 'CHT') {
-    evalLevel = 'C';
-  } else if (typeof examScore === 'number') {
-    evalLevel = examScore >= 8.5 ? 'T' : examScore >= 5.0 ? 'H' : 'C';
+/**
+ * HÀM CHÍNH: Sinh Nhận xét chung chuẩn Rule-based cho bài kiểm tra (Không dùng AI sinh văn).
+ * Đảm bảo tốc độ, chính xác tuyệt đối, không phát sinh phí / lỗi.
+ */
+export function generateRuleBasedExamComment(params: {
+  score?: number | string | null;
+  questions?: any[];
+  answers?: any;
+  studentName?: string;
+  subject?: string;
+  isManuallyEdited?: boolean;
+  existingComment?: string;
+}): RuleBasedCommentResult {
+  // Nếu nhận xét đã được giáo viên chỉnh sửa thủ công -> Giữ nguyên vẹn
+  if (params.isManuallyEdited && params.existingComment && params.existingComment.trim().length > 0) {
+    const sNum = typeof params.score === 'number' ? params.score : (parseFloat(String(params.score || '')) || 0);
+    const lvl: 'T' | 'H' | 'C' = sNum >= 9.0 ? 'T' : sNum >= 5.0 ? 'H' : 'C';
+    return {
+      fullComment: params.existingComment.trim(),
+      commentLevel: lvl,
+      strengths: params.existingComment.trim(),
+      reminders: '',
+      correctCount: 0,
+      totalQuestions: params.questions?.length || 10,
+      score: sNum,
+      isManuallyEdited: true
+    };
   }
 
-  const weakTopics = weakTopicsList.length > 0 ? weakTopicsList.slice(0, 2).join(', ') : undefined;
+  const rawScore = params.score;
+  const questions = params.questions || [];
+  const totalQuestions = questions.length > 0 ? questions.length : 10;
+
+  if (
+    rawScore === undefined ||
+    rawScore === null ||
+    rawScore === '-' ||
+    rawScore === 'Chưa làm' ||
+    rawScore === 'Chưa có'
+  ) {
+    return {
+      fullComment: 'Chưa có đủ dữ liệu để nhận xét.',
+      commentLevel: 'C',
+      strengths: 'Chưa có đủ dữ liệu bài làm.',
+      reminders: 'Cần hoàn thành bài kiểm tra để giáo viên đánh giá.',
+      correctCount: 0,
+      totalQuestions,
+      score: 0,
+      isManuallyEdited: false
+    };
+  }
+
+  const scoreNum = typeof rawScore === 'number' ? rawScore : parseFloat(String(rawScore));
+  if (isNaN(scoreNum)) {
+    return {
+      fullComment: 'Chưa có đủ dữ liệu để nhận xét.',
+      commentLevel: 'C',
+      strengths: 'Chưa có đủ dữ liệu bài làm.',
+      reminders: 'Cần hoàn thành bài kiểm tra để giáo viên đánh giá.',
+      correctCount: 0,
+      totalQuestions,
+      score: 0,
+      isManuallyEdited: false
+    };
+  }
+
+  // Xác định các câu đúng và sai (1-based index)
+  const correctQuestionNums: number[] = [];
+  const incorrectQuestionNums: number[] = [];
+
+  const rawAnswers = params.answers;
+  questions.forEach((q, idx) => {
+    const qNum = idx + 1;
+    let choice: any = undefined;
+
+    if (Array.isArray(rawAnswers)) {
+      choice = rawAnswers[idx];
+    } else if (rawAnswers && typeof rawAnswers === 'object') {
+      choice = rawAnswers[idx] !== undefined ? rawAnswers[idx] : (rawAnswers[String(idx)] !== undefined ? rawAnswers[String(idx)] : (q.id ? rawAnswers[q.id] : undefined));
+    }
+
+    let isCorrect = false;
+    if (choice === 'pass' || choice === true || choice === 'correct') {
+      isCorrect = true;
+    } else if (choice === 'fail' || choice === false || choice === 'incorrect') {
+      isCorrect = false;
+    } else if (q && choice !== undefined && choice !== null && choice !== '') {
+      try {
+        isCorrect = checkQuestionCorrectLocal(q, choice);
+      } catch {
+        isCorrect = false;
+      }
+    }
+
+    if (isCorrect) {
+      correctQuestionNums.push(qNum);
+    } else {
+      incorrectQuestionNums.push(qNum);
+    }
+  });
+
+  const correctCount = correctQuestionNums.length;
+
+  const correctStr = formatQuestionNumbersList(correctQuestionNums);
+  const incorrectStr = formatQuestionNumbersList(incorrectQuestionNums);
+  const topicsStr = extractIncorrectQuestionTopics(questions, incorrectQuestionNums);
+
+  let commentLevel: 'T' | 'H' | 'C' = 'H';
+  let fullComment = '';
+  let strengths = '';
+  let reminders = '';
+
+  if (scoreNum >= 9.0) {
+    commentLevel = 'T';
+    strengths = `Em hoàn thành tốt bài kiểm tra, đúng ${correctCount}/${totalQuestions} câu.`;
+    if (correctStr) {
+      strengths += ` Em làm tốt các câu ${correctStr}.`;
+    }
+    reminders = `Em hãy tiếp tục phát huy và giúp đỡ các bạn nhé.`;
+    fullComment = `${strengths} ${reminders}`;
+  } else if (scoreNum >= 5.0) {
+    commentLevel = 'H';
+    strengths = `Em hoàn thành bài kiểm tra, đúng ${correctCount}/${totalQuestions} câu.`;
+    if (correctStr) {
+      strengths += ` Em làm tốt các câu ${correctStr}.`;
+    }
+    if (incorrectStr) {
+      reminders = `Em cần xem lại các câu ${incorrectStr} để nắm chắc hơn.`;
+    } else {
+      reminders = `Em tiếp tục rèn luyện để đạt kết quả cao hơn.`;
+    }
+    fullComment = `${strengths} ${reminders}`;
+  } else {
+    // Level C (< 5.0 / Chưa hoàn thành / Cần Ôn Lại)
+    // TUYỆT ĐỐI KHÔNG DÙNG TỪ "Khen ngợi", "xuất sắc", "rất tốt"
+    commentLevel = 'C';
+    strengths = `Em đúng ${correctCount}/${totalQuestions} câu, bài làm chưa đạt yêu cầu.`;
+    if (incorrectStr && topicsStr) {
+      reminders = `Em cần xem lại các câu ${incorrectStr} và ôn lại nội dung ${topicsStr}. Cô tin em sẽ tiến bộ nếu em cố gắng hơn.`;
+    } else if (incorrectStr) {
+      reminders = `Em cần xem lại các câu ${incorrectStr}. Cô tin em sẽ tiến bộ nếu em cố gắng hơn.`;
+    } else {
+      reminders = `Em cần xem lại các câu bài làm chưa chính xác. Cô tin em sẽ tiến bộ nếu em cố gắng hơn.`;
+    }
+    fullComment = `${strengths} ${reminders}`;
+  }
 
   return {
-    studentId: st.id,
-    studentCode: st.code,
-    studentName,
-    className,
-    subject,
-    examType,
-    evalLevel,
-    examScore,
-    homeworkAvg,
-    completedCount,
-    assignedCount,
-    unsubmittedCount,
-    weakTopics,
-    testTitle: matchedExam?.title,
-    isManuallyEdited: st.commentDetail?.isManuallyEdited || false
+    fullComment: fullComment.trim(),
+    commentLevel,
+    strengths: strengths.trim(),
+    reminders: reminders.trim(),
+    correctCount,
+    totalQuestions,
+    score: scoreNum,
+    isManuallyEdited: false
   };
 }
 
 /**
- * Hàm sinh nhận xét AI tự động cho 1 học sinh với cơ chế Self-Correction & Fallback
+ * Tái tạo nhận xét tổng hợp môn học cho Học Bạ Số theo đúng 3 mức T, H, C
+ */
+export function generateSubjectSummaryCommentRuleBased(params: {
+  studentName: string;
+  subject: string;
+  overallLevel: 'T' | 'H' | 'C' | 'HT' | 'CHT';
+  examScore?: number;
+  homeworkAvg?: number;
+  completedCount?: number;
+  assignedCount?: number;
+  weakTopics?: string;
+}): string {
+  const normLevel = params.overallLevel === 'CHT' || params.overallLevel === 'C' ? 'C' : params.overallLevel === 'HT' || params.overallLevel === 'H' ? 'H' : 'T';
+
+  if (normLevel === 'T') {
+    return `Em ${params.studentName} hoàn thành tốt các nội dung học tập môn ${params.subject}. Em tiếp tục phát huy thành tích học tập và giúp đỡ các bạn nhé.`;
+  } else if (normLevel === 'H') {
+    return `Em ${params.studentName} hoàn thành các nội dung học tập môn ${params.subject}. Em cần đọc kỹ đề bài và rèn luyện thêm kỹ năng vận dụng để đạt kết quả cao hơn.`;
+  } else {
+    const weakText = params.weakTopics ? ` ở nội dung ${params.weakTopics}` : '';
+    return `Em ${params.studentName} chưa đạt yêu cầu một số kiến thức môn ${params.subject}${weakText}. Em cần tăng cường ôn tập lại bài học và hoàn thành đầy đủ bài tập được giao. Cô tin em sẽ tiến bộ nếu em cố gắng hơn.`;
+  }
+}
+
+/**
+ * Hàm sinh nhận xét AI tự động cho Học Bạ Số (Giữ tương thích ngược)
  */
 export async function generateStudentCommentAI(
   params: StudentDataForCommentAI
 ): Promise<GeneratedCommentResult> {
   const normLevel = params.evalLevel === 'CHT' || params.evalLevel === 'C' ? 'C' : params.evalLevel === 'HT' || params.evalLevel === 'H' ? 'H' : 'T';
 
-  // 1. Kiểm tra nếu học sinh chưa làm bài nào và không có điểm kiểm tra
   if (
     params.examScore === 'Chưa làm' &&
     (!params.completedCount || params.completedCount === 0) &&
@@ -305,73 +386,155 @@ export async function generateStudentCommentAI(
     };
   }
 
-  // 2. Thử gọi AI Lần 1
-  try {
-    const { prompt, systemInstruction } = buildStudentCommentPrompt(params, false);
-    const aiResponseText = await callGeminiApi(prompt, systemInstruction, true);
+  const res = generateRuleBasedExamComment({
+    score: params.examScore,
+    studentName: params.studentName,
+    subject: params.subject,
+    isManuallyEdited: params.isManuallyEdited
+  });
 
-    let parsed: any = null;
+  return {
+    fullComment: res.fullComment,
+    strengths: res.strengths,
+    reminders: res.reminders,
+    correctCount: res.correctCount,
+    totalQuestions: res.totalQuestions,
+    overallDat: res.commentLevel,
+    score: res.score,
+    hasCommented: true,
+    isManuallyEdited: false,
+    isValidated: true,
+    usedFallback: false
+  };
+}
+
+/**
+ * Cập nhật nhận xét cũ hàng loạt (Batch Update Old Comments)
+ * Tái tạo nhận xét chuẩn Rule-based cho toàn bộ bài kiểm tra cũ có lỗi văn bản hoặc sai mức.
+ * Bỏ qua bài làm có isManuallyEdited === true.
+ */
+export async function batchUpdateOldExamComments(progressCallback?: (msg: string) => void): Promise<{ totalScanned: number; totalUpdated: number }> {
+  let totalScanned = 0;
+  let totalUpdated = 0;
+
+  progressCallback?.('Đang chuẩn bị quét toàn bộ bài kiểm tra cũ...');
+
+  // Helper check if comment requires update
+  const needsUpdate = (sub: any): boolean => {
+    if (sub?.isManuallyEdited) return false;
+    const scoreNum = typeof sub?.score === 'number' ? sub.score : (parseFloat(String(sub?.score || sub?.totalScore || '')) || 0);
+    const comment = String(sub?.generalComment || sub?.comment || sub?.teacherComment || '').trim();
+
+    if (!comment) return true;
+    if (scoreNum < 5 && (comment.toLowerCase().includes('khen ngợi') || comment.toLowerCase().includes('khen'))) return true;
+    if (comment.includes('ở Cần chú ý') || comment.includes('ở Cần ôn lại')) return true;
+    if (comment.includes('Đề kiểm tra') || comment.includes('ĐỀ KIỂM TRA')) return true;
+    if (scoreNum < 5 && sub?.commentLevel && sub.commentLevel !== 'C') return true;
+    if (scoreNum >= 9 && sub?.commentLevel && sub.commentLevel !== 'T') return true;
+
+    return false;
+  };
+
+  // 1. Quét LocalStorage caches
+  if (typeof window !== 'undefined') {
     try {
-      const cleanJson = aiResponseText.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-      parsed = JSON.parse(cleanJson);
-    } catch {}
-
-    let fullComment = parsed?.fullComment || `${parsed?.strengths || ''} ${parsed?.reminders || ''}`.trim();
-    let strengths = parsed?.strengths || '';
-    let reminders = parsed?.reminders || '';
-
-    if (!fullComment && aiResponseText) {
-      fullComment = aiResponseText.trim();
-      strengths = fullComment;
-      reminders = '';
-    }
-
-    // 3. Kiểm tra chéo quy tắc chống khen sai (Anti-False Praise Rule)
-    let validation = validateCommentForLevel(fullComment, params.evalLevel);
-
-    // 4. Nếu vi phạm với mức C -> Thử gọi AI Lần 2 với yêu cầu nghiêm khắc hơn
-    if (!validation.valid && normLevel === 'C') {
-      console.warn(`[AI Comment Retry] ${params.studentName} vi phạm: ${validation.reason}. Gọi AI sinh lại...`);
-      const retryPrompt = buildStudentCommentPrompt(params, true);
-      const retryResponseText = await callGeminiApi(retryPrompt.prompt, retryPrompt.systemInstruction, true);
-
-      try {
-        const cleanRetryJson = retryResponseText.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
-        const retryParsed = JSON.parse(cleanRetryJson);
-        fullComment = retryParsed?.fullComment || `${retryParsed?.strengths || ''} ${retryParsed?.reminders || ''}`.trim();
-        strengths = retryParsed?.strengths || strengths;
-        reminders = retryParsed?.reminders || reminders;
-      } catch {
-        if (retryResponseText) {
-          fullComment = retryResponseText.trim();
-          strengths = fullComment;
+      progressCallback?.('Đang quét và tái tạo nhận xét trong bộ nhớ đệm cục bộ...');
+      const keys = Object.keys(localStorage).filter(k => k.startsWith('eduplay_exam_subs_') || k === 'eduplay_all_exam_submissions');
+      for (const k of keys) {
+        const raw = localStorage.getItem(k);
+        if (raw) {
+          const list = JSON.parse(raw);
+          if (Array.isArray(list)) {
+            let modified = false;
+            const newList = list.map((item: any) => {
+              totalScanned++;
+              if (needsUpdate(item)) {
+                totalUpdated++;
+                modified = true;
+                const newCommentRes = generateRuleBasedExamComment({
+                  score: item.score ?? item.totalScore,
+                  questions: item.questions || item.questionSnapshot,
+                  answers: item.answers,
+                  studentName: item.studentName || item.name,
+                  subject: item.subject
+                });
+                return {
+                  ...item,
+                  generalComment: newCommentRes.fullComment,
+                  commentLevel: newCommentRes.commentLevel,
+                  isManuallyEdited: false
+                };
+              }
+              return item;
+            });
+            if (modified) {
+              localStorage.setItem(k, JSON.stringify(newList));
+            }
+          }
         }
       }
-
-      validation = validateCommentForLevel(fullComment, params.evalLevel);
+    } catch (err) {
+      console.warn('Lỗi quét LocalStorage cho batch update comments:', err);
     }
-
-    // Nếu hợp lệ -> Trả về kết quả AI thành công
-    if (validation.valid && fullComment) {
-      const scoreNum = typeof params.examScore === 'number' ? params.examScore : (parseFloat(String(params.examScore || '')) || (normLevel === 'T' ? 9.0 : normLevel === 'H' ? 7.0 : 4.0));
-      return {
-        fullComment,
-        strengths: strengths || fullComment,
-        reminders: reminders || '',
-        correctCount: normLevel === 'T' ? 9 : normLevel === 'H' ? 7 : 4,
-        totalQuestions: 10,
-        overallDat: params.evalLevel,
-        score: scoreNum,
-        hasCommented: true,
-        isManuallyEdited: false,
-        isValidated: true,
-        usedFallback: false
-      };
-    }
-  } catch (err) {
-    console.warn(`[AI Comment Call Failed] Lỗi khi tạo nhận xét cho ${params.studentName}:`, err);
   }
 
-  // 5. Nếu AI lỗi hoặc vẫn vi phạm sau 2 lần -> Áp dụng Mẫu nhận xét dự phòng (Fallback Template)
-  return getFallbackComment(params);
+  // 2. Quét Firestore nếu khả dụng
+  if (db) {
+    try {
+      progressCallback?.('Đang quét tài liệu đề thi và bài làm trên Firestore...');
+      const examsSnap = await getDocs(collection(db, 'exams'));
+      for (const examDoc of examsSnap.docs) {
+        const examData = examDoc.data();
+        const subsCol = collection(db, 'exams', examDoc.id, 'submissions');
+        const subsSnap = await getDocs(subsCol);
+
+        let batch = writeBatch(db);
+        let batchCount = 0;
+
+        for (const subDoc of subsSnap.docs) {
+          totalScanned++;
+          const subData = subDoc.data();
+          if (needsUpdate(subData)) {
+            totalUpdated++;
+            const newCommentRes = generateRuleBasedExamComment({
+              score: subData.score ?? subData.totalScore,
+              questions: subData.questions || subData.questionSnapshot || examData.questions || examData.questionSnapshot,
+              answers: subData.answers,
+              studentName: subData.studentName || subData.name,
+              subject: subData.subject || examData.subject
+            });
+
+            batch.update(subDoc.ref, {
+              generalComment: newCommentRes.fullComment,
+              commentLevel: newCommentRes.commentLevel,
+              isManuallyEdited: false,
+              updatedAt: new Date().toISOString()
+            });
+            batchCount++;
+
+            if (batchCount >= 400) {
+              await batch.commit();
+              batch = writeBatch(db);
+              batchCount = 0;
+            }
+          }
+        }
+
+        if (batchCount > 0) {
+          await batch.commit();
+        }
+      }
+    } catch (err) {
+      console.warn('Lỗi quét Firestore cho batch update comments:', err);
+    }
+  }
+
+  // 3. Dispatch real-time update event
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
+    window.dispatchEvent(new Event('student-data-updated'));
+  }
+
+  progressCallback?.(`Đã cập nhật thành công ${totalUpdated} bài nhận xét cũ trên tổng số ${totalScanned} bài quét.`);
+  return { totalScanned, totalUpdated };
 }

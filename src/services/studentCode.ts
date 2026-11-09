@@ -139,3 +139,30 @@ export function formatStandardStudentCode(rawCode?: string, defaultClass: string
   return clean || `${(defaultClass || '3C').replace(/^Lớp\s*/i, '').trim().toUpperCase()}26-27-1`;
 }
 
+/**
+ * Phân định loại bản ghi kết quả bài làm: 'exam' (Bài kiểm tra) hoặc 'assignment' (Bài tập rèn luyện)
+ */
+export function getRecordType(sub: any): 'exam' | 'assignment' {
+  if (!sub) return 'assignment';
+  if (sub.recordType === 'exam' || sub.recordType === 'assignment') {
+    return sub.recordType;
+  }
+  if (sub.examId || sub.exam || sub.type === 'exam' || sub.submissionType === 'exam') {
+    return 'exam';
+  }
+  if (sub.assignmentId || sub.assignment || sub.type === 'assignment' || sub.submissionType === 'assignment') {
+    return 'assignment';
+  }
+  const title = String(sub.title || sub.exam?.title || sub.assignment?.title || '').toLowerCase().trim();
+  if (
+    title.startsWith('đề kiểm tra') ||
+    title.includes('kiểm tra') ||
+    title.includes('đề thi') ||
+    title.includes('thi thử')
+  ) {
+    return 'exam';
+  }
+  return 'assignment';
+}
+
+

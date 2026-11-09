@@ -39,6 +39,7 @@ import { db } from '../../firebaseConfig';
 import { doc, setDoc, getDoc, runTransaction } from 'firebase/firestore';
 import { getLocalCachedAssignments } from '../../services/assignmentStorageService';
 import { getLocalCachedExams } from '../../services/examStorageService';
+import { generateRuleBasedExamComment } from '../../services/studentCommentAiService';
 
 export interface QuestionEvaluation {
   questionId: string;
@@ -461,6 +462,17 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
       const nowStr = formatSubmissionDateTime(getCurrentSubmissionTimestamp());
 
       const rawSub = studentSubmission?.rawSubmission || studentSubmission;
+
+      const ruleComment = generateRuleBasedExamComment({
+        score: newScoreNumber,
+        questions: resolvedQuestions,
+        answers: newAnswersArray,
+        studentName,
+        subject: targetItem.subject,
+        isManuallyEdited: rawSub?.isManuallyEdited,
+        existingComment: rawSub?.generalComment || rawSub?.comment
+      });
+
       const updatedSubmissionPayload = {
         ...rawSub,
         studentId: studentCode,
@@ -470,6 +482,9 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
         answers: newAnswersArray,
         totalScore: newScoreNumber,
         score: newScoreNumber,
+        generalComment: ruleComment.fullComment,
+        commentLevel: ruleComment.commentLevel,
+        isManuallyEdited: rawSub?.isManuallyEdited || false,
         status: 'submitted',
         isRegraded: true,
         regradedAt: nowStr,
