@@ -111,10 +111,7 @@ import {
   generateStudentCommentAI,
   extractStudentMetricsForAI,
   validateCommentForLevel,
-  StudentDataForCommentAI,
-  generateRuleBasedExamComment,
-  generateSubjectSummaryCommentRuleBased,
-  batchUpdateOldExamComments
+  StudentDataForCommentAI
 } from '../../services/studentCommentAiService';
 
 interface StudentRecord {
@@ -472,8 +469,6 @@ const StudentHocBaSoView: React.FC<StudentHocBaSoViewProps> = memo(({
 
   // Lắng nghe các sự kiện nộp bài tập & bài kiểm tra để tự động cập nhật tiến độ huy hiệu theo thời gian thực
   const [submissionsVersion, setSubmissionsVersion] = useState<number>(0);
-
-
 
   useEffect(() => {
     const handleSubmissionsUpdated = () => {
@@ -2695,25 +2690,6 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
   const [modalStrengths, setModalStrengths] = useState<string>('');
   const [modalReminders, setModalReminders] = useState<string>('');
 
-  const [isBatchUpdateModalOpen, setIsBatchUpdateModalOpen] = useState(false);
-  const [isUpdatingBatchComments, setIsUpdatingBatchComments] = useState(false);
-  const [batchUpdateProgress, setBatchUpdateProgress] = useState('');
-
-  const handleRunBatchUpdateComments = async () => {
-    setIsUpdatingBatchComments(true);
-    setBatchUpdateProgress('Đang quét danh sách bài kiểm tra cũ...');
-    try {
-      const res = await batchUpdateOldExamComments((msg) => setBatchUpdateProgress(msg));
-      showToast(`✅ Đã cập nhật thành công ${res.totalUpdated} bài nhận xét cũ!`, 'success');
-      setIsBatchUpdateModalOpen(false);
-    } catch (err: any) {
-      showToast(`⚠️ Lỗi khi cập nhật nhận xét cũ: ${err?.message || String(err)}`, 'error');
-    } finally {
-      setIsUpdatingBatchComments(false);
-      setBatchUpdateProgress('');
-    }
-  };
-
   useEffect(() => {
     const handleStudentsUpdated = () => {
       setAllStudentsDb(getAllStudentsFromLocalStorage());
@@ -3626,16 +3602,6 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
             >
               <RefreshCw className={`w-4 h-4 ${isGeneratingAi ? 'animate-spin' : ''}`} />
               <span>Tạo lại nhận xét sai mức</span>
-            </button>
-
-            <button
-              onClick={() => setIsBatchUpdateModalOpen(true)}
-              disabled={isUpdatingBatchComments}
-              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white transition-all flex items-center gap-2 cursor-pointer shadow-xs shadow-rose-200 disabled:opacity-50"
-              title="Tự động quét toàn bộ bài kiểm tra cũ trong hệ thống và chuẩn hóa lại nhận xét theo quy tắc mới"
-            >
-              <RefreshCw className={`w-4 h-4 ${isUpdatingBatchComments ? 'animate-spin' : ''}`} />
-              <span>Cập nhật nhận xét cũ</span>
             </button>
 
             <button
@@ -4713,59 +4679,6 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
                 className="px-4.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-extrabold text-xs shadow-md shadow-amber-200 cursor-pointer transition-all"
               >
                 Đồng ý tạo lại AI ✨
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal Xác nhận Cập nhật nhận xét cũ */}
-      {isBatchUpdateModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl border border-slate-200">
-            <div className="flex items-center gap-3 text-amber-600 border-b border-slate-100 pb-3">
-              <div className="w-10 h-10 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center shrink-0">
-                <RefreshCw className="w-5 h-5 text-amber-600" />
-              </div>
-              <div>
-                <h3 className="text-base font-extrabold text-slate-900">Xác nhận cập nhật nhận xét cũ</h3>
-                <p className="text-xs text-slate-500">Chuẩn hóa dữ liệu nhận xét bài kiểm tra</p>
-              </div>
-            </div>
-
-            <div className="space-y-3 text-xs text-slate-600 leading-relaxed bg-amber-50/50 p-3.5 rounded-2xl border border-amber-100">
-              <p>
-                Hệ thống sẽ quét toàn bộ các bản ghi bài nộp kiểm tra trong Firestore và LocalStorage:
-              </p>
-              <ul className="list-disc pl-4 space-y-1 text-slate-700">
-                <li>Phân tích điểm số và quy đổi theo chuẩn 3 mức T/H/C.</li>
-                <li>Khôi phục nhận xét chuẩn rule-based không sai lệch từ ngữ.</li>
-                <li><strong className="text-amber-800">Bỏ qua</strong> các bài nộp đã được giáo viên chỉnh sửa thủ công (<code className="bg-amber-100 px-1 rounded font-mono text-[10px]">isManuallyEdited = true</code>).</li>
-              </ul>
-              {batchUpdateProgress && (
-                <div className="p-2 rounded-xl bg-teal-50 border border-teal-200 text-teal-800 font-semibold text-center animate-pulse">
-                  {batchUpdateProgress}
-                </div>
-              )}
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => setIsBatchUpdateModalOpen(false)}
-                disabled={isUpdatingBatchComments}
-                className="px-4 py-2 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors cursor-pointer"
-              >
-                Hủy bỏ
-              </button>
-              <button
-                type="button"
-                onClick={handleRunBatchUpdateComments}
-                disabled={isUpdatingBatchComments}
-                className="px-4 py-2 rounded-xl text-xs font-bold bg-teal-600 hover:bg-teal-700 text-white transition-all flex items-center gap-1.5 shadow-md shadow-teal-200 cursor-pointer disabled:opacity-50"
-              >
-                {isUpdatingBatchComments ? <Sparkles className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                <span>{isUpdatingBatchComments ? 'Đang cập nhật...' : 'Đồng ý cập nhật'}</span>
               </button>
             </div>
           </div>

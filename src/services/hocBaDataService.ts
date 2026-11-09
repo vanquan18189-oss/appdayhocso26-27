@@ -2,7 +2,7 @@ import { ExamPaper, HomeworkAssignment, Lesson5EPlan, GameItem, StudentRecord } 
 import { getSubjectsForClassOrGrade, SchoolClassItem } from './classStorageService';
 import { getStudentAssignedSubjects, isSubjectMatch } from './studentSessionService';
 import { getCurrentActiveAcademicYear, getStudentClassInfo } from './studentStorageService';
-import { normalizeStudentCode, isValidStudentCode, getRecordType } from './studentCode';
+import { normalizeStudentCode, isValidStudentCode } from './studentCode';
 import { formatScore, roundTotalScore, formatTotalScore, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../utils/scoreUtils';
 
 export { formatScore, roundTotalScore, formatTotalScore, getCurrentSubmissionTimestamp, formatSubmissionDateTime };
@@ -487,7 +487,28 @@ export function isSubmissionBelongsToStudent(
  */
 export function isAssignmentSubmissionRecord(sub: any): boolean {
   if (!sub) return false;
-  return getRecordType(sub) === 'assignment';
+  if (sub.type === 'exam' || sub.submissionType === 'exam') return false;
+  if (sub.type === 'assignment' || sub.submissionType === 'assignment') return true;
+  if (sub.assignment && !sub.exam) return true;
+
+  const title = (sub.title || sub.assignment?.title || sub.exam?.title || '').toLowerCase().trim();
+  if (
+    title.startsWith('đề kiểm tra') ||
+    title.includes('kiểm tra 15 phút') ||
+    title.includes('kiểm tra 1 tiết') ||
+    title.includes('kiểm tra học kì') ||
+    title.includes('kiểm tra giữa kì') ||
+    title.includes('đề thi') ||
+    title.includes('thi thử')
+  ) {
+    return false;
+  }
+
+  if (sub.exam && !sub.assignment) {
+    const examType = sub.exam.examType;
+    if (examType && examType !== 'Luyện tập' && examType !== 'Bài tập') return false;
+  }
+  return true;
 }
 
 /**
@@ -495,7 +516,20 @@ export function isAssignmentSubmissionRecord(sub: any): boolean {
  */
 export function isExamSubmissionRecord(sub: any): boolean {
   if (!sub) return false;
-  return getRecordType(sub) === 'exam';
+  if (sub.type === 'exam' || sub.submissionType === 'exam') return true;
+  if (sub.type === 'assignment' || sub.submissionType === 'assignment') return false;
+  if (sub.exam && !sub.assignment) return true;
+
+  const title = (sub.title || sub.exam?.title || sub.assignment?.title || '').toLowerCase().trim();
+  if (
+    title.startsWith('đề kiểm tra') ||
+    title.includes('kiểm tra') ||
+    title.includes('đề thi') ||
+    title.includes('thi thử')
+  ) {
+    return true;
+  }
+  return false;
 }
 
 /**

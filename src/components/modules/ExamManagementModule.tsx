@@ -95,10 +95,6 @@ import {
   ManualMatchCandidate,
   DuplicateGroup
 } from '../../services/unmatchedSubmissionsService';
-import {
-  generateRuleBasedExamComment,
-  batchUpdateOldExamComments
-} from '../../services/studentCommentAiService';
 
 export interface TrackingSubmissionStudent {
   id: string;
@@ -203,26 +199,6 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const [deletingExam, setDeletingExam] = useState<ExamPaper | null>(null);
   const [isManualExamModalOpen, setIsManualExamModalOpen] = useState(false);
   const [isBankExamModalOpen, setIsBankExamModalOpen] = useState(false);
-
-  // Batch comment update state
-  const [isBatchUpdateModalOpen, setIsBatchUpdateModalOpen] = useState(false);
-  const [isUpdatingBatchComments, setIsUpdatingBatchComments] = useState(false);
-  const [batchUpdateProgress, setBatchUpdateProgress] = useState('');
-
-  const handleRunBatchUpdateComments = async () => {
-    setIsUpdatingBatchComments(true);
-    setBatchUpdateProgress('Đang quét danh sách bài kiểm tra cũ...');
-    try {
-      const res = await batchUpdateOldExamComments((msg) => setBatchUpdateProgress(msg));
-      showToast(`✅ Đã cập nhật thành công ${res.totalUpdated} bài nhận xét cũ!`, 'success');
-      setIsBatchUpdateModalOpen(false);
-    } catch (err: any) {
-      showToast(`⚠️ Lỗi khi cập nhật nhận xét cũ: ${err?.message || String(err)}`, 'error');
-    } finally {
-      setIsUpdatingBatchComments(false);
-      setBatchUpdateProgress('');
-    }
-  };
 
   const handleCreateExamFromBank = (examData: {
     title: string;
@@ -3114,15 +3090,6 @@ return (
                 title="Bật/Tắt chế độ kiểm tra đối chiếu dữ liệu"
               >
                 {showDebugTable ? 'Ẩn bảng Debug' : 'Chế độ Debug (?debug=1)'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsBatchUpdateModalOpen(true)}
-                className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-1.5 transition-all cursor-pointer"
-                title="Quét và tái tạo nhận xét chuẩn Rule-based 3 mức cho tất cả các bài kiểm tra cũ"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>Cập nhật nhận xét cũ</span>
               </button>
               <button
                 type="button"
@@ -6263,70 +6230,6 @@ return (
         </div>
       )}
 
-      {/* Modal xác nhận Cập nhật nhận xét cũ hàng loạt */}
-      {isBatchUpdateModalOpen && (
-        <div className="fixed inset-0 z-[999] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4 animate-scale-up">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600 shrink-0">
-                <Sparkles className="w-5 h-5 animate-pulse" />
-              </div>
-              <div>
-                <h3 className="text-base font-extrabold text-slate-900 font-heading">
-                  Cập nhật nhận xét cũ bài kiểm tra
-                </h3>
-                <p className="text-xs text-slate-500 font-medium">
-                  Chuẩn hóa nhận xét Rule-based 3 mức (T, H, C)
-                </p>
-              </div>
-            </div>
-
-            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 text-xs text-slate-700 leading-relaxed space-y-2">
-              <p>
-                Hệ thống sẽ quét và tái tạo nhận xét chuẩn 3 mức theo điểm cho tất cả bài kiểm tra cũ có lỗi văn bản (chứa từ khen ngợi khi điểm dưới 5, lặp cụm lỗi, hoặc chứa tên đề).
-              </p>
-              <p className="font-semibold text-amber-800">
-                📌 Lưu ý: Các bài làm đã được giáo viên chỉnh sửa nhận xét thủ công sẽ giữ nguyên vẹn.
-              </p>
-              {batchUpdateProgress && (
-                <div className="p-2.5 bg-amber-100/80 border border-amber-300 text-amber-900 rounded-xl font-bold text-[11px] animate-pulse">
-                  {batchUpdateProgress}
-                </div>
-              )}
-            </div>
-
-            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setIsBatchUpdateModalOpen(false)}
-                disabled={isUpdatingBatchComments}
-                className="px-4 py-2 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all cursor-pointer"
-              >
-                Hủy
-              </button>
-              <button
-                type="button"
-                onClick={handleRunBatchUpdateComments}
-                disabled={isUpdatingBatchComments}
-                className="px-5 py-2 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white transition-all shadow-sm flex items-center gap-2 cursor-pointer disabled:opacity-50"
-              >
-                {isUpdatingBatchComments ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Đang cập nhật...</span>
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-3.5 h-3.5" />
-                    <span>Cập nhật ngay</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {toast && (
         <div className={`fixed bottom-6 right-6 z-[100] text-white px-5 py-3.5 rounded-2xl shadow-2xl border flex items-center gap-3 animate-slide-up backdrop-blur-md bg-slate-950/95 ${toast.type === 'error' ? 'border-rose-500/50 text-rose-50' : 'border-emerald-500/50 text-emerald-50'}`}>
           {toast.type === 'error' ? (
@@ -6337,6 +6240,9 @@ return (
           <span className="text-xs font-extrabold tracking-wide">{toast.message}</span>
         </div>
       )}
+
+
+      
 
     </div>
   );

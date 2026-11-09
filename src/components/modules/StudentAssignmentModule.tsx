@@ -32,7 +32,6 @@ import {
   getCurrentStudentSession
 } from '../../services/studentSessionService';
 import { studentResultService } from '../../services/studentResultService';
-import { getRecordType } from '../../services/studentCode';
 import {
   subscribeToAssignmentsFromFirestore,
   getAssignmentsFromFirestore,
@@ -54,7 +53,6 @@ interface StudentAssignmentModuleProps {
 
 export interface AssignmentSubmissionItem {
   id: string;
-  recordType?: 'assignment';
   type: 'assignment';
   submissionType?: 'assignment';
   studentId?: string;
@@ -69,7 +67,26 @@ export interface AssignmentSubmissionItem {
 
 const isAssignmentSubmission = (sub: any): boolean => {
   if (!sub) return false;
-  return getRecordType(sub) === 'assignment';
+  if (sub.type === 'exam' || sub.submissionType === 'exam') return false;
+  if (sub.type === 'assignment' || sub.submissionType === 'assignment') return true;
+  
+  // Title inspection: exclude any exam-specific title
+  const title = (sub.title || sub.assignment?.title || '').toLowerCase().trim();
+  if (
+    title.startsWith('đề kiểm tra') || 
+    title.includes('kiểm tra 15 phút') || 
+    title.includes('kiểm tra 1 tiết') || 
+    title.includes('kiểm tra học kì') || 
+    title.includes('kiểm tra giữa kì')
+  ) {
+    return false;
+  }
+  
+  if (sub.exam && !sub.assignment) {
+    const examType = sub.exam.examType;
+    if (examType && examType !== 'Luyện tập' && examType !== 'Bài tập') return false;
+  }
+  return true;
 };
 
 export const getCanonicalAssignmentKey = (item: any): string => {
@@ -554,7 +571,6 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
 
     const subWithStudent: AssignmentSubmissionItem = { 
       ...newSub, 
-      recordType: 'assignment',
       type: 'assignment',
       submissionType: 'assignment',
       studentId: effectiveUserId,
@@ -573,7 +589,6 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
 
     const submissionRecord = {
       id: newSub.id || `sub-${Date.now()}`,
-      recordType: 'assignment' as const,
       studentId: effectiveUserId,
       studentCode: effectiveUserId,
       maHs: effectiveUserId,
