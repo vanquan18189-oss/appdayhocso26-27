@@ -43,7 +43,6 @@ import {
   Medal,
   Crown,
   Printer,
-  TrendingUp,
   HeartHandshake,
   Database,
   ArrowDown,
@@ -78,6 +77,17 @@ import { formatScore, formatTotalScore, roundTotalScore, isSubjectWithScore, get
 
 import { StudentSubmissionDetailModal } from './StudentSubmissionDetailModal';
 import { createNotificationIfNotExists, LOW_SCORE_THRESHOLD } from '../../services/notificationService';
+import {
+  AssignmentTrackingResult,
+  TrackingStudentRow,
+  STANDARD_STUDENT_CODE_REGEX,
+  getMemoryTrackingData,
+  setMemoryTrackingData,
+  clearMemoryTrackingData,
+  clearIndexedDBTrackingData,
+  getOrFetchAssignmentTrackingData,
+  parseSubmissionTimestamp
+} from '../../services/assignmentTrackingData';
 
 export interface StudentSubmissionRow {
   code: string;
@@ -789,7 +799,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     const questions = detailAssignment.questions || [];
     const questionCount = questions.length > 0 ? questions.length : 5;
 
-    return classStudentsRoster.map((st, idx) => {
+    const resultList = classStudentsRoster.map((st, idx) => {
       const lookupKeys = [
         st.code,
         st.id,
@@ -982,6 +992,21 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
         };
       }
     });
+
+    if (detailAssignment?.id) {
+      try {
+        setMemoryTrackingData(detailAssignment.id, {
+          assignmentId: detailAssignment.id,
+          targetClass: targetClassName,
+          totalStudents: resultList.length,
+          submittedCount: resultList.filter(s => s.status === 'submitted').length,
+          trackingList: resultList as any,
+          timestamp: Date.now()
+        });
+      } catch {}
+    }
+
+    return resultList;
   }, [detailAssignment, liveSubmissions, submissionSyncTick]);
 
   const filteredTrackingStudents = useMemo(() => {
@@ -1024,6 +1049,9 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
 
   // Vinh danh modal state
   const [vinhDanhAssignment, setVinhDanhAssignment] = useState<HomeworkAssignment | null>(null);
+  const [vinhDanhTrackingResult, setVinhDanhTrackingResult] = useState<AssignmentTrackingResult | null>(null);
+  const [isLoadingVinhDanh, setIsLoadingVinhDanh] = useState(false);
+  const [vinhDanhError, setVinhDanhError] = useState<string | null>(null);
   const [sharingAssignment, setSharingAssignment] = useState<HomeworkAssignment | null>(null);
 
   const { classes: allRealClasses, getClassesForGrade: fetchClassesForGrade } = useClassesList();
@@ -1513,6 +1541,106 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
       }
     }
   }, [vinhDanhAssignment]);
+
+  // Load tracking data for Bảng Vàng (reusing memory cache if already in detail modal, or IndexedDB, or 1-time read)
+  useEffect(() => {
+    if (!vinhDanhAssignment) {
+      setVinhDanhTrackingResult(null);
+      setVinhDanhError(null);
+      return;
+    }
+
+    // 1. If detailAssignment is the same and trackingStudentsList already loaded in memory, use it directly (0 reads)
+    if (detailAssignment?.id === vinhDanhAssignment.id && trackingStudentsList && trackingStudentsList.length > 0) {
+      const memoryData: AssignmentTrackingResult = {
+        assignmentId: vinhDanhAssignment.id,
+        targetClass: vinhDanhAssignment.targetClass || 'Lớp 3C',
+        totalStudents: trackingStudentsList.length,
+        submittedCount: trackingStudentsList.filter(s => s.status === 'submitted').length,
+        trackingList: trackingStudentsList as any,
+        timestamp: Date.now()
+      };
+      setMemoryTrackingData(vinhDanhAssignment.id, memoryData);
+      setVinhDanhTrackingResult(memoryData);
+      setIsLoadingVinhDanh(false);
+      return;
+    }
+
+    // 2. Fetch or load from cache (memory -> IndexedDB -> 1-time Firestore read)
+    let isMounted = true;
+    setIsLoadingVinhDanh(true);
+    setVinhDanhError(null);
+
+    getOrFetchAssignmentTrackingData(vinhDanhAssignment, false)
+      .then((res) => {
+        if (isMounted) {
+          setVinhDanhTrackingResult(res);
+          setIsLoadingVinhDanh(false);
+        }
+      })
+      .catch((err) => {
+        if (isMounted) {
+          console.error('[Bảng Vàng] Lỗi tải dữ liệu:', err);
+          setVinhDanhError('Chưa tải được bảng vàng, thử lại');
+          setIsLoadingVinhDanh(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [vinhDanhAssignment, detailAssignment?.id, trackingStudentsList]);
+
+  const handleRefreshVinhDanh = useCallback(async () => {
+    if (!vinhDanhAssignment?.id) return;
+    setIsLoadingVinhDanh(true);
+    setVinhDanhError(null);
+    try {
+      await clearIndexedDBTrackingData(vinhDanhAssignment.id);
+      clearMemoryTrackingData(vinhDanhAssignment.id);
+      const res = await getOrFetchAssignmentTrackingData(vinhDanhAssignment, true);
+      setVinhDanhTrackingResult(res);
+      showToast('✅ Đã làm mới dữ liệu Bảng Vàng thành công!');
+    } catch (err: any) {
+      console.error('[Bảng Vàng] Lỗi làm mới:', err);
+      setVinhDanhError('Chưa tải được bảng vàng, thử lại');
+    } finally {
+      setIsLoadingVinhDanh(false);
+    }
+  }, [vinhDanhAssignment]);
+
+  const vinhDanhRankedData = useMemo(() => {
+    if (!vinhDanhTrackingResult?.trackingList) {
+      return { top10: [] };
+    }
+
+    const list = vinhDanhTrackingResult.trackingList;
+    const submitted = list.filter(st => st.status === 'submitted');
+
+    // Sắp xếp học sinh đã nộp:
+    // 1. Điểm giảm dần (numericScore DESC)
+    // 2. Bằng điểm: thời điểm nộp sớm hơn (parseSubmissionTimestamp ASC)
+    // 3. Không hiểu được định dạng thời điểm nộp -> xếp sau cùng khi bằng điểm
+    submitted.sort((a, b) => {
+      const scoreA = typeof a.numericScore === 'number' ? a.numericScore : (typeof a.totalScore === 'number' ? a.totalScore : (parseFloat(String(a.totalScore)) || 0));
+      const scoreB = typeof b.numericScore === 'number' ? b.numericScore : (typeof b.totalScore === 'number' ? b.totalScore : (parseFloat(String(b.totalScore)) || 0));
+      if (scoreB !== scoreA) {
+        return scoreB - scoreA;
+      }
+      const rawA = a.rawSubmission?.submittedAt || a.rawSubmission?.submittedTime || a.submittedTime;
+      const rawB = b.rawSubmission?.submittedAt || b.rawSubmission?.submittedTime || b.submittedTime;
+      const timeA = parseSubmissionTimestamp(rawA);
+      const timeB = parseSubmissionTimestamp(rawB);
+      return timeA - timeB;
+    });
+
+    // Lấy chính xác TOP 10
+    const top10 = submitted.slice(0, 10);
+
+    return {
+      top10
+    };
+  }, [vinhDanhTrackingResult]);
 
   // Export Excel (.xlsx chuẩn)
   const handleExportExcel = () => {
@@ -4023,302 +4151,336 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
       {/* ========================================== */}
       {/* MODAL 4: BẢNG VÀNG VINH DANH & THỐNG KÊ   */}
       {/* ========================================== */}
-      {vinhDanhAssignment && (
-        <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5 overflow-y-auto">
-          <div className="bg-white rounded-3xl max-w-4xl w-full my-auto shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh] animate-scale-up">
-            
-            {/* Header */}
-            <div className="bg-gradient-to-r from-amber-500 via-amber-600 to-yellow-600 text-white p-5 sm:p-6 relative overflow-hidden flex-shrink-0">
-              <div className="absolute -right-6 -bottom-6 opacity-15 pointer-events-none">
-                <Trophy className="w-48 h-48 text-white" />
+      {vinhDanhAssignment && (() => {
+        const vinhDanhTargetClass = vinhDanhAssignment.targetClass
+          ? (vinhDanhAssignment.targetClass.startsWith('Lớp') ? vinhDanhAssignment.targetClass : `Lớp ${vinhDanhAssignment.targetClass}`)
+          : 'Lớp 3C';
+
+        const totalStudentsCount = vinhDanhTrackingResult?.totalStudents || 38;
+
+        const top1 = vinhDanhRankedData.top10[0];
+        const top2 = vinhDanhRankedData.top10[1];
+        const top3 = vinhDanhRankedData.top10[2];
+
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5 overflow-y-auto">
+            <div className="bg-white rounded-3xl max-w-4xl w-full my-auto shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh] animate-scale-up">
+              
+              {/* Header */}
+              <div className="bg-gradient-to-r from-amber-500 via-amber-600 to-yellow-600 text-white p-5 sm:p-6 relative overflow-hidden flex-shrink-0">
+                <div className="absolute -right-6 -bottom-6 opacity-15 pointer-events-none">
+                  <Trophy className="w-48 h-48 text-white" />
+                </div>
+
+                <div className="flex items-start justify-between relative z-10 gap-3">
+                  <div className="space-y-1">
+                    <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/20 backdrop-blur-md text-amber-100 font-extrabold text-[11px] uppercase tracking-wider">
+                      <Sparkles className="w-3.5 h-3.5 text-yellow-200" />
+                      Thống kê vinh danh
+                    </div>
+                    <h2 className="text-lg sm:text-2xl font-black text-white font-heading tracking-tight flex items-center gap-2">
+                      🏆 BẢNG VÀNG VINH DANH & THỐNG KÊ KẾT QUẢ RÈN LUYỆN
+                    </h2>
+                    <p className="text-xs sm:text-sm text-amber-100 font-medium">
+                      Bài tập: <span className="font-bold text-white">{vinhDanhAssignment.title}</span> • Sĩ số {vinhDanhTargetClass}: <span className="font-extrabold text-white">{totalStudentsCount} học sinh</span>
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <button
+                      type="button"
+                      onClick={handleRefreshVinhDanh}
+                      disabled={isLoadingVinhDanh}
+                      className="px-3 py-1.5 rounded-xl bg-white/20 hover:bg-white/30 text-white font-bold text-xs backdrop-blur-md transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      title="Xóa cache IndexedDB và tải lại dữ liệu mới nhất"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isLoadingVinhDanh ? 'animate-spin' : ''}`} />
+                      <span className="hidden sm:inline">Làm mới</span>
+                    </button>
+
+                    <button
+                      onClick={() => setVinhDanhAssignment(null)}
+                      className="p-2 rounded-full bg-black/20 hover:bg-black/40 text-white/90 hover:text-white transition-all cursor-pointer flex-shrink-0"
+                      title="Đóng cửa sổ"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+                </div>
               </div>
 
-              <div className="flex items-start justify-between relative z-10">
-                <div className="space-y-1">
-                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/20 backdrop-blur-md text-amber-100 font-extrabold text-[11px] uppercase tracking-wider">
-                    <Sparkles className="w-3.5 h-3.5 text-yellow-200" />
-                    Thống kê vinh danh
+              {/* Modal Body Scrollable */}
+              <div className="p-4 sm:p-5 space-y-4 sm:space-y-5 overflow-y-auto flex-1 bg-slate-50/50">
+                {isLoadingVinhDanh ? (
+                  <div className="py-20 text-center text-slate-500 font-medium flex flex-col items-center justify-center gap-3">
+                    <RefreshCw className="w-8 h-8 text-amber-500 animate-spin" />
+                    <p className="text-sm font-bold text-slate-700">Đang tải bảng vàng vinh danh...</p>
+                    <p className="text-xs text-slate-400">Đang đồng bộ dữ liệu học sinh và kết quả bài làm</p>
                   </div>
-                  <h2 className="text-lg sm:text-2xl font-black text-white font-heading tracking-tight flex items-center gap-2">
-                    🏆 BẢNG VÀNG VINH DANH & THỐNG KÊ KẾT QUẢ RÈN LUYỆN
-                  </h2>
-                  <p className="text-xs sm:text-sm text-amber-100 font-medium">
-                    Bài tập: <span className="font-bold text-white">{vinhDanhAssignment.title}</span> • {vinhDanhAssignment.targetClass || 'Lớp 3A'}
-                  </p>
-                </div>
+                ) : vinhDanhError ? (
+                  <div className="bg-white rounded-2xl p-8 border border-slate-200 text-center space-y-4 my-6">
+                    <AlertCircle className="w-12 h-12 text-rose-500 mx-auto" />
+                    <div className="space-y-1">
+                      <h4 className="text-base font-bold text-slate-800">Chưa tải được bảng vàng, thử lại</h4>
+                      <p className="text-xs text-slate-500">
+                        {vinhDanhError || 'Không thể tải dữ liệu bảng vàng. Vui lòng thử lại.'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleRefreshVinhDanh()}
+                      className="px-4 py-2 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white transition-all shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" /> Thử lại
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    {/* BỤC VINH DANH TOP 3 (PODIUM UI) */}
+                    <div className="bg-gradient-to-b from-amber-50/80 via-orange-50/40 to-white rounded-2xl p-4 sm:p-5 border border-amber-200 shadow-xs space-y-3 sm:space-y-4">
+                      <div className="text-center space-y-1">
+                        <h3 className="text-base font-extrabold text-amber-900 font-heading flex items-center justify-center gap-2">
+                          <Crown className="w-5 h-5 text-amber-500 animate-bounce" />
+                          BỤC VINH DANH HỌC SINH XUẤT SẮC
+                        </h3>
+                        <p className="text-xs text-amber-700 font-medium">Tuyên dương các học sinh đạt thành tích cao nhất bài rèn luyện</p>
+                      </div>
+
+                      {/* Podium visual */}
+                      <div className="flex items-end justify-center gap-2 sm:gap-4 pt-6 max-w-lg mx-auto">
+                        
+                        {/* Rank 2 (Silver) */}
+                        <div className="flex-1 flex flex-col items-center">
+                          <div className="mb-2 text-center">
+                            <span className="text-2xl">🥈</span>
+                            <div className="font-extrabold text-xs text-slate-800 mt-1 truncate max-w-[120px]" title={top2?.name || '—'}>
+                              {top2 ? top2.name : '—'}
+                            </div>
+                            <div className="text-[11px] font-bold text-slate-600">
+                              {top2 ? `${formatScore(top2.totalScore)} điểm` : '—'}
+                            </div>
+                            <div className="text-[10px] text-slate-400">
+                              {top2 ? `⏱️ ${top2.submittedTime || top2.displayTime}` : '—'}
+                            </div>
+                          </div>
+                          <div className="w-full h-28 bg-gradient-to-b from-slate-300 via-slate-400 to-slate-500 rounded-t-2xl shadow-md border-t-2 border-slate-200 flex flex-col items-center justify-center text-white">
+                            <span className="text-2xl font-black">2</span>
+                            <span className="text-[10px] font-bold tracking-wider uppercase opacity-80">HẠNG NHÌ</span>
+                          </div>
+                        </div>
+
+                        {/* Rank 1 (Gold) */}
+                        <div className="flex-1 flex flex-col items-center">
+                          <div className="mb-2 text-center">
+                            <div className="inline-block relative">
+                              <Crown className="w-6 h-6 text-yellow-500 absolute -top-5 left-1/2 -translate-x-1/2 drop-shadow-md animate-pulse" />
+                              <span className="text-3xl">🥇</span>
+                            </div>
+                            <div className="font-black text-sm text-amber-900 mt-1 truncate max-w-[140px]" title={top1?.name || '—'}>
+                              {top1 ? top1.name : '—'}
+                            </div>
+                            <div className="text-xs font-black text-emerald-600 bg-emerald-100 px-2 py-0.5 rounded-full inline-block">
+                              {top1 ? `${formatScore(top1.totalScore)} điểm` : '—'}
+                            </div>
+                            <div className="text-[10px] text-amber-700 font-semibold mt-0.5">
+                              {top1 ? `⏱️ ${top1.submittedTime || top1.displayTime}` : '—'}
+                            </div>
+                          </div>
+                          <div className="w-full h-36 bg-gradient-to-b from-amber-400 via-yellow-500 to-amber-600 rounded-t-2xl shadow-xl border-t-2 border-yellow-200 flex flex-col items-center justify-center text-white">
+                            <Trophy className="w-6 h-6 text-yellow-100 mb-1" />
+                            <span className="text-3xl font-black">1</span>
+                            <span className="text-[10px] font-extrabold tracking-wider uppercase text-yellow-100">QUÁN QUÂN</span>
+                          </div>
+                        </div>
+
+                        {/* Rank 3 (Bronze) */}
+                        <div className="flex-1 flex flex-col items-center">
+                          <div className="mb-2 text-center">
+                            <span className="text-2xl">🥉</span>
+                            <div className="font-extrabold text-xs text-amber-900 mt-1 truncate max-w-[120px]" title={top3?.name || '—'}>
+                              {top3 ? top3.name : '—'}
+                            </div>
+                            <div className="text-[11px] font-bold text-slate-500">
+                              {top3 ? `${formatScore(top3.totalScore)} điểm` : '—'}
+                            </div>
+                            <div className="text-[10px] text-slate-400">
+                              {top3 ? `⏱️ ${top3.submittedTime || top3.displayTime}` : '—'}
+                            </div>
+                          </div>
+                          <div className="w-full h-20 bg-gradient-to-b from-amber-700 via-amber-800 to-amber-900 rounded-t-2xl shadow-xs border-t-2 border-amber-600 flex flex-col items-center justify-center text-amber-100">
+                            <span className="text-xl font-black">3</span>
+                            <span className="text-[9px] font-bold tracking-wider uppercase opacity-80">HẠNG BA</span>
+                          </div>
+                        </div>
+
+                      </div>
+                    </div>
+
+                    {/* 3. BẢNG DANH SÁCH TOP 10 HỌC SINH XUẤT SẮC */}
+                    <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+                      <div className="px-4 py-3 bg-slate-100/80 border-b border-slate-200 flex items-center justify-between gap-2">
+                        <h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                          <Trophy className="w-4 h-4 text-amber-600" />
+                          Bảng vinh danh TOP 10 học sinh xuất sắc nhất
+                        </h4>
+                      </div>
+
+                      <div className="overflow-x-auto max-h-80">
+                        <table className="w-full text-left border-collapse text-xs">
+                          <thead>
+                            <tr className="bg-slate-50 sticky top-0 z-10 border-b border-slate-200 text-slate-600 font-extrabold uppercase text-[10px] tracking-wider">
+                              <th className="py-2.5 px-3 text-center w-12">HẠNG</th>
+                              <th className="py-2.5 px-3 min-w-[120px]">MÃ HS</th>
+                              <th className="py-2.5 px-4 min-w-[150px]">HỌ VÀ TÊN</th>
+                              <th className="py-2.5 px-3 text-center">ĐIỂM SỐ</th>
+                              <th className="py-2.5 px-3 text-center">THỜI ĐIỂM NỘP</th>
+                              <th className="py-2.5 px-4 text-center">DANH HIỆU / HUY HIỆU</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {vinhDanhRankedData.top10.length === 0 ? (
+                              <tr>
+                                <td colSpan={6} className="py-8 text-center text-slate-500 font-medium text-xs">
+                                  Chưa có học sinh nào nộp bài
+                                </td>
+                              </tr>
+                            ) : (
+                              vinhDanhRankedData.top10.map((st, idx) => {
+                                const numScore = typeof st.numericScore === 'number' ? st.numericScore : (typeof st.totalScore === 'number' ? st.totalScore : (parseFloat(String(st.totalScore)) || 0));
+
+                                let bgClass = 'hover:bg-slate-50';
+                                let badgeTitle = '👍 Đạt yêu cầu';
+                                let badgeColor = 'bg-blue-100 text-blue-800 border-blue-200';
+
+                                if (idx === 0) {
+                                  bgClass = 'bg-amber-50/60 hover:bg-amber-50 font-bold';
+                                  badgeTitle = '🌟 Quán quân xuất sắc';
+                                  badgeColor = 'bg-amber-100 text-amber-800 border-amber-300';
+                                } else if (idx === 1) {
+                                  bgClass = 'bg-slate-50/80 hover:bg-slate-100 font-medium';
+                                  badgeTitle = '🥈 Á quân toàn diện';
+                                  badgeColor = 'bg-emerald-100 text-emerald-800 border-emerald-300';
+                                } else if (idx === 2) {
+                                  bgClass = 'bg-orange-50/40 hover:bg-orange-50 font-medium';
+                                  badgeTitle = '🥉 Hạng ba nổi bật';
+                                  badgeColor = 'bg-amber-100 text-amber-800 border-amber-200';
+                                } else if (numScore >= 8) {
+                                  badgeTitle = '🏆 Giỏi toàn diện';
+                                  badgeColor = 'bg-emerald-100 text-emerald-800 border-emerald-200';
+                                } else if (numScore >= 5) {
+                                  badgeTitle = '👍 Đạt yêu cầu';
+                                  badgeColor = 'bg-blue-100 text-blue-800 border-blue-200';
+                                } else {
+                                  badgeTitle = '⚡ Cần cố gắng thêm';
+                                  badgeColor = 'bg-rose-100 text-rose-800 border-rose-200';
+                                }
+
+                                return (
+                                  <tr key={`${st.code}-${idx}`} className={`transition-colors ${bgClass}`}>
+                                    {/* Hạng */}
+                                    <td className="py-2.5 px-3 text-center font-black">
+                                      {idx === 0 ? (
+                                        <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-amber-400 text-white font-black text-xs shadow-xs">
+                                          1
+                                        </span>
+                                      ) : idx === 1 ? (
+                                        <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-slate-400 text-white font-black text-xs shadow-xs">
+                                          2
+                                        </span>
+                                      ) : idx === 2 ? (
+                                        <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-amber-700 text-white font-black text-xs shadow-xs">
+                                          3
+                                        </span>
+                                      ) : (
+                                        <span className="text-slate-600 font-bold">{idx + 1}</span>
+                                      )}
+                                    </td>
+
+                                    {/* Mã HS */}
+                                    <td className="py-2.5 px-3 font-extrabold text-fuchsia-700 font-mono text-[11px]">
+                                      <span className="inline-flex items-center gap-1">
+                                        <span>{st.code}</span>
+                                        {st.hasInvalidCodeFormat && (
+                                          <span title="Mã học sinh chưa đúng định dạng chuẩn (ví dụ: 3C26-27-5)" className="inline-flex items-center">
+                                            <AlertTriangle className="w-3.5 h-3.5 text-amber-500 inline shrink-0" />
+                                          </span>
+                                        )}
+                                      </span>
+                                    </td>
+
+                                    {/* Họ tên */}
+                                    <td className="py-2.5 px-4 font-extrabold text-slate-800">
+                                      {st.name}
+                                    </td>
+
+                                    {/* Điểm số */}
+                                    <td className="py-2.5 px-3 text-center">
+                                      {isSubjectWithScore(vinhDanhAssignment?.subject) ? (
+                                        <span className="inline-block px-2.5 py-0.5 rounded-full font-black text-xs bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                          {formatScore(st.totalScore)} / 10
+                                        </span>
+                                      ) : (
+                                        (() => {
+                                          const lvl = getQualitativeLabel(st.totalScore);
+                                          return (
+                                            <span className={`inline-block px-2.5 py-0.5 rounded-full font-black text-xs border ${
+                                              lvl === 'Tốt' ? 'bg-emerald-100 text-emerald-800 border-emerald-300' :
+                                              lvl === 'Hoàn thành' ? 'bg-sky-100 text-sky-800 border-sky-300' :
+                                              'bg-rose-100 text-rose-800 border-rose-300'
+                                            }`}>
+                                              {lvl}
+                                            </span>
+                                          );
+                                        })()
+                                      )}
+                                    </td>
+
+                                    {/* Thời điểm nộp */}
+                                    <td className="py-2.5 px-3 text-center font-medium text-slate-600 text-[11px]">
+                                      {st.submittedTime || (st.rawSubmission?.submittedAt ? formatSubmissionDateTime(st.rawSubmission.submittedAt) : '--')}
+                                    </td>
+
+                                    {/* Danh hiệu */}
+                                    <td className="py-2.5 px-4 text-center">
+                                      <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-extrabold border ${badgeColor}`}>
+                                        {badgeTitle}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                );
+                              })
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Footer Buttons */}
+              <div className="p-4 bg-white border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 flex-shrink-0">
+                <button
+                  onClick={() => {
+                    showToast(`✅ Đã tải xuống file Bảng vàng vinh danh ${vinhDanhTargetClass} (PDF/Ảnh) thành công!`);
+                  }}
+                  className="px-4 py-2.5 rounded-xl text-xs font-extrabold bg-amber-500 hover:bg-amber-600 text-white transition-all cursor-pointer shadow-md flex items-center justify-center gap-2 w-full sm:w-auto active:scale-95"
+                >
+                  <Download className="w-4 h-4" /> Xuất Bảng Vinh Danh (PDF/Ảnh)
+                </button>
 
                 <button
                   onClick={() => setVinhDanhAssignment(null)}
-                  className="p-2 rounded-full bg-black/20 hover:bg-black/40 text-white/90 hover:text-white transition-all cursor-pointer flex-shrink-0"
+                  className="px-6 py-2.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all cursor-pointer w-full sm:w-auto"
                 >
-                  <X className="w-5 h-5" />
+                  Đóng
                 </button>
               </div>
-            </div>
-
-            {/* Modal Body Scrollable */}
-            <div className="p-4 sm:p-6 space-y-6 overflow-y-auto flex-1 bg-slate-50/50">
-              
-              {/* 1. KHỐI THỐNG KÊ TỔNG QUAN (4 CARDS) */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                {/* Card 1 */}
-                <div className="p-3.5 rounded-2xl bg-white border border-slate-200 shadow-xs flex flex-col justify-between space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-bold uppercase text-slate-500">TỔNG HS ĐÃ NỘP</span>
-                    <div className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
-                      <Users className="w-4 h-4" />
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-base sm:text-lg font-black text-slate-900 font-heading">2 / 39 học sinh</div>
-                    <div className="text-[11px] font-bold text-indigo-600">Tỷ lệ nộp: 5.1%</div>
-                  </div>
-                </div>
-
-                {/* Card 2 */}
-                <div className="p-3.5 rounded-2xl bg-white border border-slate-200 shadow-xs flex flex-col justify-between space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-bold uppercase text-slate-500">ĐIỂM TRUNG BÌNH</span>
-                    <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-                      <TrendingUp className="w-4 h-4" />
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-base sm:text-lg font-black text-slate-900 font-heading">7 / 10</div>
-                    <div className="text-[11px] font-bold text-emerald-600">Phổ điểm tốt</div>
-                  </div>
-                </div>
-
-                {/* Card 3 */}
-                <div className="p-3.5 rounded-2xl bg-white border border-slate-200 shadow-xs flex flex-col justify-between space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-bold uppercase text-slate-500">ĐIỂM CAO NHẤT</span>
-                    <div className="w-8 h-8 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
-                      <Trophy className="w-4 h-4" />
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-base sm:text-lg font-black text-slate-900 font-heading">10 điểm</div>
-                    <div className="text-[11px] font-bold text-amber-700 truncate">Hoàng Bảo An</div>
-                  </div>
-                </div>
-
-                {/* Card 4 */}
-                <div className="p-3.5 rounded-2xl bg-white border border-slate-200 shadow-xs flex flex-col justify-between space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-bold uppercase text-slate-500">TỶ LỆ ĐẠT YÊU CẦU</span>
-                    <div className="w-8 h-8 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center">
-                      <CheckCircle2 className="w-4 h-4" />
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-base sm:text-lg font-black text-slate-900 font-heading">100%</div>
-                    <div className="text-[11px] font-bold text-rose-600">Đạt từ 5 điểm trở lên</div>
-                  </div>
-                </div>
-              </div>
-
-              {/* 2. BỤC VINH DANH TOP 3 (PODIUM UI) */}
-              <div className="bg-gradient-to-b from-amber-50/80 via-orange-50/40 to-white rounded-2xl p-5 border border-amber-200 shadow-xs space-y-4">
-                <div className="text-center space-y-1">
-                  <h3 className="text-base font-extrabold text-amber-900 font-heading flex items-center justify-center gap-2">
-                    <Crown className="w-5 h-5 text-amber-500 animate-bounce" />
-                    BỤC VINH DANH HỌC SINH XUẤT SẮC
-                  </h3>
-                  <p className="text-xs text-amber-700 font-medium">Tuyên dương các học sinh đạt thành tích cao nhất bài rèn luyện</p>
-                </div>
-
-                {/* Podium visual */}
-                <div className="flex items-end justify-center gap-2 sm:gap-4 pt-6 max-w-lg mx-auto">
-                  
-                  {/* Rank 2 (Silver) */}
-                  <div className="flex-1 flex flex-col items-center">
-                    <div className="mb-2 text-center">
-                      <span className="text-2xl">🥈</span>
-                      <div className="font-extrabold text-xs text-slate-800 mt-1">Hà Việt Hoàng</div>
-                      <div className="text-[11px] font-bold text-slate-600">4 điểm</div>
-                      <div className="text-[10px] text-slate-400">⏱️ 3p 15s</div>
-                    </div>
-                    <div className="w-full h-28 bg-gradient-to-b from-slate-300 via-slate-400 to-slate-500 rounded-t-2xl shadow-md border-t-2 border-slate-200 flex flex-col items-center justify-center text-white">
-                      <span className="text-2xl font-black">2</span>
-                      <span className="text-[10px] font-bold tracking-wider uppercase opacity-80">HẠNG NHÌ</span>
-                    </div>
-                  </div>
-
-                  {/* Rank 1 (Gold) */}
-                  <div className="flex-1 flex flex-col items-center">
-                    <div className="mb-2 text-center">
-                      <div className="inline-block relative">
-                        <Crown className="w-6 h-6 text-yellow-500 absolute -top-5 left-1/2 -translate-x-1/2 drop-shadow-md animate-pulse" />
-                        <span className="text-3xl">🥇</span>
-                      </div>
-                      <div className="font-black text-sm text-amber-900 mt-1">Hoàng Bảo An</div>
-                      <div className="text-xs font-black text-emerald-600 bg-emerald-100 px-2 py-0.5 rounded-full inline-block">10 điểm</div>
-                      <div className="text-[10px] text-amber-700 font-semibold mt-0.5">⏱️ 2p 21s</div>
-                    </div>
-                    <div className="w-full h-36 bg-gradient-to-b from-amber-400 via-yellow-500 to-amber-600 rounded-t-2xl shadow-xl border-t-2 border-yellow-200 flex flex-col items-center justify-center text-white">
-                      <Trophy className="w-6 h-6 text-yellow-100 mb-1" />
-                      <span className="text-3xl font-black">1</span>
-                      <span className="text-[10px] font-extrabold tracking-wider uppercase text-yellow-100">QUÁN QUÂN</span>
-                    </div>
-                  </div>
-
-                  {/* Rank 3 (Bronze) */}
-                  <div className="flex-1 flex flex-col items-center">
-                    <div className="mb-2 text-center">
-                      <span className="text-2xl">🥉</span>
-                      <div className="font-extrabold text-xs text-amber-900 mt-1">(Đang cập nhật)</div>
-                      <div className="text-[11px] font-bold text-slate-500">--</div>
-                    </div>
-                    <div className="w-full h-20 bg-gradient-to-b from-amber-700 via-amber-800 to-amber-900 rounded-t-2xl shadow-xs border-t-2 border-amber-600 flex flex-col items-center justify-center text-amber-100">
-                      <span className="text-xl font-black">3</span>
-                      <span className="text-[9px] font-bold tracking-wider uppercase opacity-80">HẠNG BA</span>
-                    </div>
-                  </div>
-
-                </div>
-              </div>
-
-              {/* 3. BẢNG DANH SÁCH XẾP HẠNG CHI TIẾT TOÀN LỚP */}
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-                <div className="px-4 py-3 bg-slate-100/80 border-b border-slate-200 flex items-center justify-between">
-                  <h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-                    <BarChart3 className="w-4 h-4 text-indigo-600" />
-                    Bảng danh sách xếp hạng chi tiết toàn lớp ({CLASS_3A_STUDENTS.length} học sinh)
-                  </h4>
-                  <span className="text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 px-2 py-0.5 rounded-full">
-                    Sắp xếp theo Điểm & Thời gian
-                  </span>
-                </div>
-
-                <div className="overflow-x-auto max-h-80">
-                  <table className="w-full text-left border-collapse text-xs">
-                    <thead>
-                      <tr className="bg-slate-50 sticky top-0 z-10 border-b border-slate-200 text-slate-600 font-extrabold uppercase text-[10px] tracking-wider">
-                        <th className="py-2.5 px-3 text-center w-12">HẠNG</th>
-                        <th className="py-2.5 px-3 w-16">MÃ HS</th>
-                        <th className="py-2.5 px-4">HỌ VÀ TÊN</th>
-                        <th className="py-2.5 px-3 text-center">ĐIỂM SỐ</th>
-                        <th className="py-2.5 px-3 text-center">THỜI GIAN LÀM</th>
-                        <th className="py-2.5 px-4 text-center">DANH HIỆU / HUY HIỆU</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {CLASS_3A_STUDENTS.map((st, idx) => {
-                        let bgClass = 'hover:bg-slate-50';
-                        let badgeTitle = '⏳ Chưa nộp bài';
-                        let badgeColor = 'bg-slate-100 text-slate-500 border-slate-200';
-
-                        if (st.code === '3a1') {
-                          bgClass = 'bg-amber-50/60 hover:bg-amber-50 font-bold';
-                          badgeTitle = '🌟 Xuất sắc tuyệt đối';
-                          badgeColor = 'bg-amber-100 text-amber-800 border-amber-300';
-                        } else if (st.code === '3a10') {
-                          bgClass = 'bg-slate-50/80 hover:bg-slate-100';
-                          badgeTitle = '⚡ Cần cố gắng thêm';
-                          badgeColor = 'bg-blue-100 text-blue-800 border-blue-200';
-                        }
-
-                        return (
-                          <tr key={st.code} className={`transition-colors ${bgClass}`}>
-                            {/* Hạng */}
-                            <td className="py-2.5 px-3 text-center font-black">
-                              {idx === 0 ? (
-                                <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-amber-400 text-white font-black text-xs shadow-xs">
-                                  1
-                                </span>
-                              ) : idx === 1 ? (
-                                <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-slate-400 text-white font-black text-xs shadow-xs">
-                                  2
-                                </span>
-                              ) : idx === 2 ? (
-                                <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-amber-700 text-white font-black text-xs shadow-xs">
-                                  3
-                                </span>
-                              ) : (
-                                <span className="text-slate-500 font-bold">{idx + 1}</span>
-                              )}
-                            </td>
-
-                            {/* Mã HS */}
-                            <td className="py-2.5 px-3 font-extrabold text-fuchsia-700">
-                              {st.code}
-                            </td>
-
-                            {/* Họ tên */}
-                            <td className="py-2.5 px-4 font-extrabold text-slate-800">
-                              {st.name}
-                            </td>
-
-                            {/* Điểm số / Mức đạt */}
-                            <td className="py-2.5 px-3 text-center">
-                              {st.totalScore !== '-' ? (
-                                isSubjectWithScore(vinhDanhAssignment?.subject) ? (
-                                  <span className="inline-block px-2.5 py-0.5 rounded-full font-black text-xs bg-emerald-100 text-emerald-800 border border-emerald-300">
-                                    {formatScore(st.totalScore)} / 10
-                                  </span>
-                                ) : (
-                                  (() => {
-                                    const lvl = getQualitativeLabel(st.totalScore);
-                                    return (
-                                      <span className={`inline-block px-2.5 py-0.5 rounded-full font-black text-xs border ${
-                                        lvl === 'Tốt' ? 'bg-emerald-100 text-emerald-800 border-emerald-300' :
-                                        lvl === 'Hoàn thành' ? 'bg-sky-100 text-sky-800 border-sky-300' :
-                                        'bg-rose-100 text-rose-800 border-rose-300'
-                                      }`}>
-                                        {lvl}
-                                      </span>
-                                    );
-                                  })()
-                                )
-                              ) : (
-                                <span className="text-slate-400 font-medium">--</span>
-                              )}
-                            </td>
-
-                            {/* Thời gian làm */}
-                            <td className="py-2.5 px-3 text-center font-medium text-slate-600">
-                              {st.code === '3a1' ? '2 phút 21 giây' : st.code === '3a10' ? '3 phút 15 giây' : '--'}
-                            </td>
-
-                            {/* Danh hiệu */}
-                            <td className="py-2.5 px-4 text-center">
-                              <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-extrabold border ${badgeColor}`}>
-                                {badgeTitle}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
 
             </div>
-
-            {/* Footer Buttons */}
-            <div className="p-4 bg-white border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 flex-shrink-0">
-              <button
-                onClick={() => {
-                  showToast('✅ Đã tải xuống file Bảng vàng vinh danh Lớp 3A (PDF/Ảnh) thành công!');
-                }}
-                className="px-4 py-2.5 rounded-xl text-xs font-extrabold bg-amber-500 hover:bg-amber-600 text-white transition-all cursor-pointer shadow-md flex items-center justify-center gap-2 w-full sm:w-auto active:scale-95"
-              >
-                <Download className="w-4 h-4" /> Xuất Bảng Vinh Danh (PDF/Ảnh)
-              </button>
-
-              <button
-                onClick={() => setVinhDanhAssignment(null)}
-                className="px-6 py-2.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all cursor-pointer w-full sm:w-auto"
-              >
-                Đóng
-              </button>
-            </div>
-
           </div>
-        </div>
-      )}
+        );
+      })()}
       {/* ========================================== */}
       {/* MODAL 5: CHIA SẺ BÀI TẬP & HỌC LIỆU       */}
       {/* ========================================== */}
