@@ -336,11 +336,16 @@ export function subscribeToExamsFromFirestore(
   }
 }
 
+// import { deleteSubmissionsByExam } from './cascadeCleanupService';
+
 /**
  * Xóa một Đề kiểm tra khỏi Firestore
  */
 export async function deleteExamFromFirestore(examId: string): Promise<void> {
   try {
+    // Dọn dẹp bài làm dây chuyền trước
+    // await deleteSubmissionsByExam(examId).catch(err => console.error('Lỗi xóa dây chuyền bài làm:', err));
+
     if (db) {
       const examRef = doc(db, 'exams', examId);
       await trackedDeleteDoc(examRef);
@@ -444,6 +449,10 @@ export function clearAllExamsCache(): void {
  */
 export async function deleteAllExamsFromFirestore(): Promise<void> {
   try {
+    // Dọn dẹp dây chuyền
+    // await cascadeDeleteAllExams().catch(err => console.error('Lỗi dọn dẹp dây chuyền:', err));
+    console.warn('cascadeDeleteAllExams: cascadeCleanupService has been removed.');
+
     if (db) {
       const snap = await getDocs(collection(db, 'exams'));
       if (!snap.empty) {

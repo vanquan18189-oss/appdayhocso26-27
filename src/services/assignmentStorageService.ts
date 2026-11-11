@@ -310,11 +310,17 @@ export function subscribeToAssignmentsFromFirestore(
   }
 }
 
+// import { deleteSubmissionsByAssignment } from './cascadeCleanupService';
+
 /**
  * Delete an assignment from Firestore
  */
 export async function deleteAssignmentFromFirestore(assignmentId: string): Promise<void> {
   try {
+    // Dọn dẹp dây chuyền bài tập
+    // await deleteSubmissionsByAssignment(assignmentId).catch(err => console.error('Lỗi dọn dẹp dây chuyền bài tập:', err));
+    console.warn('deleteSubmissionsByAssignment: cascadeCleanupService has been removed.');
+
     const current = getLocalCachedAssignments();
     const updated = current.filter(a => a?.id !== assignmentId);
     saveAssignmentsToLocalStorage(updated);

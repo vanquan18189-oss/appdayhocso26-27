@@ -23,6 +23,7 @@ import {
   Trash2,
   RotateCcw
 } from 'lucide-react';
+// import { HistoryErrorBoundary } from '../common/HistoryErrorBoundary';
 import { StatsSummaryRow } from '../common/StatsSummaryRow';
 import { StudentRewardBadgeCard } from '../common/StudentRewardBadgeCard';
 import { getSubjectColorStyles } from '../../utils/subjectColors';
@@ -5114,42 +5115,42 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             </div>
           ) : (
             <div>
-              {/* Header Bar with Batch Actions */}
-              <div className="p-4 bg-slate-50/80 border-b border-slate-200 flex items-center justify-between flex-wrap gap-2">
-                <div className="text-xs font-extrabold text-slate-800 flex items-center gap-2">
-                  <Award className="w-4 h-4 text-indigo-600" />
-                  <span>Lịch sử các bài kiểm tra đã hoàn thành ({filteredExamHistory.length})</span>
+                {/* Header Bar with Batch Actions */}
+                <div className="p-4 bg-slate-50/80 border-b border-slate-200 flex items-center justify-between flex-wrap gap-2">
+                  <div className="text-xs font-extrabold text-slate-800 flex items-center gap-2">
+                    <Award className="w-4 h-4 text-indigo-600" />
+                    <span>Lịch sử các bài kiểm tra đã hoàn thành ({filteredExamHistory.length})</span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setAlertModal({
+                        title: 'Xóa Tất Cả Lịch Sử Bài Làm',
+                        message: 'Bạn có chắc chắn muốn xóa lịch sử bài làm này để học sinh có thể làm lại từ đầu không?',
+                        type: 'confirm_delete_all_submissions',
+                        onConfirm: () => handleDeleteAllExamSubmissions()
+                      });
+                    }}
+                    className="px-3.5 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-600 hover:text-white text-rose-700 border border-rose-200 font-bold text-xs transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
+                    title="Xóa toàn bộ lịch sử bài làm để làm lại từ đầu"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Xóa tất cả lịch sử</span>
+                  </button>
                 </div>
-                <button
-                  onClick={() => {
-                    setAlertModal({
-                      title: 'Xóa Tất Cả Lịch Sử Bài Làm',
-                      message: 'Bạn có chắc chắn muốn xóa lịch sử bài làm này để học sinh có thể làm lại từ đầu không?',
-                      type: 'confirm_delete_all_submissions',
-                      onConfirm: () => handleDeleteAllExamSubmissions()
-                    });
-                  }}
-                  className="px-3.5 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-600 hover:text-white text-rose-700 border border-rose-200 font-bold text-xs transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
-                  title="Xóa toàn bộ lịch sử bài làm để làm lại từ đầu"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Xóa tất cả lịch sử</span>
-                </button>
-              </div>
 
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 text-[11px] font-extrabold uppercase tracking-wider">
-                      <th className="py-4 px-6">STT</th>
-                      <th className="py-4 px-6">Tên đề kiểm tra</th>
-                      <th className="py-4 px-6">Môn học</th>
-                      <th className="py-4 px-6 text-center">Xếp thứ</th>
-                      <th className="py-4 px-6 text-center">Điểm số</th>
-                      <th className="py-4 px-6">Thời gian nộp</th>
-                      <th className="py-4 px-6 text-center min-w-[200px]">Thao tác</th>
-                    </tr>
-                  </thead>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 text-[11px] font-extrabold uppercase tracking-wider">
+                        <th className="py-4 px-6">STT</th>
+                        <th className="py-4 px-6">Tên đề kiểm tra</th>
+                        <th className="py-4 px-6">Môn học</th>
+                        <th className="py-4 px-6 text-center">Xếp thứ</th>
+                        <th className="py-4 px-6 text-center">Điểm số</th>
+                        <th className="py-4 px-6">Thời gian nộp</th>
+                        <th className="py-4 px-6 text-center min-w-[200px]">Thao tác</th>
+                      </tr>
+                    </thead>
                   <tbody className="divide-y divide-slate-100 text-xs text-slate-700 font-medium">
                     {filteredExamHistory.map((sub, index) => {
                       const subjColor = getSubjectColorStyles(sub.subject);

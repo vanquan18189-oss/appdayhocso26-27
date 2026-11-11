@@ -4,6 +4,8 @@ import { getStudentAssignedSubjects, isSubjectMatch } from './studentSessionServ
 import { getCurrentActiveAcademicYear, getStudentClassInfo } from './studentStorageService';
 import { normalizeStudentCode, isValidStudentCode, getRecordType } from './studentCode';
 import { formatScore, roundTotalScore, formatTotalScore, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../utils/scoreUtils';
+import { db } from './firebase';
+import { query, collection, where, getDocs } from 'firebase/firestore';
 
 export { formatScore, roundTotalScore, formatTotalScore, getCurrentSubmissionTimestamp, formatSubmissionDateTime };
 
@@ -1453,4 +1455,38 @@ export function calculateOverallClassification(
     scoredSubjects,
     remarkSubjects
   };
+}
+
+/**
+ * Hàm tải dữ liệu tổng kết cho cả lớp từ score_records
+ */
+export async function fetchClassScoreRecords(classId: string, recordType: 'exam' | 'assignment', sourceId: string, examType?: string) {
+  try {
+    let q = query(
+      collection(db, 'score_records'),
+      where('classId', '==', classId),
+      where('recordType', '==', recordType),
+      where('sourceId', '==', sourceId)
+    );
+
+    // Nếu là đề kiểm tra có phân loại examType (Giữa kỳ, Cuối kỳ,...)
+    if (recordType === 'exam' && examType) {
+      q = query(q, where('examType', '==', examType));
+    }
+
+    const snapshot = await getDocs(q);
+    const recordsMap: { [studentCode: string]: any } = {};
+    
+    snapshot.forEach((docSnap) => {
+      const data = docSnap.data();
+      if (data.studentCode) {
+        recordsMap[data.studentCode] = data;
+      }
+    });
+
+    return recordsMap;
+  } catch (err) {
+    console.error("Lỗi truy vấn score_records:", err);
+    return {};
+  }
 }

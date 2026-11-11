@@ -1,12 +1,7 @@
 import { db } from './firebase';
-
-/**
- * Khởi tạo hệ thống kết nối Firestore.
- * Đã vô hiệu hóa toàn bộ việc tự động gieo mầm dữ liệu mẫu (seed data)
- * để database mới hoàn toàn trống rỗng, sẵn sàng cho người dùng tự nhập liệu.
- */
 export async function initializeAndSyncAllCollections(): Promise<{ success: boolean; message: string }> {
   try {
+    // runStorageMigration(); // Storage migration removed
     if (!db) {
       return { success: false, message: 'Chưa khởi tạo kết nối Firestore' };
     }

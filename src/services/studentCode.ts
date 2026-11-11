@@ -141,28 +141,30 @@ export function formatStandardStudentCode(rawCode?: string, defaultClass: string
 
 /**
  * Phân định loại bản ghi kết quả bài làm: 'exam' (Bài kiểm tra) hoặc 'assignment' (Bài tập rèn luyện)
+ * - Nếu sub?.recordType có giá trị 'exam' hoặc 'assignment' thì trả về giá trị đó.
+ * - Nếu không có thì suy ra: có examId thì 'exam', có assignmentId thì 'assignment', còn lại trả về 'assignment'.
+ * - Dùng optional chaining, không ném lỗi.
  */
 export function getRecordType(sub: any): 'exam' | 'assignment' {
-  if (!sub) return 'assignment';
-  if (sub.recordType === 'exam' || sub.recordType === 'assignment') {
-    return sub.recordType;
-  }
-  if (sub.examId || sub.exam || sub.type === 'exam' || sub.submissionType === 'exam') {
-    return 'exam';
-  }
-  if (sub.assignmentId || sub.assignment || sub.type === 'assignment' || sub.submissionType === 'assignment') {
+  try {
+    if (sub?.recordType === 'exam' || sub?.recordType === 'assignment') {
+      return sub.recordType;
+    }
+    if (sub?.examId) {
+      return 'exam';
+    }
+    if (sub?.assignmentId) {
+      return 'assignment';
+    }
+    // Hỗ trợ thêm trường hợp đối tượng lồng hoặc type/title nếu không có id trực tiếp
+    if (sub?.exam || sub?.type === 'exam' || sub?.submissionType === 'exam') {
+      return 'exam';
+    }
+    return 'assignment';
+  } catch {
     return 'assignment';
   }
-  const title = String(sub.title || sub.exam?.title || sub.assignment?.title || '').toLowerCase().trim();
-  if (
-    title.startsWith('đề kiểm tra') ||
-    title.includes('kiểm tra') ||
-    title.includes('đề thi') ||
-    title.includes('thi thử')
-  ) {
-    return 'exam';
-  }
-  return 'assignment';
 }
+
 
 

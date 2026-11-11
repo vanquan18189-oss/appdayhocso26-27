@@ -50,6 +50,8 @@ import {
   AppNotification
 } from '../services/notificationService';
 
+// ... (in Header component)
+
 interface HeaderProps {
   currentRole?: UserRole;
   userRole?: UserRole;
@@ -76,6 +78,33 @@ export const Header: React.FC<HeaderProps> = ({
     setInternalIsKeyModalOpen(open);
     setExternalIsModalOpen?.(open);
   };
+
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('debug') === '1') {
+      let totalSize = 0;
+      const keys: { key: string; size: number }[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key) {
+          const val = localStorage.getItem(key) || '';
+          const size = val.length * 2; // Rough estimate in bytes
+          totalSize += size;
+          keys.push({ key, size });
+        }
+      }
+      keys.sort((a, b) => b.size - a.size);
+      console.log('LocalStorage Debug:', {
+        totalSizeMB: (totalSize / 1024 / 1024).toFixed(2),
+        topKeys: keys.slice(0, 10)
+      });
+      // Add window level clear action
+      (window as any).clearSafeCache = () => {
+        // safeStorage.ts was deleted, function no longer available
+        console.warn('clearSafeCache: safeStorage has been removed.');
+      };
+    }
+  }, []);
 
   // Academic Period Context & Popover state
   const {

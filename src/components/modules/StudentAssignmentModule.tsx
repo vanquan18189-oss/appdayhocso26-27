@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { StatsSummaryRow } from '../common/StatsSummaryRow';
 import { StudentRewardBadgeCard } from '../common/StudentRewardBadgeCard';
+// import { HistoryErrorBoundary } from '../common/HistoryErrorBoundary';
 import { getStudentGameProfile } from '../../services/studentGameStoreService';
 import { HomeworkAssignment, QuestionItem, ExamPaper } from '../../types';
 import { getSubjectColorStyles } from '../../utils/subjectColors';

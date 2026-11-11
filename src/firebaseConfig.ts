@@ -1,4 +1,5 @@
 import { initializeApp, getApps, getApp, FirebaseApp } from "firebase/app";
+// import { safeStorage } from "./utils/safeStorage";
 import {
   getFirestore,
   initializeFirestore,
@@ -237,5 +238,31 @@ if (typeof window !== 'undefined') {
 
   setTimeout(() => {
     testFirestoreServerConnectionOnBoot().catch(() => {});
+    
+    // Cleanup old localStorage keys
+    const CLEANUP_FLAG = 'eduplay_storage_v2_initialized';
+    if (!localStorage.getItem(CLEANUP_FLAG)) {
+      const keysToKeep = [
+        'eduplay_teacher_email',
+        'eduplay_teacher_name',
+        'eduplay_student_session',
+        'eduplay_gemini_api_key',
+        'eduplay_selected_academic_year',
+        'eduplay_selected_semester',
+        LAST_PROJECT_KEY,
+        QUOTA_EXCEEDED_KEY,
+        QUOTA_TIMESTAMP_KEY,
+        CLEANUP_FLAG
+      ];
+      
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('eduplay_') && !keysToKeep.includes(key)) {
+        localStorage.removeItem(key);
+        }
+      }
+      localStorage.setItem(CLEANUP_FLAG, 'true');
+      console.log('[LocalStorage] Đã dọn dẹp các khóa cũ.');
+    }
   }, 1000);
 }

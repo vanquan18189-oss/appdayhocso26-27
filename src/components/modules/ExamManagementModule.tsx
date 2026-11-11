@@ -6,6 +6,7 @@ import { getTeachersFromLocalStorage, resolveCurrentTeacherProfile } from '../..
 import { getStudentsFromLocalStorage, getClassStudentCount, deleteStudentFromClass, generateDefaultClassRoster, normalizeClassKey } from '../../services/studentStorageService';
 import { formatStandardStudentCode, normalizeStudentCode } from '../../services/studentCode';
 import { seedInitialExamsManually, deleteAllExamsFromFirestore, isValidOfficialExam } from '../../services/examStorageService';
+// import { bulkDeleteAllSubmissions } from '../../services/bulkSubmissionCleanupService';
 import { getExamCompletion, registerFirestoreExamSubs, fetchDirectExamCompletions, getCachedExamCompletion, ExamCompletionStats } from '../../services/examCompletionService';
 import { downloadBulkSubmissionsZip } from '../../services/bulkSubmissionZipService';
 import { auth } from '../../services/firebase';
@@ -208,6 +209,28 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const [isBatchUpdateModalOpen, setIsBatchUpdateModalOpen] = useState(false);
   const [isUpdatingBatchComments, setIsUpdatingBatchComments] = useState(false);
   const [batchUpdateProgress, setBatchUpdateProgress] = useState('');
+
+  // Bulk cleanup state
+  const [isBulkCleanupModalOpen, setIsBulkCleanupModalOpen] = useState(false);
+  const [isBulkCleaning, setIsBulkCleaning] = useState(false);
+  const [bulkCleanProgress, setBulkCleanProgress] = useState('');
+
+  const handleBulkCleanup = async () => {
+    setIsBulkCleaning(true);
+    setBulkCleanProgress('Đang bắt đầu dọn dẹp...');
+    try {
+      // const res = await bulkDeleteAllSubmissions();
+      // alert(`✅ Đã xóa thành công ${res.deletedCount} bản ghi bài làm trên hệ thống!`);
+      alert('Chức năng dọn dẹp hiện tạm khóa.');
+      setIsBulkCleanupModalOpen(false);
+      window.location.reload();
+    } catch (err: any) {
+      alert('Lỗi khi dọn dẹp: ' + (err?.message || err));
+    } finally {
+      setIsBulkCleaning(false);
+      setBulkCleanProgress('');
+    }
+  };
 
   const handleRunBatchUpdateComments = async () => {
     setIsUpdatingBatchComments(true);
@@ -2827,6 +2850,39 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
             </div>
           </div>
         )}
+        {isBulkCleanupModalOpen && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+            <div className="bg-white rounded-3xl p-6 max-w-sm w-full space-y-4 shadow-2xl">
+              <h3 className="text-lg font-extrabold text-rose-700">🚨 CẢNH BÁO: Xóa sạch dữ liệu</h3>
+              <p className="text-sm text-slate-600">
+                Hành động này sẽ xóa vĩnh viễn:
+              </p>
+              <ul className="text-xs text-slate-500 list-disc pl-4 space-y-1">
+                <li>Toàn bộ bài nộp của tất cả học sinh.</li>
+                <li>Lịch sử làm bài tập và kiểm tra.</li>
+                <li>Toàn bộ cache tạm trên trình duyệt.</li>
+              </ul>
+              <p className="text-xs font-bold text-rose-600">Hành động này không thể khôi phục!</p>
+              {isBulkCleaning && <p className="text-xs font-bold text-teal-600 animate-pulse">{bulkCleanProgress}</p>}
+              <div className="flex gap-2">
+                <button 
+                  onClick={() => setIsBulkCleanupModalOpen(false)}
+                  disabled={isBulkCleaning}
+                  className="flex-1 px-4 py-2 bg-slate-100 text-slate-700 rounded-xl text-sm font-bold hover:bg-slate-200"
+                >
+                  Hủy bỏ
+                </button>
+                <button 
+                  onClick={handleBulkCleanup}
+                  disabled={isBulkCleaning}
+                  className="flex-1 px-4 py-2 bg-rose-600 text-white rounded-xl text-sm font-bold hover:bg-rose-700 disabled:opacity-50"
+                >
+                  {isBulkCleaning ? 'Đang xử lý...' : 'Xóa sạch ngay'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -2888,6 +2944,15 @@ return (
               title="Xóa toàn bộ tất cả đề kiểm tra"
             >
               <span>🗑️ Xóa tất cả đề</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsBulkCleanupModalOpen(true)}
+              className="px-3 py-2 rounded-xl bg-rose-800 hover:bg-rose-900 text-white text-xs font-bold shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
+              title="Xóa sạch toàn bộ dữ liệu bài nộp và lịch sử của tất cả học sinh"
+            >
+              <span>🧨 Xóa sạch dữ liệu bài làm</span>
             </button>
 
             <button

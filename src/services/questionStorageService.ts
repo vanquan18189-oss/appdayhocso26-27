@@ -32,6 +32,7 @@ import {
 import { trackedSetDoc, trackedDeleteDoc, trackedWriteBatch } from './firestoreWriteTracker';
 import { INITIAL_QUESTIONS } from './mockData';
 import { waitForWriteConfirmation, updateCollectionCacheStatus } from './firestoreWriteVerificationService';
+// import { safeStorage } from '../utils/safeStorage';
 
 export const QUESTIONS_CACHE_KEY = 'eduplay_questions_database_cache';
 export const QUESTIONS_COLLECTION = 'questions';
@@ -385,9 +386,8 @@ export async function saveQuestionsBatchToFirestore(
       errMsg.includes('Quota exceeded') ||
       errMsg.includes('unavailable')
     ) {
-      try {
         localStorage.setItem('eduplay_firestore_quota_exceeded', 'true');
-      } catch {}
+
     }
 
     throw error;

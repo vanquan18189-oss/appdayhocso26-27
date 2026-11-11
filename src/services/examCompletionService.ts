@@ -3,6 +3,7 @@ import { formatStandardStudentCode, normalizeStudentCode } from './studentCode';
 import { db } from '../firebaseConfig';
 import { collection, getDocs } from 'firebase/firestore';
 import { ExamPaper } from '../types';
+// import { safeStorage } from '../utils/safeStorage';
 
 export interface ExamCompletionStats {
   totalStudents: number;

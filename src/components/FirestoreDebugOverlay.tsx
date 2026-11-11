@@ -405,6 +405,50 @@ export const FirestoreDebugOverlay: React.FC = () => {
           </div>
         </div>
       )}
+      {/* 💾 STORAGE DEBUG METRICS (When ?debug=1) */}
+      <div className="bg-slate-900/95 backdrop-blur-md text-slate-100 rounded-2xl shadow-2xl border border-slate-700 overflow-hidden text-xs mt-3">
+        <div className="bg-slate-800/90 px-4 py-3 border-b border-slate-700 font-bold text-sm text-white">LocalStorage Debug</div>
+        <div className="p-4">
+          {(() => {
+            let total = 0;
+            const items = [];
+            for (let i = 0; i < localStorage.length; i++) {
+              const key = localStorage.key(i);
+              if (key) {
+                const val = localStorage.getItem(key) || '';
+                const size = (val.length * 2) / 1024; // KB
+                total += size;
+                items.push({ key, size });
+              }
+            }
+            items.sort((a, b) => b.size - a.size);
+            return (
+              <>
+                <div className="font-bold mb-2">Tổng dung lượng: {total.toFixed(2)} KB</div>
+                <div className="mb-2">10 khóa lớn nhất:</div>
+                <ul className="list-disc ml-4">
+                  {items.slice(0, 10).map(item => (
+                    <li key={item.key} className="font-mono text-[10px]">{item.key}: {item.size.toFixed(2)} KB</li>
+                  ))}
+                </ul>
+                <button
+                  onClick={() => {
+                    const keysToRemove = Object.keys(localStorage).filter(key => 
+                      !['eduplay_teacher_email', 'eduplay_teacher_name', 'eduplay_student_session', 'eduplay_gemini_api_key', 'eduplay_selected_academic_year', 'eduplay_selected_semester', 'eduplay_firebase_current_project', 'eduplay_firestore_quota_v2_exceeded', 'eduplay_firestore_quota_v2_timestamp', 'eduplay_storage_v2_initialized'].includes(key)
+                    );
+                    keysToRemove.forEach(key => localStorage.removeItem(key));
+                    alert('Đã dọn cache an toàn.');
+                    window.location.reload();
+                  }}
+                  className="mt-3 px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold cursor-pointer"
+                >
+                  Dọn cache an toàn
+                </button>
+              </>
+            );
+          })()}
+        </div>
+      </div>
     </div>,
     document.body
   );
