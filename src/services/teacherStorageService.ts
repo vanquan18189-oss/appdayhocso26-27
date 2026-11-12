@@ -973,8 +973,6 @@ export async function syncTeachersToFirestore(teachers: TeacherRecord[]): Promis
         dob: teacher.dob || '',
         status: teacher.status,
         avatar: teacher.avatar || '👩‍🏫',
-        lopDay: teacher.lopDay || [],
-        lopChuNhiem: teacher.lopChuNhiem || '',
         updatedAt: nowStr
       });
 

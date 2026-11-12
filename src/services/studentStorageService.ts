@@ -20,11 +20,7 @@ export const EDUPLAY_CLASSES_DATA_KEY = 'eduplay_classes_data';
  */
 export function normalizeClassKey(className: string): string {
   if (!className) return '5B';
-  let clean = className.trim();
-  while (/^(lớp|LỚP|Lớp)\s+/i.test(clean)) {
-    clean = clean.replace(/^(lớp|LỚP|Lớp)\s+/i, '').trim();
-  }
-  return clean.toUpperCase();
+  return className.trim().replace(/^Lớp\s*/i, '').toUpperCase();
 }
 
 /**
@@ -32,9 +28,9 @@ export function normalizeClassKey(className: string): string {
  */
 export function getStandardClassName(classKeyOrName: string): string {
   if (!classKeyOrName) return 'Lớp 5B';
-  let clean = classKeyOrName.trim();
-  while (/^(lớp|LỚP|Lớp)\s+/i.test(clean)) {
-    clean = clean.replace(/^(lớp|LỚP|Lớp)\s+/i, '').trim();
+  const clean = classKeyOrName.trim();
+  if (clean.toLowerCase().startsWith('lớp ')) {
+    return clean;
   }
   return `Lớp ${clean.toUpperCase()}`;
 }
@@ -371,12 +367,14 @@ export function getStudentsFromLocalStorage(className: string): StudentRecord[] 
       }
     }
 
-    // 3. Fallback danh sách mặc định chuẩn hóa theo sĩ số lớp (38 học sinh tiêu chuẩn)
-    const defaultRoster = generateDefaultClassRoster(stdName, 38);
-    try {
-      localStorage.setItem(`eduplay_students_${key}`, JSON.stringify(defaultRoster));
-    } catch {}
-    return defaultRoster;
+    // 3. Fallback danh sách mặc định chuẩn hóa theo sĩ số lớp
+    if (key === '3C' || stdName.includes('3C')) {
+      const defaultRoster = getDefault3CRoster();
+      try {
+        localStorage.setItem(`eduplay_students_${key}`, JSON.stringify(defaultRoster));
+      } catch {}
+      return defaultRoster;
+    }
   } catch (err) {
     console.warn('Lỗi đọc LocalStorage học sinh:', err);
   }

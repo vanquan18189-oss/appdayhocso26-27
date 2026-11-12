@@ -43,15 +43,13 @@ export const REAL_SCHOOL_CLASSES_FALLBACK: SchoolClassItem[] = [
 ];
 
 /**
- * Format class name string to "Lớp X" without duplicate "Lớp"/"LỚP" prefixes
+ * Format class name string to "Lớp X"
  */
 export function formatClassName(rawName?: string): string {
   if (!rawName) return '';
-  let trimmed = rawName.trim();
-  while (/^(lớp|LỚP|Lớp)\s+/i.test(trimmed)) {
-    trimmed = trimmed.replace(/^(lớp|LỚP|Lớp)\s+/i, '').trim();
-  }
-  return `Lớp ${trimmed.toUpperCase()}`;
+  const trimmed = rawName.trim();
+  if (trimmed.startsWith('Lớp ')) return trimmed;
+  return `Lớp ${trimmed}`;
 }
 
 /**
@@ -87,13 +85,13 @@ export function subscribeRealtimeClasses(callback: (classes: SchoolClassItem[]) 
           const grade = rawGrade || (digit ? `Khối ${digit}` : 'Khối 1');
           
           // Normalized key for deduplication (e.g. "3C", "5D")
-          const cleanSuffix = name.replace(/^(lớp|LỚP|Lớp)\s+/i, '').trim().toUpperCase();
+          const cleanSuffix = name.replace(/^Lớp\s*/i, '').trim().toUpperCase();
           const normalizedKey = cleanSuffix || rawId.toUpperCase();
           const standardId = normalizedKey;
 
           const newItem: SchoolClassItem = {
             id: standardId,
-            name: `Lớp ${standardId}`,
+            name,
             grade,
             room: data.room || '',
             homeroomTeacher: data.homeroomTeacher || '',
@@ -118,13 +116,6 @@ export function subscribeRealtimeClasses(callback: (classes: SchoolClassItem[]) 
           }
         });
 
-        // Ensure default school classes (1C, 1D, 2C, 2D, 3C, 3D, 4C, 4D, 5C, 5D) exist
-        REAL_SCHOOL_CLASSES_FALLBACK.forEach((fallbackItem) => {
-          if (!classMap.has(fallbackItem.id)) {
-            classMap.set(fallbackItem.id, fallbackItem);
-          }
-        });
-
         const list = Array.from(classMap.values());
         if (list.length > 0) {
           list.sort((a, b) => a.name.localeCompare(b.name, 'vi', { numeric: true }));
@@ -133,10 +124,10 @@ export function subscribeRealtimeClasses(callback: (classes: SchoolClassItem[]) 
         }
       }
       callback(REAL_SCHOOL_CLASSES_FALLBACK);
-      }, (err) => {
-        console.warn('Firestore classes subscription warning:', err);
-        callback(REAL_SCHOOL_CLASSES_FALLBACK);
-      });
+    }, (err) => {
+      console.warn('Firestore classes subscription warning:', err);
+      callback(REAL_SCHOOL_CLASSES_FALLBACK);
+    });
     return unsub;
   } catch (err) {
     console.warn('Error subscribing to Firestore classes:', err);

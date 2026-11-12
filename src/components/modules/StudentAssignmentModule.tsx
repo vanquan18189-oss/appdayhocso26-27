@@ -264,17 +264,12 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
     return [];
   });
 
-  // Tối ưu hóa đọc dữ liệu: Chỉ đọc duy nhất 1 lần khi mở (Single getDoc on mount) thay vì onSnapshot / polling
+  // Real-time synchronization from student_results/{effectiveUserId} (Single Source of Truth)
   useEffect(() => {
     if (!effectiveUserId || !db) return;
-    let isCancelled = false;
-
-    const fetchStudentResultsOnce = async () => {
-      try {
-        const studentResultRef = doc(db, 'student_results', effectiveUserId);
-        const docSnap = await getDoc(studentResultRef);
-        if (isCancelled || !docSnap.exists()) return;
-
+    const studentResultRef = doc(db, 'student_results', effectiveUserId);
+    const unsub = onSnapshot(studentResultRef, (docSnap) => {
+      if (docSnap.exists()) {
         const data = docSnap.data();
         const assignmentsMap = data.assignments || {};
         const resultItems: AssignmentSubmissionItem[] = [];
@@ -303,7 +298,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
           });
         });
 
-        if (resultItems.length > 0 && !isCancelled) {
+        if (resultItems.length > 0) {
           setAssignmentHistory(prev => {
             const map = new Map<string, AssignmentSubmissionItem>();
             prev.forEach(item => map.set(getCanonicalAssignmentKey(item), item));
@@ -312,16 +307,13 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
             return deduplicateAssignmentSubmissions(Array.from(map.values()));
           });
         }
-      } catch (err) {
-        console.warn('Lỗi đọc student_results 1 lần:', err);
       }
-    };
+    }, (err) => {
+      console.warn('Real-time student_results listener error:', err);
+    });
 
-    fetchStudentResultsOnce();
-    return () => {
-      isCancelled = true;
-    };
-  }, [effectiveUserId]);
+    return () => unsub();
+  }, [effectiveUserId, liveAssignments]);
 
   // Re-sync assignment history from LocalStorage, student_results, and assignments/{assignmentId}/submissions/{effectiveUserId} (Single Source of Truth)
   useEffect(() => {
@@ -416,8 +408,67 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
         }
       });
 
-      // Bỏ vòng lặp getDoc duyệt từng bài tập để tiết kiệm tối đa lượt đọc Firestore (đã nạp qua student_results và liveAssignments)
+      // Explicitly query assignments/{assignmentId}/submissions/{effectiveUserId} sub-collections in Firestore
+      if (db && effectiveUserId) {
+        Promise.all((liveAssignments || []).map(async (as) => {
+          if (!as || !as.id) return;
+          try {
+            const subDocRef = doc(db, 'assignments', as.id, 'submissions', effectiveUserId);
+            const subSnap = await getDoc(subDocRef);
+            if (subSnap.exists()) {
+              const subData = subSnap.data();
+              const questionsList = as.questions || [];
+              const totalQ = Math.max(1, questionsList.length);
+              let correctCount = 0;
+              const answers = subData.answers || {};
+              if (answers && Object.keys(answers).length > 0) {
+                questionsList.forEach((q, idx) => {
+                  const studentChoice = answers[idx];
+                  if (checkQuestionCorrectLocal(q, studentChoice)) {
+                    correctCount++;
+                  }
+                });
+              }
 
+              const rawScore = subData.score !== undefined ? subData.score : (subData.totalScore !== undefined ? subData.totalScore : '-');
+              let parsedScore = parseScoreValue(rawScore, correctCount, totalQ);
+              if ((parsedScore === 0 || isNaN(parsedScore)) && correctCount > 0) {
+                parsedScore = calculateExamScore(correctCount, totalQ);
+              }
+
+              const hasScore = isSubjectWithScore(as.subject);
+              const scoreDisplay = hasScore 
+                ? (parsedScore > 0 || correctCount > 0 ? String(parsedScore) : (rawScore !== '-' ? String(rawScore) : '0'))
+                : getQualitativeLabel(correctCount, totalQ);
+
+              const rankTier = subData.rank || (hasScore ? (parsedScore >= 8 ? 'Xuất sắc' : parsedScore >= 5 ? 'Đạt' : 'Cần cố gắng') : 'Hoàn thành');
+
+              const subItem: AssignmentSubmissionItem = {
+                id: subData.id || `sub-${as.id}-${effectiveUserId}`,
+                type: 'assignment' as const,
+                submissionType: 'assignment' as const,
+                studentId: effectiveUserId,
+                title: as.title,
+                subject: as.subject || 'Môn học',
+                rank: rankTier,
+                score: scoreDisplay,
+                submittedTime: formatSubmissionDateTime(subData.submittedAt || subData.submittedTime || getCurrentSubmissionTimestamp()),
+                assignment: as,
+                answers
+              };
+
+              setAssignmentHistory(prev => {
+                const map = new Map<string, AssignmentSubmissionItem>();
+                prev.forEach(item => map.set(getCanonicalAssignmentKey(item), item));
+                map.set(getCanonicalAssignmentKey(subItem), subItem);
+                const updated = deduplicateAssignmentSubmissions(Array.from(map.values()));
+                localStorage.setItem(`eduplay_student_submissions_${effectiveUserId}`, JSON.stringify(updated));
+                return updated;
+              });
+            }
+          } catch {}
+        })).catch(() => {});
+      }
 
       // Merge LocalStorage items and Firestore items (deduplicating by canonical assignment key)
       const mergedMap = new Map<string, AssignmentSubmissionItem>();
@@ -794,7 +845,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
           currentUserName={effectiveUserName}
           initialActiveExam={examFromAssignment}
           mode="assignment"
-          allowMultipleAttempts={false}
+          allowMultipleAttempts={true}
           onCloseExam={() => {
             setSolvingAssignment(null);
             setActiveTab('history');
@@ -1154,7 +1205,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
 
                   {/* CTA Buttons */}
                   <div className="pt-2 relative z-10 flex flex-col gap-2">
-                    {isDone ? (
+                    {isDone && (
                       <button
                         onClick={() => {
                           const qList = as.questions || [];
@@ -1189,20 +1240,34 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
                         <Eye className="w-4 h-4" />
                         <span>Xem lại bài</span>
                       </button>
-                    ) : (
+                    )}
+
+                    {(!isDone || (!isMaxReached && maxAllowed > 1)) && (
                       <button
                         disabled={isDisabled}
                         onClick={() => {
+                          if (isMaxReached) {
+                            showToast(`⚠️ Bài tập này giới hạn tối đa ${maxAllowed} lần làm. Em đã hoàn thành (${attemptCount}/${maxAllowed}) và không thể làm lại.`);
+                            return;
+                          }
                           setSolvingAssignment(as);
                         }}
                         className={`w-full py-3 px-4 rounded-2xl text-xs sm:text-sm font-extrabold transition-all shadow-md flex items-center justify-center gap-2 ${
                           isDisabled
                             ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed shadow-none'
+                            : isDone
+                            ? 'bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 cursor-pointer active:scale-98'
                             : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-emerald-600/20 cursor-pointer active:scale-98'
                         }`}
                       >
                         <span>
-                          {isExpired ? '🔒 Đã hết hạn làm bài' : '⚡ Bắt đầu làm bài tập'}
+                          {isExpired && !isDone 
+                            ? '🔒 Đã hết hạn làm bài' 
+                            : isMaxReached 
+                            ? `🔒 Đã khóa (Đã đủ ${maxAllowed} lượt làm)` 
+                            : isDone 
+                            ? `🔄 Luyện tập lại (${attemptCount}/${maxAllowed === Infinity ? '∞' : maxAllowed})` 
+                            : '⚡ Bắt đầu làm bài tập'}
                         </span>
                         {!isDisabled && <ChevronRight className="w-4 h-4" />}
                       </button>

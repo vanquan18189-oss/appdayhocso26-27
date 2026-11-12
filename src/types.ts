@@ -324,11 +324,6 @@ export interface TeacherRecord {
   nhomGvCn?: string;
   avatar?: string;
   teachingAssignments?: Array<{ subject: string; classes: string[] }>;
-  lopDay?: string[]; // Mảng tên các lớp được phân công dạy bộ môn, ví dụ ["5C", "4A"]
-  lopChuNhiem?: string; // Tên lớp được phân công làm chủ nhiệm, ví dụ "5C" (hoặc chuỗi rỗng "")
-  homeroomClasses?: string[];
-  teachingClasses?: string[];
-  userRole?: UserRole;
 }
 
 export interface StudentRecord {
