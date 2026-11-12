@@ -180,7 +180,7 @@ async function startServer() {
 
   // API Gemini General Generation
   app.post('/api/gemini/generate', async (req, res) => {
-    const { prompt, systemInstruction, customKey, responseJson, fileData, model } = req.body;
+    const { prompt, systemInstruction, customKey, responseJson, fileData, model, temperature } = req.body;
     try {
       const ai = await getGeminiClient(customKey);
       const config: any = {};
@@ -189,6 +189,9 @@ async function startServer() {
       }
       if (responseJson) {
         config.responseMimeType = 'application/json';
+      }
+      if (typeof temperature === 'number') {
+        config.temperature = temperature;
       }
 
       const contents = await buildContents(prompt, fileData);

@@ -9,7 +9,8 @@ import {
   Sparkles, 
   Eye, 
   Check, 
-  BookMarked
+  BookMarked,
+  AlertCircle
 } from 'lucide-react';
 import { StatsSummaryRow } from '../common/StatsSummaryRow';
 import { StudentRewardBadgeCard } from '../common/StudentRewardBadgeCard';
@@ -22,9 +23,11 @@ import {
   StudentExamModule, 
   checkQuestionCorrectLocal,
   isMatchingQuestion,
+  isEssayQuestion,
   resolveLatestQuestion,
   getLatestCorrectOrder
 } from './StudentExamModule';
+import { isMeaninglessAnswer } from '../../utils/essayGuard';
 import { awardAssignmentReward } from '../../config/rewardConfig';
 import {
   getEffectiveStudentClassAndGrade,
@@ -477,15 +480,37 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
     scoreNumber?: number;
     correctCount?: number;
     totalQuestions?: number;
+    evaluatedAnswers?: Record<number, { isCorrect: boolean; feedback?: string }>;
   }) => {
-    // Calculate correct answers
+    // Calculate correct answers & evaluations
     const questions = newSub.assignment?.questions || [];
     const totalQuestions = Math.max(1, questions.length);
     let correctCount = 0;
+    const evaluatedAnswers: Record<number, { isCorrect: boolean; feedback?: string }> = newSub.evaluatedAnswers ? { ...newSub.evaluatedAnswers } : {};
+
     questions.forEach((q, idx) => {
       const studentChoice = newSub.answers?.[idx];
-      if (checkQuestionCorrectLocal(q, studentChoice)) {
+      const isEssay = isEssayQuestion(q);
+      const essayGuard = isEssay ? isMeaninglessAnswer(String(studentChoice || ''), q.content || '') : null;
+      let isCorr = false;
+      let fb: string | undefined = undefined;
+
+      if (essayGuard?.invalid) {
+        isCorr = false;
+        fb = 'Bài làm chưa có nội dung phù hợp với câu hỏi. Em hãy đọc kỹ đề và trả lời bằng câu hoàn chỉnh nhé.';
+      } else {
+        isCorr = checkQuestionCorrectLocal(q, studentChoice);
+      }
+
+      if (isCorr) {
         correctCount++;
+      }
+
+      if (!evaluatedAnswers[idx]) {
+        evaluatedAnswers[idx] = {
+          isCorrect: isCorr,
+          feedback: fb
+        };
       }
     });
 
@@ -508,8 +533,9 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       type: 'assignment',
       submissionType: 'assignment',
       studentId: effectiveUserId,
-      score: formattedScore
-    };
+      score: formattedScore,
+      evaluatedAnswers
+    } as any;
     const newKey = getCanonicalAssignmentKey(subWithStudent);
     const remaining = assignmentHistory.filter(s => getCanonicalAssignmentKey(s) !== newKey);
     const updatedList = deduplicateAssignmentSubmissions([subWithStudent, ...remaining]);
@@ -536,6 +562,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       submittedAt: formatSubmissionDateTime(newSub.submittedTime || getCurrentSubmissionTimestamp()),
       submittedTime: formatSubmissionDateTime(newSub.submittedTime || getCurrentSubmissionTimestamp()),
       answers: newSub.answers,
+      evaluatedAnswers,
       status: 'submitted' as const
     };
 
@@ -813,7 +840,8 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
               totalScore: (newSub as any).totalScore,
               scoreNumber: (newSub as any).scoreNumber,
               correctCount: (newSub as any).correctCount,
-              totalQuestions: (newSub as any).totalQuestions
+              totalQuestions: (newSub as any).totalQuestions,
+              evaluatedAnswers: (newSub as any).evaluatedAnswers
             });
           }}
           isPreviewMode={isPreviewMode}
@@ -1523,6 +1551,9 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
                         }
                       }
 
+                      const isEssay = isEssayQuestion(q);
+                      const essayGuard = isEssay ? isMeaninglessAnswer(String(studentChoice || ''), q.content || '') : null;
+
                       return (
                         <div key={idx} className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs space-y-3">
                           <div className="flex items-center justify-between">
@@ -1557,6 +1588,16 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
                               </span>
                             </div>
                           </div>
+
+                          {isEssay && essayGuard?.invalid && (
+                            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 font-medium flex items-start gap-2">
+                              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                              <div>
+                                <strong className="text-amber-950 block font-bold">Nhận xét:</strong>
+                                <span>Bài làm chưa có nội dung phù hợp với câu hỏi. Em hãy đọc kỹ đề và trả lời bằng câu hoàn chỉnh nhé.</span>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       );
                     })}

@@ -53,6 +53,7 @@ import { getFirestoreDebugStatus } from '../../services/firestoreWriteVerificati
 import { formatScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime, parseScoreValue, calculateExamScore } from '../../utils/scoreUtils';
 import { stableShuffle, getMatchingPairColor } from '../../utils/arrayUtils';
 import { invalidateAllSubmissionsCache } from '../../services/hocBaDataService';
+import { isMeaninglessAnswer } from '../../utils/essayGuard';
 
 export interface ExamSubmissionItem {
   id: string;
@@ -475,10 +476,20 @@ export const checkQuestionCorrectLocal = (qi: QuestionItem, choice: any): boolea
 
     if (isEssayQuestion(qi)) {
       if (choice === undefined || choice === null) return false;
-      if (qi.correctAnswer && String(choice).trim().toLowerCase() === String(qi.correctAnswer).trim().toLowerCase()) {
+      const strChoice = String(choice).trim();
+      if (!strChoice) return false;
+
+      // 1. Gọi isMeaninglessAnswer TRƯỚC KHI chấm. Nếu invalid = true -> Chấm 0 điểm (sai) ngay lập tức
+      const guard = isMeaninglessAnswer(strChoice, qi.content || '');
+      if (guard.invalid) {
+        return false;
+      }
+
+      // 2. Nếu invalid = false: so khớp đáp án chuẩn nếu có hoặc công nhận nội dung hợp lệ
+      if (qi.correctAnswer && strChoice.toLowerCase() === String(qi.correctAnswer).trim().toLowerCase()) {
         return true;
       }
-      return String(choice).trim().length > 0;
+      return strChoice.length > 0;
     }
 
     if (choice === undefined || choice === null) return false;
@@ -2378,6 +2389,18 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         });
         const qSnapshot = (exam.questions || []).map((q: any) => ({ ...q }));
 
+        const evaluatedAnswers: Record<number, { isCorrect: boolean; feedback?: string }> = {};
+        (exam.questions || []).forEach((q: any, idx: number) => {
+          const studentChoice = answers[idx];
+          const isCorr = checkQuestionCorrectLocal(q, studentChoice);
+          const isEssay = isEssayQuestion(q);
+          const isInvalid = isEssay && isMeaninglessAnswer(String(studentChoice || ''), q.content || '').invalid;
+          evaluatedAnswers[idx] = {
+            isCorrect: isCorr,
+            feedback: isInvalid ? 'Bài làm chưa có nội dung phù hợp với câu hỏi. Em hãy đọc kỹ đề và trả lời bằng câu hoàn chỉnh nhé.' : undefined
+          };
+        });
+
         const examSub: ExamSubmissionItem = {
           id: fixedDocId,
           type: 'exam',
@@ -2401,7 +2424,8 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           assignment: isAssignment ? (exam as any) : null,
           questionSnapshot: qSnapshot,
           answers,
-          answersById
+          answersById,
+          evaluatedAnswers
         };
 
         const updatedSubmissions = deduplicateExamSubmissions([examSub, ...(examHistory || [])]);
@@ -2979,6 +3003,11 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         return 'Chưa chính xác. Em chưa chọn đúng và đủ tất cả các đáp án chính xác.';
       }
       if (isEssayQuestion(q)) {
+        const strChoice = String(studentChoice || '').trim();
+        const guard = isMeaninglessAnswer(strChoice, q.content || '');
+        if (guard.invalid) {
+          return 'Bài làm chưa có nội dung phù hợp với câu hỏi. Em hãy đọc kỹ đề và trả lời bằng câu hoàn chỉnh nhé.';
+        }
         return 'Chưa hoàn thành hoặc chưa đạt yêu cầu nội dung trình bày.';
       }
       if (isFillBlankQuestion(q)) {

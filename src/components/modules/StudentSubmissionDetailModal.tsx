@@ -34,6 +34,8 @@ import {
   isEssayQuestion,
   isClassificationQuestion
 } from './StudentExamModule';
+import { isMeaninglessAnswer } from '../../utils/essayGuard';
+import { gradeSubmissionAI } from '../../services/geminiService';
 import { normalizeQuestionType, getQuestionTypeLabel } from '../../lib/constants';
 import { db } from '../../firebaseConfig';
 import { doc, setDoc, getDoc, runTransaction } from 'firebase/firestore';
@@ -46,9 +48,15 @@ export interface QuestionEvaluation {
   questionIndex: number;
   question: QuestionItem;
   points: number;
+  earnedPoints?: number;
   isCorrect: boolean;
+  ketQua?: 'dung' | 'mot_phan' | 'sai' | 'cho_giao_vien_cham';
   isAnswered: boolean;
   studentChoice: any;
+  feedback?: string;
+  needsTeacherReview?: boolean;
+  canhBao?: string;
+  status?: string;
 }
 
 export interface StudentSubmissionDetailModalProps {
@@ -328,19 +336,60 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
 
       // Xác định trạng thái Đúng/Sai ban đầu
       let isCorrect = false;
+      let feedback: string | undefined = undefined;
 
-      // 1. Kiểm tra nếu bài nộp đã có sẵn kết quả chấm câu này
-      if (Array.isArray(studentSubmission?.answers) && studentSubmission.answers[qIdx] !== undefined) {
-        const recordedAns = studentSubmission.answers[qIdx];
-        if (recordedAns === 'pass' || recordedAns === true) {
-          isCorrect = true;
-        } else if (recordedAns === 'fail' || recordedAns === false) {
-          isCorrect = false;
+      const isEssay = isEssayQuestion(q);
+      const essayGuard = isEssay && isAnswered ? isMeaninglessAnswer(String(studentChoice || ''), q.content || '') : null;
+
+      // 1. Kiểm tra nếu bài nộp đã có sẵn kết quả chấm câu này từ evaluatedAnswers / questionResults
+      const existingEval = rawSub?.evaluatedAnswers?.[qIdx] || rawSub?.questionResults?.[qIdx];
+      let earnedPoints: number | undefined = undefined;
+      let ketQua: 'dung' | 'mot_phan' | 'sai' | 'cho_giao_vien_cham' | undefined = undefined;
+      let needsTeacherReview: boolean | undefined = undefined;
+      let canhBao: string | undefined = undefined;
+
+      if (existingEval) {
+        if (typeof existingEval.earnedPoints === 'number') {
+          earnedPoints = existingEval.earnedPoints;
+        }
+        if (existingEval.ketQua) {
+          ketQua = existingEval.ketQua;
+        }
+        if (existingEval.needsTeacherReview) {
+          needsTeacherReview = existingEval.needsTeacherReview;
+        }
+        if (existingEval.canhBao) {
+          canhBao = existingEval.canhBao;
+        }
+      }
+
+      if (essayGuard?.invalid) {
+        isCorrect = false;
+        earnedPoints = 0;
+        ketQua = 'sai';
+        feedback = 'Bài làm chưa có nội dung phù hợp với câu hỏi. Em hãy đọc kỹ đề và trả lời bằng câu hoàn chỉnh nhé.';
+      } else {
+        if (existingEval && typeof existingEval.isCorrect === 'boolean') {
+          isCorrect = existingEval.isCorrect;
+          feedback = existingEval.feedback;
+        } else if (Array.isArray(studentSubmission?.answers) && studentSubmission.answers[qIdx] !== undefined) {
+          const recordedAns = studentSubmission.answers[qIdx];
+          if (recordedAns === 'pass' || recordedAns === true) {
+            isCorrect = true;
+          } else if (recordedAns === 'fail' || recordedAns === false) {
+            isCorrect = false;
+          } else if (isAnswered) {
+            isCorrect = checkQuestionCorrectLocal(q, studentChoice);
+          }
         } else if (isAnswered) {
           isCorrect = checkQuestionCorrectLocal(q, studentChoice);
         }
-      } else if (isAnswered) {
-        isCorrect = checkQuestionCorrectLocal(q, studentChoice);
+        if (earnedPoints === undefined) {
+          earnedPoints = isCorrect ? points : 0;
+        }
+        if (!ketQua) {
+          ketQua = isCorrect ? 'dung' : 'sai';
+        }
       }
 
       return {
@@ -348,9 +397,14 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
         questionIndex: qIdx,
         question: q,
         points,
+        earnedPoints,
         isCorrect,
+        ketQua,
         isAnswered,
-        studentChoice
+        studentChoice,
+        feedback,
+        needsTeacherReview,
+        canhBao
       };
     });
 
@@ -364,15 +418,16 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
     const totalCount = evaluations.length;
     const correctCount = evaluations.filter(e => e.isCorrect).length;
     
-    // Tổng điểm tính từ các câu đúng
-    const totalPointsSum = evaluations.reduce((acc, e) => acc + (e.isCorrect ? e.points : 0), 0);
+    // Tổng điểm tính từ các câu: nếu câu có earnedPoints thì dùng earnedPoints, ngược lại dùng e.isCorrect ? e.points : 0
+    const totalPointsSum = evaluations.reduce((acc, e) => {
+      if (typeof e.earnedPoints === 'number' && !isNaN(e.earnedPoints)) {
+        return acc + e.earnedPoints;
+      }
+      return acc + (e.isCorrect ? e.points : 0);
+    }, 0);
     
-    // Điểm thang 10 chuẩn
-    const scoreOutOf10 = totalCount > 0 
-      ? Number(Math.min(10, Math.max(0, Math.round((correctCount / totalCount) * 10))))
-      : 0;
-
     const calculatedScore = Number(totalPointsSum.toFixed(1));
+    const scoreOutOf10 = Number(Math.min(10, Math.max(0, calculatedScore)).toFixed(1));
 
     return {
       totalCount,
@@ -389,9 +444,12 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
     setEvaluations(prev => {
       const next = [...prev];
       if (next[index]) {
+        const willBeCorrect = !next[index].isCorrect;
         next[index] = {
           ...next[index],
-          isCorrect: !next[index].isCorrect
+          isCorrect: willBeCorrect,
+          earnedPoints: willBeCorrect ? next[index].points : 0,
+          ketQua: willBeCorrect ? 'dung' : 'sai'
         };
       }
       return next;
@@ -409,41 +467,118 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
     setActionError(null);
     setSaveSuccessMsg(null);
 
-    const maxRetries = 2;
-    let attempt = 0;
-    let success = false;
-    let newlyCorrect = false;
+    const isEssay = isEssayQuestion(evalTarget.question);
+    const guardResult = isEssay ? isMeaninglessAnswer(String(evalTarget.studentChoice || ''), evalTarget.question.content || '') : null;
 
-    while (attempt <= maxRetries && !success) {
-      try {
-        attempt++;
-        // Perform local check or simulated AI grading
-        newlyCorrect = checkQuestionCorrectLocal(evalTarget.question, evalTarget.studentChoice);
-        success = true;
-      } catch (err: any) {
-        console.warn(`[AI Re-grade Attempt ${attempt}] Failed:`, err);
-        if (attempt <= maxRetries) {
-          // Wait 800ms before retry
-          await new Promise(r => setTimeout(r, 800));
-        } else {
-          setActionError(`Lỗi kết nối khi gọi AI chấm lại câu ${index + 1} sau ${maxRetries + 1} lần thử.`);
-        }
-      }
-    }
-
-    if (success) {
+    if (guardResult?.invalid) {
+      // 1. Chấm 0 điểm ngay lập tức và KHÔNG gọi AI (tiết kiệm lượt gọi)
       setEvaluations(prev => {
         const next = [...prev];
         if (next[index]) {
           next[index] = {
             ...next[index],
-            isCorrect: newlyCorrect
+            isCorrect: false,
+            feedback: 'Bài làm chưa có nội dung phù hợp với câu hỏi. Em hãy đọc kỹ đề và trả lời bằng câu hoàn chỉnh nhé.'
           };
         }
         return next;
       });
       setHasChanges(true);
-      setSaveSuccessMsg(`✨ AI đã chấm lại câu ${index + 1} thành công: ${newlyCorrect ? '✓ Đúng' : '✗ Sai'}`);
+      setSaveSuccessMsg(`❌ Câu ${index + 1}: Bài làm không hợp lệ (0 điểm). Đã áp dụng nhận xét chuẩn.`);
+      setIsAiRegradingIndex(null);
+      return;
+    }
+
+    const maxRetries = 2;
+    let attempt = 0;
+    let success = false;
+    let newlyCorrect = false;
+    let feedbackText: string | undefined = undefined;
+
+    if (isEssay) {
+      let aiResult: any = null;
+      while (attempt <= maxRetries && !success) {
+        try {
+          attempt++;
+          aiResult = await gradeSubmissionAI(
+            evalTarget.question.content || `Câu ${index + 1}`,
+            String(evalTarget.studentChoice || ''),
+            evalTarget.question.correctAnswer || evalTarget.question.explanation || '',
+            evalTarget.points
+          );
+          newlyCorrect = aiResult.ketQua === 'dung' || aiResult.score >= (evalTarget.points * 0.7);
+          feedbackText = aiResult.nhanXet || aiResult.feedback;
+          success = true;
+        } catch (err: any) {
+          console.warn(`[AI Re-grade Attempt ${attempt}] Failed:`, err);
+          if (attempt <= maxRetries) {
+            await new Promise(r => setTimeout(r, 800));
+          } else {
+            setActionError(`Lỗi kết nối khi gọi AI chấm lại câu ${index + 1} sau ${maxRetries + 1} lần thử.`);
+          }
+        }
+      }
+
+      if (success && aiResult) {
+        const isWaitingTeacher = aiResult.ketQua === 'cho_giao_vien_cham' || aiResult.diem === null;
+        const newlyCorrect = isWaitingTeacher ? false : (aiResult.ketQua === 'dung' || (aiResult.diem !== null && aiResult.diem >= (evalTarget.points * 0.7)));
+
+        setEvaluations(prev => {
+          const next = [...prev];
+          if (next[index]) {
+            next[index] = {
+              ...next[index],
+              earnedPoints: aiResult.diem !== null ? aiResult.diem : 0,
+              isCorrect: newlyCorrect,
+              ketQua: aiResult.ketQua,
+              feedback: aiResult.nhanXet || aiResult.feedback,
+              needsTeacherReview: aiResult.needsTeacherReview,
+              canhBao: aiResult.canhBao,
+              status: aiResult.status
+            };
+          }
+          return next;
+        });
+        setHasChanges(true);
+        if (isWaitingTeacher) {
+          setSaveSuccessMsg(`⏳ Câu ${index + 1}: ${aiResult.nhanXet} (Chờ giáo viên chấm).`);
+        } else {
+          setSaveSuccessMsg(`✨ AI đã chấm xong câu ${index + 1}: ${aiResult.ketQua === 'dung' ? '✓ Đúng' : (aiResult.ketQua === 'mot_phan' ? '⚡ Một phần' : '✗ Sai')} (${aiResult.diem}/${evalTarget.points}đ)${aiResult.needsTeacherReview ? ' - ⚠️ Giáo viên nên xem lại' : ''}`);
+        }
+      }
+    } else {
+      while (attempt <= maxRetries && !success) {
+        try {
+          attempt++;
+          // Perform local check or simulated AI grading
+          newlyCorrect = checkQuestionCorrectLocal(evalTarget.question, evalTarget.studentChoice);
+          success = true;
+        } catch (err: any) {
+          console.warn(`[AI Re-grade Attempt ${attempt}] Failed:`, err);
+          if (attempt <= maxRetries) {
+            await new Promise(r => setTimeout(r, 800));
+          } else {
+            setActionError(`Lỗi kết nối khi gọi AI chấm lại câu ${index + 1} sau ${maxRetries + 1} lần thử.`);
+          }
+        }
+      }
+
+      if (success) {
+        setEvaluations(prev => {
+          const next = [...prev];
+          if (next[index]) {
+            next[index] = {
+              ...next[index],
+              isCorrect: newlyCorrect,
+              earnedPoints: newlyCorrect ? next[index].points : 0,
+              ketQua: newlyCorrect ? 'dung' : 'sai'
+            };
+          }
+          return next;
+        });
+        setHasChanges(true);
+        setSaveSuccessMsg(`✨ AI đã chấm lại câu ${index + 1} thành công: ${newlyCorrect ? '✓ Đúng' : '✗ Sai'}`);
+      }
     }
 
     setIsAiRegradingIndex(null);
@@ -473,6 +608,19 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
         existingComment: rawSub?.generalComment || rawSub?.comment
       });
 
+      const evaluatedAnswers: Record<number, any> = {};
+      evaluations.forEach((ev, idx) => {
+        evaluatedAnswers[idx] = {
+          isCorrect: ev.isCorrect,
+          earnedPoints: ev.earnedPoints,
+          ketQua: ev.ketQua,
+          feedback: ev.feedback,
+          needsTeacherReview: ev.needsTeacherReview,
+          canhBao: ev.canhBao,
+          status: ev.status
+        };
+      });
+
       const updatedSubmissionPayload = {
         ...rawSub,
         studentId: studentCode,
@@ -480,6 +628,7 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
         maHs: studentCode,
         studentName: studentName,
         answers: newAnswersArray,
+        evaluatedAnswers,
         totalScore: newScoreNumber,
         score: newScoreNumber,
         generalComment: ruleComment.fullComment,
@@ -777,7 +926,13 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
                         key={e.questionIndex} 
                         className="py-2.5 px-3 font-extrabold text-slate-800 border-r border-slate-200"
                       >
-                        {e.isCorrect ? formatScore(e.points) : '0'}
+                        {e.ketQua === 'cho_giao_vien_cham' ? (
+                          <span className="text-purple-600 font-bold text-[10px]">Chờ chấm</span>
+                        ) : typeof e.earnedPoints === 'number' ? (
+                          formatScore(e.earnedPoints)
+                        ) : (
+                          e.isCorrect ? formatScore(e.points) : '0'
+                        )}
                       </td>
                     ))}
                   </tr>
@@ -787,7 +942,15 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
                     </td>
                     {evaluations.map((e) => (
                       <td key={e.questionIndex} className="py-2.5 px-3 border-r last:border-r-0 border-slate-200">
-                        {e.isCorrect ? (
+                        {e.ketQua === 'cho_giao_vien_cham' ? (
+                          <span className="inline-flex px-1.5 py-0.5 rounded-full bg-purple-100 border border-purple-300 text-purple-700 items-center justify-center text-[10px] font-black">
+                            ⏳
+                          </span>
+                        ) : e.ketQua === 'mot_phan' ? (
+                          <span className="inline-flex w-5 h-5 rounded-full bg-amber-100 border border-amber-300 text-amber-700 items-center justify-center text-[10px] font-black" title="Đúng một phần">
+                            ⚡
+                          </span>
+                        ) : e.isCorrect ? (
                           <span className="inline-flex w-5 h-5 rounded-full bg-emerald-100 border border-emerald-300 text-emerald-700 items-center justify-center text-[10px] font-black">
                             ✓
                           </span>
@@ -824,10 +987,42 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
                   >
                     {/* Header câu hỏi: Số thứ tự, Điểm và Nút Đổi Đúng / Sai */}
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className={`font-extrabold text-xs ${isPass ? 'text-emerald-700' : 'text-rose-700'}`}>
                           Câu {qIdx + 1} ({formatScore(evalItem.points)}đ):
                         </span>
+
+                        {/* Điểm số có thể chỉnh sửa trực tiếp bởi giáo viên */}
+                        <div className="flex items-center gap-1 bg-white px-2 py-0.5 rounded-lg border border-slate-200">
+                          <span className="text-[11px] font-bold text-slate-500">Điểm:</span>
+                          <input
+                            type="number"
+                            min="0"
+                            max={evalItem.points}
+                            step="0.1"
+                            value={typeof evalItem.earnedPoints === 'number' ? evalItem.earnedPoints : (evalItem.isCorrect ? evalItem.points : 0)}
+                            onChange={(e) => {
+                              const val = parseFloat(e.target.value);
+                              const clamped = isNaN(val) ? 0 : Math.max(0, Math.min(evalItem.points, val));
+                              setEvaluations(prev => {
+                                const next = [...prev];
+                                if (next[qIdx]) {
+                                  next[qIdx] = {
+                                    ...next[qIdx],
+                                    earnedPoints: clamped,
+                                    isCorrect: clamped > 0,
+                                    ketQua: clamped >= evalItem.points * 0.8 ? 'dung' : (clamped > 0 ? 'mot_phan' : 'sai')
+                                  };
+                                }
+                                return next;
+                              });
+                              setHasChanges(true);
+                            }}
+                            className="w-14 px-1 py-0.5 text-center font-black text-xs text-slate-800 border border-slate-300 rounded focus:ring-1 focus:ring-indigo-500"
+                            title="Giáo viên sửa điểm trực tiếp cho câu này"
+                          />
+                          <span className="text-[11px] font-bold text-slate-400">/{formatScore(evalItem.points)}đ</span>
+                        </div>
 
                         {/* Nút Đổi Đúng / Sai có thể bấm trực tiếp để chấm lại */}
                         <button
@@ -851,11 +1046,25 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
                           onClick={() => handleAiRegradeSingleQuestion(qIdx)}
                           disabled={isAiRegradingIndex === qIdx}
                           className="px-3 py-1 rounded-lg text-xs font-bold border bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100 flex items-center gap-1.5 cursor-pointer transition-all active:scale-95 disabled:opacity-60"
-                          title="Chấm lại bằng AI (tự động thử lại 2 lần nếu mất kết nối)"
+                          title="Chấm lại bằng AI với quy tắc sư phạm tiểu học"
                         >
                           <Sparkles className="w-3.5 h-3.5 text-amber-600 animate-pulse" />
                           <span>{isAiRegradingIndex === qIdx ? 'Đang AI chấm lại...' : 'Chấm lại bằng AI'}</span>
                         </button>
+
+                        {/* Nhãn cảnh báo: Giáo viên nên xem lại */}
+                        {evalItem.needsTeacherReview && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-100 text-amber-900 border border-amber-300">
+                            ⚠️ Giáo viên nên xem lại
+                          </span>
+                        )}
+
+                        {/* Nhãn cảnh báo: Chờ giáo viên chấm */}
+                        {evalItem.ketQua === 'cho_giao_vien_cham' && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-purple-100 text-purple-900 border border-purple-300">
+                            ⏳ Chờ giáo viên chấm
+                          </span>
+                        )}
                       </div>
 
                       <span className="text-xs text-slate-400 font-medium">
@@ -1056,6 +1265,35 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
                               {studentChoice !== undefined && studentChoice !== '' ? String(studentChoice) : 'Chưa nhập câu trả lời'}
                             </strong>
                           </div>
+                        </div>
+                        {/* Khối nhận xét: Giáo viên có thể chỉnh sửa trực tiếp sau khi AI chấm */}
+                        <div className="p-3 bg-white border border-slate-200 rounded-xl text-xs space-y-1.5 shadow-2xs">
+                          <div className="flex items-center justify-between">
+                            <strong className="text-slate-800 font-bold flex items-center gap-1.5">
+                              <Edit3 className="w-3.5 h-3.5 text-indigo-600" /> Nhận xét của giáo viên:
+                            </strong>
+                            <span className="text-[10px] text-slate-400">Giáo viên có thể sửa trực tiếp nhận xét</span>
+                          </div>
+                          <textarea
+                            rows={2}
+                            value={evalItem.feedback || ''}
+                            placeholder="Nhập hoặc chỉnh sửa nhận xét cho học sinh..."
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setEvaluations(prev => {
+                                const next = [...prev];
+                                if (next[qIdx]) {
+                                  next[qIdx] = {
+                                    ...next[qIdx],
+                                    feedback: val
+                                  };
+                                }
+                                return next;
+                              });
+                              setHasChanges(true);
+                            }}
+                            className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 text-slate-800 text-xs focus:bg-white focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all leading-relaxed"
+                          />
                         </div>
                       </div>
                     )}

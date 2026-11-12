@@ -2069,15 +2069,20 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     if (!detailAssignment) return;
     setGradingSubId(sub.id);
 
-    const aiResult = await gradeSubmissionAI(detailAssignment.title, sub.content);
+    const refAnswer = detailAssignment.description || (detailAssignment.questions && detailAssignment.questions[0]?.correctAnswer) || '';
+    const aiResult = await gradeSubmissionAI(detailAssignment.title, sub.content, refAnswer, 10);
+
+    const isWaitingTeacher = aiResult.ketQua === 'cho_giao_vien_cham' || aiResult.score === null;
 
     const updatedSubmissions = detailAssignment.submissions.map((item) =>
       item.id === sub.id
         ? {
             ...item,
-            score: aiResult.score,
+            score: isWaitingTeacher ? (item.score || 0) : aiResult.score,
             feedback: aiResult.feedback,
-            status: 'graded' as const
+            status: isWaitingTeacher ? ('submitted' as const) : ('graded' as const),
+            needsTeacherReview: aiResult.needsTeacherReview,
+            canhBao: aiResult.canhBao
           }
         : item
     );
@@ -2090,7 +2095,11 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     onSaveAssignment(updated);
     setDetailAssignment(updated);
     setGradingSubId(null);
-    showToast(`Đã dùng Gemini AI chấm bài cho ${sub.studentName} thành công!`);
+    if (isWaitingTeacher) {
+      showToast(`Bài làm của ${sub.studentName} đã được đánh dấu: Chờ giáo viên chấm.`);
+    } else {
+      showToast(`Đã dùng Gemini AI chấm bài cho ${sub.studentName} (${aiResult.score}/10đ)${aiResult.needsTeacherReview ? ' - ⚠️ Giáo viên nên xem lại' : ''}!`);
+    }
   };
 
   return (
