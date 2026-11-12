@@ -77,6 +77,20 @@ export interface ExamSubmissionItem {
 
 const isExamSubmission = (sub: any): boolean => {
   if (!sub) return false;
+  if (sub.assignmentId) return false;
+  if (sub.recordType === 'assignment') return false;
+  if (sub.type === 'assignment') return false;
+  if (sub.submissionType === 'assignment') return false;
+
+  const subId = String(sub.id || '').toLowerCase();
+  if (subId.startsWith('as-hw-') || subId.startsWith('as-')) return false;
+
+  const examId = String(sub.examId || sub.exam?.id || '').toLowerCase();
+  if (examId.startsWith('as-hw-') || examId.startsWith('as-')) return false;
+
+  const title = String(sub.title || sub.exam?.title || '').toLowerCase();
+  if (title.startsWith('bài tập') && !title.includes('kiểm tra') && !title.includes('đề')) return false;
+
   return getRecordType(sub) === 'exam';
 };
 
@@ -1110,7 +1124,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         });
 
         if (!isCancelled) {
-          const rawMergedList = Array.from(mergedMap.values());
+          const rawMergedList = Array.from(mergedMap.values()).filter(isExamSubmission);
           const mergedList = deduplicateExamSubmissions(rawMergedList);
           setExamHistory(mergedList);
           try {
@@ -1122,7 +1136,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             if (allSubsRaw) {
               const allSubs = JSON.parse(allSubsRaw);
               if (Array.isArray(allSubs)) {
-                const cleanedAll = deduplicateExamSubmissions(allSubs);
+                const cleanedAll = deduplicateExamSubmissions(allSubs.filter(isExamSubmission));
                 localStorage.setItem('eduplay_all_exam_submissions', JSON.stringify(cleanedAll));
               }
             }
@@ -1167,13 +1181,11 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     };
 
     window.addEventListener('eduplay_exam_submissions_updated', syncExamHistory);
-    window.addEventListener('eduplay_student_submissions_updated', syncExamHistory);
     window.addEventListener('eduplay_submission_reset', handleSubmissionReset);
     window.addEventListener('storage', syncExamHistory);
     return () => {
       isCancelled = true;
       window.removeEventListener('eduplay_exam_submissions_updated', syncExamHistory);
-      window.removeEventListener('eduplay_student_submissions_updated', syncExamHistory);
       window.removeEventListener('eduplay_submission_reset', handleSubmissionReset);
       window.removeEventListener('storage', syncExamHistory);
     };
@@ -1762,39 +1774,6 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             localStorage.setItem(`eduplay_student_exam_subs_${currentUserId}`, JSON.stringify(updatedSubmissions));
           }
 
-          if (isAssignment) {
-            const hwSub = {
-              id: examSub.id,
-              type: 'assignment' as const,
-              submissionType: 'assignment' as const,
-              studentId: authenticStudentCode,
-              title: exam.title,
-              subject: exam.subject || 'Môn học',
-              rank: rankTier,
-              score: scoreVal,
-              submittedTime: nowTimeStr,
-              assignment: {
-                id: exam.id,
-                title: exam.title,
-                subject: exam.subject,
-                grade: exam.grade,
-                questions: exam.questions
-              },
-              questionSnapshot: qSnapshot,
-              answers,
-              answersById
-            };
-            try {
-              const savedHw = localStorage.getItem(`eduplay_student_submissions_${authenticStudentCode}`);
-              const parsedHw = savedHw ? JSON.parse(savedHw) : [];
-              localStorage.setItem(`eduplay_student_submissions_${authenticStudentCode}`, JSON.stringify([hwSub, ...parsedHw.filter((s: any) => s.id !== hwSub.id)]));
-              if (currentUserId && currentUserId !== authenticStudentCode) {
-                localStorage.setItem(`eduplay_student_submissions_${currentUserId}`, JSON.stringify([hwSub, ...parsedHw.filter((s: any) => s.id !== hwSub.id)]));
-              }
-            } catch {}
-          }
-
-          window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
           window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
           window.dispatchEvent(new Event('storage'));
         } catch (err) {
@@ -2622,40 +2601,6 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             localStorage.setItem(`eduplay_exam_subs_${officialExamId}`, JSON.stringify(deduplicatedExamSubs));
           }
 
-          // Lưu vào kho Bài tập nếu đang là bài tập
-          if (isAssignment) {
-            const hwSub = {
-              id: examSub.id,
-              type: 'assignment' as const,
-              submissionType: 'assignment' as const,
-              studentId: authenticStudentCode,
-              title: exam.title,
-              subject: exam.subject || 'Môn học',
-              rank: rankTier,
-              score: scoreVal,
-              submittedTime: nowTimeStr,
-              assignment: {
-                id: exam.id,
-                title: exam.title,
-                subject: exam.subject,
-                grade: exam.grade,
-                questions: exam.questions
-              },
-              questionSnapshot: qSnapshot,
-              answers,
-              answersById
-            };
-            try {
-              const savedHw = localStorage.getItem(`eduplay_student_submissions_${authenticStudentCode}`);
-              const parsedHw = savedHw ? JSON.parse(savedHw) : [];
-              localStorage.setItem(`eduplay_student_submissions_${authenticStudentCode}`, JSON.stringify([hwSub, ...parsedHw.filter((s: any) => s.id !== hwSub.id)]));
-              if (currentUserId && currentUserId !== authenticStudentCode) {
-                localStorage.setItem(`eduplay_student_submissions_${currentUserId}`, JSON.stringify([hwSub, ...parsedHw.filter((s: any) => s.id !== hwSub.id)]));
-              }
-            } catch {}
-          }
-
-          window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
           window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
           window.dispatchEvent(new Event('storage'));
         } catch (err) {
@@ -2771,22 +2716,6 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             }
           } catch {}
         }
-
-        const hwLsKey = `eduplay_student_submissions_${key}`;
-        const rawHw = localStorage.getItem(hwLsKey);
-        if (rawHw) {
-          try {
-            const parsed = JSON.parse(rawHw);
-            if (Array.isArray(parsed)) {
-              const filtered = parsed.filter((s: any) => {
-                if (subId && s.id && s.id === subId) return false;
-                if (examId && (s.examId === examId || s.assignmentId === examId)) return false;
-                return true;
-              });
-              localStorage.setItem(hwLsKey, JSON.stringify(filtered));
-            }
-          } catch {}
-        }
       });
 
       // Clear from global `eduplay_all_exam_submissions`
@@ -2857,7 +2786,6 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         invalidateAllSubmissionsCache();
       } catch {}
       window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
-      window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
 
       // 5. Direct visual feedback toast for success
       setToast({
@@ -2889,7 +2817,6 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     try {
       studentCodeCands.forEach((key) => {
         localStorage.removeItem(`eduplay_student_exam_subs_${key}`);
-        localStorage.removeItem(`eduplay_student_submissions_${key}`);
       });
 
       const allExamSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
@@ -2929,7 +2856,6 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         invalidateAllSubmissionsCache();
       } catch {}
       window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
-      window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
 
       setToast({
         message: 'Đã xóa tất cả lịch sử bài làm thành công!',

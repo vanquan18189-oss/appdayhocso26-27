@@ -74,6 +74,7 @@ import { normalizeStudentCode, formatStandardStudentCode, normalizeStudentName }
 import { checkQuestionCorrectLocal } from './StudentExamModule';
 import { useAcademicYear } from '../../contexts/AcademicYearContext';
 import { formatScore, formatTotalScore, roundTotalScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
+import { scanMisfiledAssignmentSubmissions, executeMisfiledAssignmentMigration, MisfiledSubmissionItem, MigrationReport } from '../../services/assignmentMigrationService';
 
 import { StudentSubmissionDetailModal } from './StudentSubmissionDetailModal';
 import { createNotificationIfNotExists, LOW_SCORE_THRESHOLD } from '../../services/notificationService';
@@ -316,6 +317,13 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   const [deleteTarget, setDeleteTarget] = useState<StudentSubmissionRow | null>(null);
   const [isDeletingSubmission, setIsDeletingSubmission] = useState<boolean>(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // Misfiled assignment migration states
+  const [isMisfiledScanModalOpen, setIsMisfiledScanModalOpen] = useState(false);
+  const [misfiledItems, setMisfiledItems] = useState<MisfiledSubmissionItem[]>([]);
+  const [selectedMisfiledIds, setSelectedMisfiledIds] = useState<Set<string>>(new Set());
+  const [isMigrating, setIsMigrating] = useState(false);
+  const [migrationReport, setMigrationReport] = useState<MigrationReport | null>(null);
 
   // Listener for opening tracking modal from Header notification
   useEffect(() => {
@@ -2197,6 +2205,20 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
           </h3>
 
           <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={async () => {
+                const items = await scanMisfiledAssignmentSubmissions(assignments);
+                setMisfiledItems(items);
+                setSelectedMisfiledIds(new Set(items.map(i => i.id)));
+                setMigrationReport(null);
+                setIsMisfiledScanModalOpen(true);
+              }}
+              className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer shadow-sm transition-all"
+              title="Quét và khôi phục bài tập bị lưu nhầm vào đề kiểm tra"
+            >
+              <RotateCcw className="w-4 h-4" />
+              <span>🛠️ Quét & Khôi phục bài tập lưu nhầm</span>
+            </button>
             {isDebugMode && (
               <button
                 onClick={() => setIsScanDuplicatesModalOpen(true)}
@@ -5476,6 +5498,208 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
         itemType="bài tập rèn luyện"
         itemName={deletingAssignment?.title}
       />
+
+      {/* MODAL: QUÉT VÀ KHÔI PHỤC BÀI TẬP LƯU NHẦM */}
+      {isMisfiledScanModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-4xl w-full shadow-2xl border border-slate-200 overflow-hidden my-8 animate-in fade-in zoom-in-95 duration-150">
+            {/* Header */}
+            <div className="p-5 bg-gradient-to-r from-indigo-900 via-indigo-800 to-indigo-900 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-white/10 backdrop-blur-md flex items-center justify-center text-xl border border-white/20">
+                  🛠️
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-white font-heading tracking-wide">
+                    Quét & Khôi phục Bài tập lưu nhầm vào Đề kiểm tra
+                  </h3>
+                  <p className="text-xs text-indigo-200 font-medium">
+                    Chuyển dữ liệu sang đúng cấu trúc, sao lưu backup & cộng bù Xu/EXP 1 lần duy nhất
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setIsMisfiledScanModalOpen(false);
+                  setMigrationReport(null);
+                }}
+                className="p-2 rounded-xl hover:bg-white/10 text-white/80 hover:text-white transition-all cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
+              {migrationReport ? (
+                <div className="space-y-4">
+                  <div className="p-4 bg-emerald-50 border border-emerald-300 rounded-2xl space-y-2 text-xs text-emerald-950">
+                    <div className="font-extrabold text-sm flex items-center gap-2">
+                      <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                      <span>Đã hoàn tất chuyển dữ liệu và cộng bù thành công!</span>
+                    </div>
+                    <ul className="list-disc pl-5 space-y-1 text-slate-700">
+                      <li><strong>(a) Hàm/file lưu nhầm trước đây:</strong> <code>StudentExamModule.tsx</code> executeSubmitExam & auto-submit ghi vào <code>exams/*/submissions</code> thay vì <code>assignments</code>.</li>
+                      <li><strong>(b) Số bản ghi đã chuyển:</strong> {migrationReport.misfiledRecordsCount} bản ghi. Danh sách học sinh: {migrationReport.transferredList.map(t => `${t.studentName} (${t.studentCode}) - ${t.title}`).join(', ') || 'Không có'}.</li>
+                      <li><strong>(c) Tổng số xu & EXP đã cộng bù:</strong> <span className="text-amber-700 font-bold">+{migrationReport.totalCoinsCompensated} Xu</span>, <span className="text-indigo-700 font-bold">+{migrationReport.totalExpCompensated} EXP</span>.</li>
+                      <li><strong>(d) Các file đã đổi:</strong> <code>{migrationReport.filesModified.join(', ')}</code>.</li>
+                    </ul>
+                  </div>
+                  <div className="flex justify-end">
+                    <button
+                      onClick={() => {
+                        setIsMisfiledScanModalOpen(false);
+                        setMigrationReport(null);
+                        window.location.reload();
+                      }}
+                      className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs cursor-pointer shadow-md"
+                    >
+                      Hoàn tất & Tải lại trang
+                    </button>
+                  </div>
+                </div>
+              ) : misfiledItems.length === 0 ? (
+                <div className="p-8 text-center space-y-3">
+                  <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto text-xl font-bold">
+                    ✓
+                  </div>
+                  <h4 className="font-extrabold text-slate-800 text-sm">Không tìm thấy bài tập nào bị lưu nhầm!</h4>
+                  <p className="text-xs text-slate-500">Tất cả các bản ghi nộp bài kiểm tra và bài tập hiện đang nằm đúng vị trí.</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-slate-600 font-medium">
+                      Tìm thấy <strong className="text-rose-600 font-bold">{misfiledItems.length} bản ghi</strong> bài tập đang nằm nhầm trong Đề kiểm tra:
+                    </p>
+                    <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={selectedMisfiledIds.size === misfiledItems.length}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedMisfiledIds(new Set(misfiledItems.map(i => i.id)));
+                          } else {
+                            setSelectedMisfiledIds(new Set());
+                          }
+                        }}
+                        className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span>Chọn tất cả</span>
+                    </label>
+                  </div>
+
+                  <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
+                        <tr>
+                          <th className="py-2.5 px-3 w-10 text-center">Chọn</th>
+                          <th className="py-2.5 px-3">Học sinh (Mã HS)</th>
+                          <th className="py-2.5 px-3">Tên bài tập</th>
+                          <th className="py-2.5 px-3 text-center">Điểm / Giờ nộp</th>
+                          <th className="py-2.5 px-3">Nơi lưu nhầm hiện tại</th>
+                          <th className="py-2.5 px-3">Nơi chuyển đến đích</th>
+                          <th className="py-2.5 px-3 text-center">Thưởng bù (Xu/EXP)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {misfiledItems.map((item) => {
+                          const isSelected = selectedMisfiledIds.has(item.id);
+                          return (
+                            <tr key={item.id} className={isSelected ? 'bg-indigo-50/40' : ''}>
+                              <td className="py-2.5 px-3 text-center">
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={(e) => {
+                                    const next = new Set(selectedMisfiledIds);
+                                    if (e.target.checked) next.add(item.id);
+                                    else next.delete(item.id);
+                                    setSelectedMisfiledIds(next);
+                                  }}
+                                  className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500"
+                                />
+                              </td>
+                              <td className="py-2.5 px-3">
+                                <div className="font-extrabold text-slate-900">{item.studentName}</div>
+                                <div className="font-mono text-[10px] text-slate-500">{item.studentCode} • {item.className}</div>
+                              </td>
+                              <td className="py-2.5 px-3 font-bold text-indigo-950">
+                                {item.title}
+                              </td>
+                              <td className="py-2.5 px-3 text-center">
+                                <span className="font-extrabold text-emerald-700">{item.score}đ</span>
+                                <div className="text-[10px] text-slate-400">{item.submittedTime}</div>
+                              </td>
+                              <td className="py-2.5 px-3 font-mono text-[10px] text-rose-600 bg-rose-50/50 rounded">
+                                exams/{item.currentIncorrectExamId}/submissions
+                              </td>
+                              <td className="py-2.5 px-3 font-mono text-[10px] text-emerald-700 bg-emerald-50/50 rounded">
+                                assignments/{item.targetAssignmentId}/submissions
+                              </td>
+                              <td className="py-2.5 px-3 text-center">
+                                {item.alreadyRewarded ? (
+                                  <span className="px-2 py-0.5 bg-amber-100 text-amber-800 rounded text-[10px] font-bold" title="Đã nhận thưởng trước đó, không cộng chồng">
+                                    Đã nhận (0 xu)
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 bg-indigo-100 text-indigo-900 rounded text-[10px] font-black">
+                                    +{item.expectedCoins} Xu, +{item.expectedExp} EXP
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-2">
+                    <span className="text-xs text-slate-500 font-medium">
+                      Đã chọn {selectedMisfiledIds.size} / {misfiledItems.length} bản ghi để chuyển.
+                    </span>
+                    <button
+                      type="button"
+                      disabled={selectedMisfiledIds.size === 0 || isMigrating}
+                      onClick={async () => {
+                        setIsMigrating(true);
+                        try {
+                          const itemsToMigrate = misfiledItems.filter(i => selectedMisfiledIds.has(i.id));
+                          const report = await executeMisfiledAssignmentMigration(itemsToMigrate);
+                          setMigrationReport(report);
+                          showToast('✅ Khôi phục và chuyển dữ liệu bài tập thành công!');
+                        } catch (err: any) {
+                          showToast('⚠️ Lỗi khi chuyển dữ liệu: ' + (err?.message || String(err)));
+                        } finally {
+                          setIsMigrating(false);
+                        }
+                      }}
+                      className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-black rounded-xl text-xs cursor-pointer shadow-lg transition-all flex items-center gap-2"
+                    >
+                      {isMigrating ? <RefreshCw className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                      <span>{isMigrating ? 'Đang xử lý chuyển & sao lưu...' : 'Xác nhận chuyển dữ liệu & Cộng bù'}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            {!migrationReport && (
+              <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => setIsMisfiledScanModalOpen(false)}
+                  className="px-5 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-200 transition-all cursor-pointer"
+                >
+                  Hủy bỏ
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
