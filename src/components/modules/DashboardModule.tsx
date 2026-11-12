@@ -8,7 +8,6 @@ import {
   Sparkles,
   ArrowUpRight,
   Clock,
-  Award,
   BarChart3,
   Zap,
   Database,
@@ -55,7 +54,7 @@ import {
   subscribeToGamesFromFirestore,
   getLocalCachedGames
 } from '../../services/gameStorageService';
-import { collection, getDocs } from 'firebase/firestore';
+import { collection, getDocs, query, where, orderBy, limit, setDoc, doc } from 'firebase/firestore';
 import { db } from '../../firebaseConfig';
 
 export interface DashboardModuleProps {
@@ -93,8 +92,6 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
   exams = [],
   lessons = []
 }) => {
-  const actualLogs = activityLogs || logs || [];
-
   // Academic Year & Semester selection from AcademicYearContext
   const {
     selectedAcademicYear,
@@ -104,6 +101,68 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
     availableYears,
     hasYearEnrollments
   } = useAcademicYear();
+
+  const schoolYear = selectedAcademicYear || '2026-2027';
+  const [fetchedLogs, setFetchedLogs] = useState<ActivityLog[]>([]);
+
+  useEffect(() => {
+    let isMounted = true;
+    const fetchActivityLogs = async () => {
+      try {
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+        const logsRef = collection(db, 'activityLogs');
+        const q = query(
+          logsRef,
+          where('schoolYear', '==', schoolYear),
+          where('timestamp', '>=', sevenDaysAgo),
+          orderBy('timestamp', 'desc'),
+          limit(5)
+        );
+        const snap = await getDocs(q);
+        if (isMounted && !snap.empty) {
+          const list: ActivityLog[] = [];
+          snap.forEach(docSnap => {
+            const data = docSnap.data();
+            list.push({
+              id: docSnap.id,
+              user: data.user || 'Giáo viên',
+              role: data.role || 'teacher',
+              action: data.action || '',
+              module: data.module || 'Hệ thống',
+              timestamp: data.timestamp || 'Vừa xong',
+              time: data.time || data.timestamp || 'Vừa xong',
+              schoolYear: data.schoolYear || schoolYear
+            });
+          });
+          setFetchedLogs(list);
+        } else if (isMounted) {
+          const baseLogs = activityLogs || logs || [];
+          if (baseLogs.length > 0) {
+            baseLogs.slice(0, 5).forEach(async (logItem) => {
+              try {
+                const logDocRef = doc(db, 'activityLogs', logItem.id || `log-${Date.now()}-${Math.random()}`);
+                await setDoc(logDocRef, {
+                  ...logItem,
+                  schoolYear: logItem.schoolYear || schoolYear,
+                  timestamp: logItem.timestamp || new Date().toISOString()
+                }, { merge: true });
+              } catch {
+                // Ignore sync write error
+              }
+            });
+          }
+        }
+      } catch (err) {
+        console.warn('Could not query activityLogs from Firestore:', err);
+      }
+    };
+    fetchActivityLogs();
+    return () => {
+      isMounted = false;
+    };
+  }, [schoolYear, activityLogs, logs]);
+
+  const actualLogs = fetchedLogs.length > 0 ? fetchedLogs : (activityLogs || logs || []);
 
   // Real-time dynamic count states
   const [realStudentCount, setRealStudentCount] = useState<number | null>(() => {
@@ -1832,21 +1891,6 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
                 ))}
               </div>
             </div>
-
-            {/* Teacher Academic Grade Distribution Chart */}
-            <div className="bg-white rounded-2xl p-6 border border-[#F3F4F6] shadow-xs space-y-4">
-              <h3 className="text-base font-bold text-slate-900 flex items-center gap-2 font-heading">
-                <Award className="w-5 h-5 text-amber-500" /> Phân Phối Bảng Điểm Học Sinh Toàn Khối
-              </h3>
-
-              <div className="p-6 rounded-xl bg-slate-50/80 border border-dashed border-slate-200 text-center space-y-1.5">
-                <span className="text-2xl">📊</span>
-                <h4 className="text-xs font-bold text-slate-700">Chưa có dữ liệu bảng điểm</h4>
-                <p className="text-[11px] text-slate-500 max-w-sm mx-auto leading-relaxed">
-                  Dữ liệu phân phối kết quả đánh giá (Giỏi, Khá, Trung bình) sẽ tự động tổng hợp khi giáo viên cập nhật sổ điểm định kỳ tại Học Bạ Số.
-                </p>
-              </div>
-            </div>
           </div>
 
           {/* Teacher Activity Stream */}
@@ -1861,41 +1905,45 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
                 </span>
               </div>
 
-              {actualLogs.length > 0 ? (
-                <div className="space-y-3.5">
-                  {actualLogs.map((log: any, idx: number) => {
-                    const ItemIcon = log.icon || Clock;
-                    return (
-                      <div
-                        key={log.id || idx}
-                        className="p-3 rounded-xl bg-slate-50 border border-slate-100 hover:border-indigo-200 transition-all space-y-1"
-                      >
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="font-bold text-slate-800 flex items-center gap-1.5">
-                            <ItemIcon className="w-3.5 h-3.5 text-[#4338CA]" />
-                            {log.user}
-                          </span>
-                          <span className="text-[10px] text-slate-400">{log.timestamp || log.time}</span>
+              {(() => {
+                const activities = actualLogs;
+                return activities.length === 0 ? (
+                  <div className="text-center py-8 px-4 text-gray-400">
+                    {/* Icon minh họa nhẹ nhàng */}
+                    <svg className="w-10 h-10 mx-auto mb-2 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <p className="text-sm font-medium text-gray-600">Chưa có hoạt động mới trong tuần qua</p>
+                    <p className="text-xs text-gray-400 mt-1">Các nội dung do thầy/cô soạn thảo gần đây sẽ hiển thị tại đây.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {activities.map((item: any) => {
+                      const ItemIcon = item.icon || Clock;
+                      return (
+                        // Hiển thị danh sách hoạt động khi có dữ liệu
+                        <div key={item.id || item.timestamp} className="p-3 bg-gray-50 rounded-lg space-y-1">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                              <ItemIcon className="w-3.5 h-3.5 text-[#4338CA]" />
+                              {item.user}
+                            </span>
+                            <span className="text-[10px] text-slate-400">{item.timestamp || item.time}</span>
+                          </div>
+                          <p className="text-xs text-slate-600 leading-snug pl-5">
+                            {item.action}
+                          </p>
+                          <div className="pt-1 pl-5 flex items-center gap-1.5">
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-[#EEF2FF] text-[#4338CA]">
+                              {item.module}
+                            </span>
+                          </div>
                         </div>
-                        <p className="text-xs text-slate-600 leading-snug pl-5">
-                          {log.action}
-                        </p>
-                        <div className="pt-1 pl-5 flex items-center gap-1.5">
-                          <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-[#EEF2FF] text-[#4338CA]">
-                            {log.module}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="py-12 text-center space-y-2">
-                  <Clock className="w-8 h-8 text-slate-300 mx-auto" />
-                  <p className="text-xs font-bold text-slate-600">Chưa có hoạt động mới</p>
-                  <p className="text-[11px] text-slate-400">Nhật ký hệ thống sẽ hiển thị ở đây khi có thao tác mới.</p>
-                </div>
-              )}
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="mt-6 pt-4 border-t border-slate-100 text-center">

@@ -135,6 +135,8 @@ export interface TeacherRecord {
   teachingClasses?: string[]; // Danh sách lớp giảng dạy bộ môn
   avatar?: string;         // Đường dẫn ảnh hoặc icon linh vật
   teachingAssignments?: Array<{ subject: string; classes: string[] }>; // Danh sách cặp môn học - các lớp giảng dạy
+  lopDay?: string[]; // Mảng tên các lớp được phân công dạy bộ môn
+  lopChuNhiem?: string; // Tên lớp chủ nhiệm
 }
 
 // Danh sách dữ liệu giáo viên chi tiết toàn trường TH Quang Hưng PK1:
@@ -4870,6 +4872,8 @@ const EditTeacherModal: React.FC<EditTeacherModalProps> = ({
     editingTeacher ? normalizeDepartmentName(editingTeacher.toChuyenMon, editingTeacher) : 'Tổ 1'
   );
   const [teacherAvatar, setTeacherAvatar] = useState<string>(editingTeacher ? (editingTeacher.avatar || '👩‍🏫') : '👩‍🏫');
+  const [teacherLopDay, setTeacherLopDay] = useState<string[]>(() => editingTeacher?.lopDay || editingTeacher?.teachingClasses || []);
+  const [teacherLopChuNhiem, setTeacherLopChuNhiem] = useState<string>(() => editingTeacher?.lopChuNhiem || (Array.isArray(editingTeacher?.homeroomClasses) ? editingTeacher.homeroomClasses[0] : '') || '');
   
   // Password Reset state (Optional for Admin)
   const [newPassword, setNewPassword] = useState<string>('');
@@ -5057,11 +5061,14 @@ const EditTeacherModal: React.FC<EditTeacherModalProps> = ({
       role: teacherRoleVal,
       subject: activeSubjectsStr,
       toChuyenMon: teacherToChuyenMon,
-      nhomGvCn: editingTeacher?.nhomGvCn || '',
+      nhomGvCn: teacherLopChuNhiem || editingTeacher?.nhomGvCn || '',
       avatar: teacherAvatar || '👩‍🏫',
       status: editingTeacher ? editingTeacher.status : 'active',
       teachingClasses: activeTeachingClasses,
-      teachingAssignments: teachingAssignmentsArray
+      teachingAssignments: teachingAssignmentsArray,
+      lopDay: teacherLopDay,
+      lopChuNhiem: teacherLopChuNhiem,
+      homeroomClasses: teacherLopChuNhiem ? [teacherLopChuNhiem] : []
     };
 
     onSave(savedTeacher);
@@ -5226,6 +5233,73 @@ const EditTeacherModal: React.FC<EditTeacherModalProps> = ({
                   ))}
                 </select>
               </div>
+
+              {/* ADMIN ONLY: Lớp phân công dạy & Lớp chủ nhiệm */}
+              {isSystemAdmin && (
+                <div className="sm:col-span-2 p-4 bg-amber-50/70 border border-amber-200 rounded-2xl space-y-3">
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded bg-amber-200 text-amber-900 font-black text-[10px] uppercase tracking-wider">
+                      QUẢN TRỊ VIÊN (ADMIN ONLY)
+                    </span>
+                    <span className="text-xs font-bold text-amber-950">Phân công lớp giảng dạy & Chủ nhiệm</span>
+                  </div>
+
+                  <div className="space-y-3">
+                    {/* Lớp chủ nhiệm */}
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                        Lớp chủ nhiệm (Chọn 1 lớp, có thể để trống):
+                      </label>
+                      <select
+                        value={teacherLopChuNhiem}
+                        onChange={(e) => setTeacherLopChuNhiem(e.target.value)}
+                        className="w-full p-2.5 text-xs rounded-xl border border-slate-300 font-bold bg-white focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                      >
+                        <option value="">-- Không làm chủ nhiệm lớp nào --</option>
+                        {schoolClasses.map((clsName) => (
+                          <option key={clsName} value={clsName}>
+                            {clsName}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Lớp được phân công dạy */}
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                        Lớp được phân công dạy (Chọn nhiều lớp):
+                      </label>
+                      <div className="flex flex-wrap gap-1.5 p-2.5 bg-white rounded-xl border border-slate-300 max-h-36 overflow-y-auto">
+                        {schoolClasses.map((clsName) => {
+                          const isSelected = teacherLopDay.includes(clsName);
+                          return (
+                            <button
+                              key={clsName}
+                              type="button"
+                              onClick={() => {
+                                setTeacherLopDay(prev =>
+                                  isSelected ? prev.filter(c => c !== clsName) : [...prev, clsName]
+                                );
+                              }}
+                              className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1.5 border ${
+                                isSelected
+                                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                                  : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                              }`}
+                            >
+                              <span>{clsName}</span>
+                              {isSelected && <span className="text-[10px]">✓</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {teacherLopDay.length === 0 && (
+                        <p className="text-[11px] text-slate-400 mt-1 italic">Chưa chọn lớp giảng dạy nào.</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="sm:col-span-2 space-y-2">
                 <label className="block text-xs font-bold text-slate-700">Biểu Tượng Avatar / Linh Vật / Logo:</label>
