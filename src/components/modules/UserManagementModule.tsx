@@ -45,7 +45,8 @@ import {
   BookMarked,
   Info,
   Eye,
-  RefreshCw
+  RefreshCw,
+  Loader2
 } from 'lucide-react';
 import { UserAccount, UserRole, StudentRecord } from '../../types';
 import { PRIMARY_SCHOOL_SUBJECTS } from '../../services/mockData';
@@ -118,6 +119,7 @@ import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { doc, setDoc, deleteDoc, updateDoc, getDocs, collection, onSnapshot } from 'firebase/firestore';
 import { trackedSetDoc } from '../../services/firestoreWriteTracker';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
+import { migrateFirestoreOrderingData } from '../../services/questionStorageService';
 
 export interface TeacherRecord {
   id: string;
@@ -1278,6 +1280,26 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
       showToast('Lỗi trong quá trình di trú bài nộp!', 'error');
     } finally {
       setIsMigratingBatch(false);
+    }
+  };
+
+  // Ordering Migration State
+  const [isOrderingMigrationModalOpen, setIsOrderingMigrationModalOpen] = useState<boolean>(false);
+  const [isMigratingOrdering, setIsMigratingOrdering] = useState<boolean>(false);
+  const [orderingMigrationResult, setOrderingMigrationResult] = useState<string | null>(null);
+
+  const handleRunOrderingMigration = async () => {
+    setIsMigratingOrdering(true);
+    setOrderingMigrationResult(null);
+    try {
+      const count = await migrateFirestoreOrderingData(true);
+      setOrderingMigrationResult(`${count}`);
+      showToast(`Đã nâng cấp ${count} câu hỏi Sắp xếp thứ tự thành công!`, 'success');
+    } catch (err) {
+      showToast('Lỗi khi nâng cấp câu hỏi Sắp xếp thứ tự!', 'error');
+      setOrderingMigrationResult('Lỗi');
+    } finally {
+      setIsMigratingOrdering(false);
     }
   };
 
@@ -2443,6 +2465,20 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
                         <RefreshCw className={`w-3.5 h-3.5 ${isScanningMismatches ? 'animate-spin' : ''}`} />
                         <span>Đồng bộ lại dữ liệu theo mã học sinh</span>
                       </button>
+                      {isSystemAdmin && (
+                        <button
+                          onClick={() => {
+                            setOrderingMigrationResult(null);
+                            setIsOrderingMigrationModalOpen(true);
+                          }}
+                          disabled={isMigratingOrdering}
+                          className="px-3.5 py-2 rounded-xl text-xs font-extrabold bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white transition-all shadow-xs flex items-center gap-1.5 cursor-pointer active:scale-95"
+                          title="Nâng cấp câu hỏi Sắp xếp thứ tự lên chuẩn sư phạm mới"
+                        >
+                          <Sparkles className={`w-3.5 h-3.5 ${isMigratingOrdering ? 'animate-spin' : ''}`} />
+                          <span>Nâng cấp câu hỏi Sắp xếp thứ tự</span>
+                        </button>
+                      )}
                       <button
                         onClick={handleOpenAddStudentModal}
                         className="px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white transition-all shadow-xs flex items-center gap-1.5 cursor-pointer active:scale-95"
@@ -4382,6 +4418,71 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
                   </span>
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL NÂNG CẤP CÂU HỎI SẮP XẾP THỨ TỰ */}
+      {isOrderingMigrationModalOpen && (
+        <div className="fixed inset-0 z-60 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-lg w-full shadow-2xl overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200 border border-slate-200">
+            <div className="p-5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Sparkles className="w-6 h-6 text-purple-200 shrink-0" />
+                <div>
+                  <h3 className="text-base font-extrabold uppercase tracking-wide">
+                    Nâng cấp câu hỏi Sắp xếp thứ tự
+                  </h3>
+                  <p className="text-xs text-purple-100 font-medium">
+                    Chuẩn hóa dữ liệu câu hỏi theo chuẩn sư phạm mới
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => { if (!isMigratingOrdering) setIsOrderingMigrationModalOpen(false); }}
+                className="w-8 h-8 rounded-full bg-white/20 hover:bg-white/30 text-white flex items-center justify-center cursor-pointer transition-all"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              {orderingMigrationResult !== null ? (
+                <div className="p-5 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-center space-y-2">
+                  <div className="text-2xl font-black">🎉 Nâng cấp thành công!</div>
+                  <div className="text-sm font-bold text-emerald-700">Đã nâng cấp {orderingMigrationResult} câu</div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-xs sm:text-sm text-slate-700 leading-relaxed font-medium">
+                    Hệ thống sẽ quét toàn bộ câu hỏi Sắp xếp thứ tự trên Firestore, cập nhật lại cấu trúc `correctOrder`, `correctAnswer`, `indices` chuẩn sư phạm và lưu cờ hoàn tất.
+                  </p>
+                  <p className="text-xs text-slate-500 italic">
+                    Thao tác này chỉ thực hiện trên các câu chưa chuẩn và tự động bỏ qua nếu đã hoàn tất.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                disabled={isMigratingOrdering}
+                onClick={() => setIsOrderingMigrationModalOpen(false)}
+                className="px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-100 text-xs font-bold cursor-pointer disabled:opacity-50"
+              >
+                Đóng
+              </button>
+              <button
+                type="button"
+                disabled={isMigratingOrdering}
+                onClick={handleRunOrderingMigration}
+                className="px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-black shadow-md shadow-purple-600/30 cursor-pointer disabled:opacity-50 flex items-center gap-2"
+              >
+                {isMigratingOrdering && <Loader2 className="w-4 h-4 animate-spin text-white" />}
+                <span>{isMigratingOrdering ? 'Đang nâng cấp...' : 'Xác nhận nâng cấp'}</span>
+              </button>
             </div>
           </div>
         </div>

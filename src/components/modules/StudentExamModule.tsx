@@ -1452,6 +1452,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     if (isAssignment) return;
 
     const timer = setInterval(() => {
+      if (hasSubmittedRef.current || isSubmittingRef.current || isExecutingSubmitRef.current) return;
       const elapsed = Math.floor((Date.now() - activeExamSession.startTime) / 1000);
       const totalSecs = (activeExamSession.durationMinutes || 15) * 60;
       const left = totalSecs - elapsed;
@@ -1930,16 +1931,18 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     if (isAssignment) return;
 
     const registerViolation = (reasonStr: string) => {
+      if (isSubmitting || isSubmittingRef.current || submittingRef.current || hasSubmittedRef.current) return;
       const now = Date.now();
       // Prevent double triggers within 2 seconds
       if (now - lastViolationTimeRef.current < 2000) return;
       lastViolationTimeRef.current = now;
 
       setViolationCount((prev) => {
+        if (isSubmitting || isSubmittingRef.current || submittingRef.current || hasSubmittedRef.current) return prev;
         const nextCount = prev + 1;
         if (nextCount >= 3) {
           // Violation 3: Trigger auto-submit with violation lock
-          if (!hasSubmittedRef.current) {
+          if (!hasSubmittedRef.current && !isSubmitting && !isSubmittingRef.current && !submittingRef.current) {
             handleAutoSubmitTimeout(reasonStr, true, 3);
           }
           return 3;
@@ -1957,10 +1960,12 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     };
 
     const handleWindowBlur = () => {
+      if (isSubmitting || isSubmittingRef.current || submittingRef.current || hasSubmittedRef.current) return;
       hasLeftWindowRef.current = true;
     };
 
     const handleVisibilityChange = () => {
+      if (isSubmitting || isSubmittingRef.current || submittingRef.current || hasSubmittedRef.current) return;
       if (document.hidden || document.visibilityState === 'hidden') {
         hasLeftWindowRef.current = true;
       } else if (document.visibilityState === 'visible') {
@@ -1972,6 +1977,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     };
 
     const handleWindowFocus = () => {
+      if (isSubmitting || isSubmittingRef.current || submittingRef.current || hasSubmittedRef.current) return;
       if (hasLeftWindowRef.current) {
         hasLeftWindowRef.current = false;
         registerViolation('Nhấp chuột rời khỏi cửa sổ làm bài thi');
@@ -2287,6 +2293,29 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     setSubmissionError(null);
     setSlowNetworkWarning(false);
 
+    // Kiểm tra bài chưa gửi trong IndexedDB
+    try {
+      const session = getCurrentStudentSession();
+      const effectiveInfo = getEffectiveStudentClassAndGrade();
+      const effectiveStudentClass = session?.className || effectiveInfo.studentClass || 'Lớp 3C';
+      const effectiveStudentName = session?.name || session?.fullName || effectiveInfo.studentName || currentUserName;
+      const cleanClass = (effectiveStudentClass || '3C').replace(/^Lớp\s*/i, '').trim().toUpperCase();
+      const authenticStudentCode = normalizeStudentCode(formatStandardStudentCode(
+        getAuthenticStudentCode(session, currentUserId, effectiveStudentClass, effectiveStudentName),
+        cleanClass
+      ));
+      const checkId = `${authenticStudentCode}_${exam.id}`;
+      checkUnsyncedSubmissionIDB(checkId).then(unsynced => {
+        if (unsynced && unsynced.status === 'chưa gửi') {
+          setSubmissionError('Chưa gửi được bài lên hệ thống trước đó. Bài của em đã được lưu trên máy này. Em đừng đóng trang, bấm Gửi lại');
+          setToast({
+            message: 'Phát hiện bài làm chưa gửi, em hãy bấm Gửi lại nhé!',
+            type: 'warning'
+          });
+        }
+      }).catch(() => {});
+    } catch {}
+
     // Check time constraints
     const startTime = Date.now();
     const duration = exam.durationMinutes || (isAssignment ? 45 : 15);
@@ -2375,14 +2404,101 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     });
   };
 
+  function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+    let timer: any;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Timeout: ${label} exceeded ${ms}ms`)), ms);
+    });
+    return Promise.race([promise, timeoutPromise]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+  }
+
+  const IDB_SUB_NAME = 'eduplay_unsynced_subs_db';
+  const IDB_SUB_STORE = 'unsynced_submissions';
+
+  const saveUnsyncedSubmissionIDB = (recordId: string, recordData: any): Promise<void> => {
+    if (typeof window === 'undefined' || !window.indexedDB) return Promise.resolve();
+    return new Promise((resolve) => {
+      try {
+        const request = window.indexedDB.open(IDB_SUB_NAME, 1);
+        request.onupgradeneeded = (event: any) => {
+          const db = event.target.result;
+          if (!db.objectStoreNames.contains(IDB_SUB_STORE)) {
+            db.createObjectStore(IDB_SUB_STORE, { keyPath: 'id' });
+          }
+        };
+        request.onsuccess = (event: any) => {
+          const db = event.target.result;
+          try {
+            const tx = db.transaction(IDB_SUB_STORE, 'readwrite');
+            const store = tx.objectStore(IDB_SUB_STORE);
+            store.put({ id: recordId, data: recordData, status: 'chưa gửi', updatedAt: Date.now() });
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+          } catch {
+            resolve();
+          }
+        };
+        request.onerror = () => resolve();
+      } catch {
+        resolve();
+      }
+    });
+  };
+
+  const removeUnsyncedSubmissionIDB = (recordId: string): Promise<void> => {
+    if (typeof window === 'undefined' || !window.indexedDB) return Promise.resolve();
+    return new Promise((resolve) => {
+      try {
+        const request = window.indexedDB.open(IDB_SUB_NAME, 1);
+        request.onsuccess = (event: any) => {
+          const db = event.target.result;
+          try {
+            const tx = db.transaction(IDB_SUB_STORE, 'readwrite');
+            const store = tx.objectStore(IDB_SUB_STORE);
+            store.delete(recordId);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+          } catch {
+            resolve();
+          }
+        };
+        request.onerror = () => resolve();
+      } catch {
+        resolve();
+      }
+    });
+  };
+
+  const checkUnsyncedSubmissionIDB = (recordId: string): Promise<any | null> => {
+    if (typeof window === 'undefined' || !window.indexedDB) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      try {
+        const request = window.indexedDB.open(IDB_SUB_NAME, 1);
+        request.onsuccess = (event: any) => {
+          const db = event.target.result;
+          try {
+            const tx = db.transaction(IDB_SUB_STORE, 'readonly');
+            const store = tx.objectStore(IDB_SUB_STORE);
+            const req = store.get(recordId);
+            req.onsuccess = () => resolve(req.result || null);
+            req.onerror = () => resolve(null);
+          } catch {
+            resolve(null);
+          }
+        };
+        request.onerror = () => resolve(null);
+      } catch {
+        resolve(null);
+      }
+    });
+  };
+
   const executeSubmitExam = async () => {
     if (!activeExamSession) return;
-    if (hasSubmittedRef.current) {
-      console.warn('⚠️ Bài thi đã được nộp thành công trước đó.');
-      return;
-    }
-    if (isExecutingSubmitRef.current) {
-      console.warn('⚠️ Quá trình nộp bài đang được xử lý, bỏ qua lệnh gọi lặp lại.');
+    if (hasSubmittedRef.current || isSubmittingRef.current || isExecutingSubmitRef.current || submittingRef.current) {
+      console.warn('⚠️ Bài thi đã được nộp hoặc đang trong quá trình xử lý.');
       return;
     }
     isExecutingSubmitRef.current = true;
@@ -2392,7 +2508,6 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     setSlowNetworkWarning(false);
     setSubmissionError(null);
 
-    // Kích hoạt bộ đếm 15 giây nếu phản hồi mạng chậm
     if (slowNetworkTimerRef.current) clearTimeout(slowNetworkTimerRef.current);
     slowNetworkTimerRef.current = setTimeout(() => {
       setSlowNetworkWarning(true);
@@ -2455,10 +2570,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         ));
         const effectiveAcademicYear = session?.academicYear || '2026-2027';
 
-        // ID chính thức của đề kiểm tra hiện hành
         const officialExamId = exam.id;
-
-        // Dùng ID cố định ${authenticStudentCode}_${officialExamId}
         const attemptNumber = 1;
         const fixedDocId = `${authenticStudentCode}_${officialExamId}`;
 
@@ -2498,129 +2610,139 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         const updatedSubmissions = deduplicateExamSubmissions([examSub, ...(examHistory || [])]);
         setExamHistory(updatedSubmissions);
 
-        try {
-          const rawExamRecord = {
-            ...examSub,
-            recordType: 'exam' as const,
-            id: fixedDocId,
-            studentId: authenticStudentCode,
-            attemptNumber,
-            sddcn: session?.sddcn || authenticStudentCode,
-            studentPersistentId: authenticStudentCode,
-            academicYear: effectiveAcademicYear,
-            studentCode: authenticStudentCode,
-            maHs: authenticStudentCode,
-            studentName: effectiveStudentName,
-            studentClass: effectiveStudentClass,
-            totalScore: scoreNumber,
-            submittedAt: nowTimeStr,
-            attempts: 1,
-            questionSnapshot: qSnapshot,
-            answers,
-            answersById,
-            feedback: scoreNumber >= 8 ? 'Làm bài xuất sắc, nắm chắc kiến thức.' : (scoreNumber >= 5 ? 'Đã hoàn thành đạt yêu cầu.' : 'Cần ôn tập và rèn luyện thêm.')
-          };
-          const fullExamRecord = removeUndefined(rawExamRecord);
-          const slimExamRecord = removeUndefined({
-            id: fixedDocId,
-            examId: officialExamId,
-            studentId: authenticStudentCode,
-            studentCode: authenticStudentCode,
-            maHs: authenticStudentCode,
-            studentName: effectiveStudentName,
-            studentClass: effectiveStudentClass,
-            score: scoreVal,
-            totalScore: scoreNumber,
-            rank: rankTier,
-            submittedAt: nowTimeStr,
-            submittedTime: nowTimeStr,
-            title: exam.title,
-            subject: exam.subject || 'Môn học',
-            attempts: 1,
-            answers,
-            answersById,
-            feedback: fullExamRecord.feedback || ''
-          });
+        const rawExamRecord = {
+          ...examSub,
+          recordType: 'exam' as const,
+          id: fixedDocId,
+          studentId: authenticStudentCode,
+          attemptNumber,
+          sddcn: session?.sddcn || authenticStudentCode,
+          studentPersistentId: authenticStudentCode,
+          academicYear: effectiveAcademicYear,
+          studentCode: authenticStudentCode,
+          maHs: authenticStudentCode,
+          studentName: effectiveStudentName,
+          studentClass: effectiveStudentClass,
+          totalScore: scoreNumber,
+          submittedAt: nowTimeStr,
+          attempts: 1,
+          questionSnapshot: qSnapshot,
+          answers,
+          answersById,
+          feedback: scoreNumber >= 8 ? 'Làm bài xuất sắc, nắm chắc kiến thức.' : (scoreNumber >= 5 ? 'Đã hoàn thành đạt yêu cầu.' : 'Cần ôn tập và rèn luyện thêm.')
+        };
+        const fullExamRecord = removeUndefined(rawExamRecord);
+        const slimExamRecord = removeUndefined({
+          id: fixedDocId,
+          examId: officialExamId,
+          studentId: authenticStudentCode,
+          studentCode: authenticStudentCode,
+          maHs: authenticStudentCode,
+          studentName: effectiveStudentName,
+          studentClass: effectiveStudentClass,
+          score: scoreVal,
+          totalScore: scoreNumber,
+          rank: rankTier,
+          submittedAt: nowTimeStr,
+          submittedTime: nowTimeStr,
+          title: exam.title,
+          subject: exam.subject || 'Môn học',
+          attempts: 1,
+          answers,
+          answersById,
+          feedback: fullExamRecord.feedback || ''
+        });
 
-          // Xóa bản nháp bài thi khi đã nộp bài thành công
-          deleteExamDraft(authenticStudentCode, officialExamId).catch(() => {});
-          setActiveDrafts(prev => {
-            const next = { ...prev };
-            delete next[officialExamId];
-            return next;
-          });
+        // 1. Lưu ngay vào IndexedDB (trạng thái "chưa gửi"), chưa xóa bản nháp
+        await saveUnsyncedSubmissionIDB(fixedDocId, fullExamRecord);
 
-          // 1. Kiểm tra tồn tại trước khi ghi (getDoc) & Ghi nguyên tử bằng runTransaction (với fallback setDoc)
-          if (db && officialExamId) {
-            const targetCol = (isAssignment || officialExamId.startsWith('as-')) ? 'assignments' : 'exams';
-            
-            // Các biến thể candidate ID để kiểm tra sự tồn tại của bài nộp cũ (chống lệch dữ liệu cũ)
-            const candDocIds = Array.from(new Set([
-              fixedDocId,
-              authenticStudentCode,
-              `${authenticStudentCode}_${officialExamId}_1`
-            ]));
+        // --- NHÓM CHÍNH (Primary Group) ---
+        let primarySuccess = false;
+        let attemptCount = 0;
+        const maxAttempts = 3;
 
-            let foundExistingDoc: any = null;
-            for (const candId of candDocIds) {
-              try {
-                const candDocRef = doc(db, targetCol, officialExamId, 'submissions', candId);
-                const checkSnap = await getDoc(candDocRef);
-                if (checkSnap.exists()) {
-                  foundExistingDoc = checkSnap.data();
-                  break;
-                }
-              } catch (checkErr) {
-                console.warn(`Kiểm tra bài nộp cũ ${candId}:`, checkErr);
-              }
-            }
+        while (attemptCount < maxAttempts && !primarySuccess) {
+          attemptCount++;
+          try {
+            if (db && officialExamId) {
+              const targetCol = (isAssignment || officialExamId.startsWith('as-')) ? 'assignments' : 'exams';
+              const mainSubDocRef = doc(db, targetCol, officialExamId, 'submissions', fixedDocId);
 
-            if (foundExistingDoc) {
-              console.warn('⚠️ [executeSubmitExam] Học sinh đã có bản ghi bài nộp:', foundExistingDoc.id || fixedDocId);
-              if (slowNetworkTimerRef.current) clearTimeout(slowNetworkTimerRef.current);
-              setSlowNetworkWarning(false);
-              isExecutingSubmitRef.current = false;
-              hasSubmittedRef.current = true;
-              submittingRef.current = true;
-              isSubmittingRef.current = true;
-              setIsSubmitting(false);
-              setActiveExamSession(null);
-              setToast({
-                message: 'Em đã nộp bài này rồi!',
-                type: 'warning'
-              });
-              setDetailSubmission({
-                exam,
-                score: foundExistingDoc.score !== undefined ? String(foundExistingDoc.score) : scoreVal,
-                time: formatSubmissionDateTime(foundExistingDoc.submittedAt || foundExistingDoc.submittedTime || nowTimeStr),
-                answers: foundExistingDoc.answers || answers,
-                title: exam.title,
-                subject: exam.subject || 'Môn học',
-                rank: foundExistingDoc.rank || rankTier
-              });
-              return;
-            }
+              // getDoc kiểm tra bài cũ với timeout 20s
+              await withTimeout(getDoc(mainSubDocRef), 20000, 'Check Existing Submission');
 
-            const mainSubDocRef = doc(db, targetCol, officialExamId, 'submissions', fixedDocId);
-
-            try {
-              await runTransaction(db, async (transaction) => {
+              // runTransaction ghi bài nộp chính với timeout 20s
+              await withTimeout(runTransaction(db, async (transaction) => {
                 const subSnap = await transaction.get(mainSubDocRef);
                 if (subSnap.exists()) {
-                  throw new Error('ALREADY_SUBMITTED');
+                  return;
                 }
-                const examRef = doc(db, targetCol, officialExamId);
+                transaction.set(mainSubDocRef, removeUndefined({
+                  ...fullExamRecord,
+                  id: fixedDocId,
+                  examId: officialExamId,
+                  assignmentId: officialExamId,
+                  attemptNumber,
+                  updatedAt: new Date().toISOString()
+                }), { merge: true });
+              }), 20000, 'Write Main Submission Transaction');
+            }
+            primarySuccess = true;
+          } catch (primaryErr) {
+            console.warn(`Primary group attempt ${attemptCount} failed:`, primaryErr);
+            if (attemptCount < maxAttempts) {
+              await new Promise(r => setTimeout(r, 3000 * attemptCount));
+            }
+          }
+        }
+
+        if (!primarySuccess) {
+          throw new Error('PRIMARY_SUBMISSION_FAILED');
+        }
+
+        // Nhóm chính thành công: đặt hasSubmittedRef = true, xóa bản nháp, xóa khỏi IDB chưa gửi, hiện màn hình kết quả ngay
+        hasSubmittedRef.current = true;
+        deleteExamDraft(authenticStudentCode, officialExamId).catch(() => {});
+        setActiveDrafts(prev => {
+          const next = { ...prev };
+          delete next[officialExamId];
+          return next;
+        });
+        removeUnsyncedSubmissionIDB(fixedDocId).catch(() => {});
+
+        if (slowNetworkTimerRef.current) clearTimeout(slowNetworkTimerRef.current);
+        setSlowNetworkWarning(false);
+        setIsSubmitting(false);
+
+        setToast({
+          message: `Nộp bài thành công! Điểm số: ${scoreVal}`,
+          type: 'success'
+        });
+
+        setActiveExamSession(null);
+        setDetailSubmission({
+          exam,
+          score: scoreVal,
+          time: nowTimeStr,
+          answers,
+          title: exam.title,
+          subject: exam.subject || 'Môn học',
+          rank: rankTier
+        });
+
+        // --- NHÓM PHỤ (Secondary Group - Background, mỗi bước timeout 15s) ---
+        setTimeout(async () => {
+          try {
+            if (db && officialExamId) {
+              const targetCol = (isAssignment || officialExamId.startsWith('as-')) ? 'assignments' : 'exams';
+              const examRef = doc(db, targetCol, officialExamId);
+              
+              // 1. Cập nhật mảng submissions trên tài liệu đề cha
+              await withTimeout(runTransaction(db, async (transaction) => {
                 const examSnap = await transaction.get(examRef);
                 if (examSnap.exists()) {
                   const currentData = examSnap.data();
                   const existingSubs = Array.isArray(currentData.submissions) ? [...currentData.submissions] : [];
-                  const alreadyInDoc = existingSubs.some((s: any) => {
-                    const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
-                    return sCode === authenticStudentCode.toLowerCase();
-                  });
-                  if (alreadyInDoc) {
-                    throw new Error('ALREADY_SUBMITTED');
-                  }
                   const filtered = existingSubs.filter((s: any) => {
                     const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
                     const sId = String(s.id || '').toLowerCase();
@@ -2635,263 +2757,191 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                     updatedAt: new Date().toISOString()
                   });
                 }
-                transaction.set(mainSubDocRef, removeUndefined({
-                  ...fullExamRecord,
-                  id: fixedDocId,
-                  examId: officialExamId,
+              }), 15000, 'Update Parent Exam Submissions Array').catch(err => console.error('Secondary error parent exam:', err));
+
+              // 2. Ghi đồng bộ collection kép
+              try {
+                if (isAssignment || officialExamId.startsWith('as-')) {
+                  const exSubDocRef = doc(db, 'exams', officialExamId, 'submissions', fixedDocId);
+                  await withTimeout(setDoc(exSubDocRef, removeUndefined({
+                    ...fullExamRecord,
+                    id: fixedDocId,
+                    examId: officialExamId,
+                    attemptNumber,
+                    updatedAt: new Date().toISOString()
+                  }), { merge: true }), 15000, 'Sync Dual Collection Exams');
+                } else {
+                  const asSubDocRef = doc(db, 'assignments', officialExamId, 'submissions', fixedDocId);
+                  await withTimeout(setDoc(asSubDocRef, removeUndefined({
+                    ...fullExamRecord,
+                    id: fixedDocId,
+                    assignmentId: officialExamId,
+                    attemptNumber,
+                    updatedAt: new Date().toISOString()
+                  }), { merge: true }), 15000, 'Sync Dual Collection Assignments');
+                }
+              } catch (errDual) {
+                console.error('Secondary error dual sync:', errDual);
+              }
+            }
+
+            // 3. studentResultService
+            try {
+              await withTimeout(studentResultService.saveFullExamSubmission(authenticStudentCode, officialExamId, fullExamRecord), 15000, 'Save Full Exam Submission Result');
+              await withTimeout(studentResultService.saveExamResult(authenticStudentCode, officialExamId, {
+                score: scoreNumber,
+                maxScore: 10,
+                submittedAt: nowTimeStr,
+                type: 'exam'
+              }), 15000, 'Save Exam Result');
+              if (exam.originalExamId && exam.originalExamId !== officialExamId) {
+                await withTimeout(studentResultService.saveFullExamSubmission(authenticStudentCode, exam.originalExamId, fullExamRecord), 15000, 'Save Original Exam Submission');
+                await withTimeout(studentResultService.saveExamResult(authenticStudentCode, exam.originalExamId, {
+                  score: scoreNumber,
+                  maxScore: 10,
+                  submittedAt: nowTimeStr,
+                  type: 'exam'
+                }), 15000, 'Save Original Exam Result');
+              }
+              if (isAssignment) {
+                await withTimeout(studentResultService.saveFullAssignmentSubmission(authenticStudentCode, officialExamId, fullExamRecord), 15000, 'Save Assignment Submission');
+                await withTimeout(studentResultService.saveAssignmentResult(authenticStudentCode, {
                   assignmentId: officialExamId,
-                  attemptNumber,
-                  updatedAt: new Date().toISOString()
-                }), { merge: true });
-              });
-            } catch (txErr: any) {
-              if (txErr?.message === 'ALREADY_SUBMITTED') {
-                if (slowNetworkTimerRef.current) clearTimeout(slowNetworkTimerRef.current);
-                setSlowNetworkWarning(false);
-                isExecutingSubmitRef.current = false;
-                hasSubmittedRef.current = true;
-                submittingRef.current = true;
-                isSubmittingRef.current = true;
-                setIsSubmitting(false);
-                setActiveExamSession(null);
-                setToast({
-                  message: 'Em đã nộp bài này rồi!',
-                  type: 'warning'
-                });
-                setDetailSubmission({
-                  exam,
-                  score: scoreVal,
-                  time: nowTimeStr,
-                  answers,
+                  score: scoreNumber,
+                  maxScore: 10,
+                  submittedAt: nowTimeStr,
+                  answers
+                }), 15000, 'Save Assignment Result');
+              }
+            } catch (errRes) {
+              console.error('Secondary error student results:', errRes);
+            }
+
+            // 4. LocalStorage & cache sync
+            try {
+              localStorage.setItem(`eduplay_student_exam_subs_${authenticStudentCode}`, JSON.stringify(updatedSubmissions));
+              if (currentUserId && currentUserId !== authenticStudentCode) {
+                localStorage.setItem(`eduplay_student_exam_subs_${currentUserId}`, JSON.stringify(updatedSubmissions));
+              }
+
+              const allSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
+              const allSubs = allSubsRaw ? JSON.parse(allSubsRaw) : [];
+              const filteredAll = Array.isArray(allSubs) ? allSubs.filter((s: any) => {
+                const sKey = getSubmissionExamKey(s);
+                const curKey = getSubmissionExamKey(examSub);
+                const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
+                return !(sKey === curKey && sCode === authenticStudentCode.toLowerCase());
+              }) : [];
+              filteredAll.unshift(fullExamRecord);
+              const deduplicatedAll = deduplicateExamSubmissions(filteredAll);
+              localStorage.setItem('eduplay_all_exam_submissions', JSON.stringify(deduplicatedAll));
+
+              if (officialExamId) {
+                const examSubsRaw = localStorage.getItem(`eduplay_exam_subs_${officialExamId}`);
+                const examSubs = examSubsRaw ? JSON.parse(examSubsRaw) : [];
+                const filteredExamSubs = Array.isArray(examSubs) ? examSubs.filter((s: any) => {
+                  const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
+                  return sCode !== authenticStudentCode.toLowerCase();
+                }) : [];
+                filteredExamSubs.unshift(fullExamRecord);
+                const deduplicatedExamSubs = deduplicateExamSubmissions(filteredExamSubs);
+                localStorage.setItem(`eduplay_exam_subs_${officialExamId}`, JSON.stringify(deduplicatedExamSubs));
+              }
+
+              if (isAssignment) {
+                const hwSub = {
+                  id: examSub.id,
+                  type: 'assignment' as const,
+                  submissionType: 'assignment' as const,
+                  studentId: authenticStudentCode,
                   title: exam.title,
                   subject: exam.subject || 'Môn học',
-                  rank: rankTier
-                });
-                return;
+                  rank: rankTier,
+                  score: scoreVal,
+                  submittedTime: nowTimeStr,
+                  assignment: {
+                    id: exam.id,
+                    title: exam.title,
+                    subject: exam.subject,
+                    grade: exam.grade,
+                    questions: exam.questions
+                  },
+                  questionSnapshot: qSnapshot,
+                  answers,
+                  answersById
+                };
+                const savedHw = localStorage.getItem(`eduplay_student_submissions_${authenticStudentCode}`);
+                const parsedHw = savedHw ? JSON.parse(savedHw) : [];
+                localStorage.setItem(`eduplay_student_submissions_${authenticStudentCode}`, JSON.stringify([hwSub, ...parsedHw.filter((s: any) => s.id !== hwSub.id)]));
+                if (currentUserId && currentUserId !== authenticStudentCode) {
+                  localStorage.setItem(`eduplay_student_submissions_${currentUserId}`, JSON.stringify([hwSub, ...parsedHw.filter((s: any) => s.id !== hwSub.id)]));
+                }
               }
-              console.warn('runTransaction failed, fallback to setDoc:', txErr);
-              await setDoc(mainSubDocRef, removeUndefined({
-                ...fullExamRecord,
-                id: fixedDocId,
-                examId: officialExamId,
-                assignmentId: officialExamId,
-                attemptNumber,
-                updatedAt: new Date().toISOString()
-              }), { merge: true });
+
+              window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
+              window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
+              window.dispatchEvent(new Event('storage'));
+            } catch (errLocal) {
+              console.error('Secondary error local storage:', errLocal);
             }
 
-            // Đồng bộ thêm sang collection song song (exams <-> assignments)
-            if (isAssignment || officialExamId.startsWith('as-')) {
-              try {
-                const exSubDocRef = doc(db, 'exams', officialExamId, 'submissions', fixedDocId);
-                await setDoc(exSubDocRef, removeUndefined({
-                  ...fullExamRecord,
-                  id: fixedDocId,
-                  examId: officialExamId,
-                  attemptNumber,
-                  updatedAt: new Date().toISOString()
-                }), { merge: true });
-              } catch {}
-            } else {
-              try {
-                const asSubDocRef = doc(db, 'assignments', officialExamId, 'submissions', fixedDocId);
-                await setDoc(asSubDocRef, removeUndefined({
-                  ...fullExamRecord,
-                  id: fixedDocId,
-                  assignmentId: officialExamId,
-                  attemptNumber,
-                  updatedAt: new Date().toISOString()
-                }), { merge: true });
-              } catch {}
-            }
-          }
-
-          // 3. Đồng bộ vào kho student_results cho officialExamId (và originalExamId nếu có)
-          await studentResultService.saveFullExamSubmission(authenticStudentCode, officialExamId, fullExamRecord);
-          await studentResultService.saveExamResult(authenticStudentCode, officialExamId, {
-            score: scoreNumber,
-            maxScore: 10,
-            submittedAt: nowTimeStr,
-            type: 'exam'
-          });
-          if (exam.originalExamId && exam.originalExamId !== officialExamId) {
-            await studentResultService.saveFullExamSubmission(authenticStudentCode, exam.originalExamId, fullExamRecord);
-            await studentResultService.saveExamResult(authenticStudentCode, exam.originalExamId, {
-              score: scoreNumber,
-              maxScore: 10,
-              submittedAt: nowTimeStr,
-              type: 'exam'
-            });
-          }
-          if (isAssignment) {
-            await studentResultService.saveFullAssignmentSubmission(authenticStudentCode, officialExamId, fullExamRecord);
-            await studentResultService.saveAssignmentResult(authenticStudentCode, {
-              assignmentId: officialExamId,
-              score: scoreNumber,
-              maxScore: 10,
-              submittedAt: nowTimeStr,
-              answers
-            });
-          }
-
-          // 4. Global cache & local storage (đã khử trùng 100%)
-          localStorage.setItem(`eduplay_student_exam_subs_${authenticStudentCode}`, JSON.stringify(updatedSubmissions));
-          if (currentUserId && currentUserId !== authenticStudentCode) {
-            localStorage.setItem(`eduplay_student_exam_subs_${currentUserId}`, JSON.stringify(updatedSubmissions));
-          }
-
-          const allSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
-          const allSubs = allSubsRaw ? JSON.parse(allSubsRaw) : [];
-          const filteredAll = Array.isArray(allSubs) ? allSubs.filter((s: any) => {
-            const sKey = getSubmissionExamKey(s);
-            const curKey = getSubmissionExamKey(examSub);
-            const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
-            return !(sKey === curKey && sCode === authenticStudentCode.toLowerCase());
-          }) : [];
-          filteredAll.unshift(fullExamRecord);
-          const deduplicatedAll = deduplicateExamSubmissions(filteredAll);
-          localStorage.setItem('eduplay_all_exam_submissions', JSON.stringify(deduplicatedAll));
-
-          if (officialExamId) {
-            const examSubsRaw = localStorage.getItem(`eduplay_exam_subs_${officialExamId}`);
-            const examSubs = examSubsRaw ? JSON.parse(examSubsRaw) : [];
-            const filteredExamSubs = Array.isArray(examSubs) ? examSubs.filter((s: any) => {
-              const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
-              return sCode !== authenticStudentCode.toLowerCase();
-            }) : [];
-            filteredExamSubs.unshift(fullExamRecord);
-            const deduplicatedExamSubs = deduplicateExamSubmissions(filteredExamSubs);
-            localStorage.setItem(`eduplay_exam_subs_${officialExamId}`, JSON.stringify(deduplicatedExamSubs));
-          }
-
-          // Lưu vào kho Bài tập nếu đang là bài tập
-          if (isAssignment) {
-            const hwSub = {
-              id: examSub.id,
-              type: 'assignment' as const,
-              submissionType: 'assignment' as const,
-              studentId: authenticStudentCode,
-              title: exam.title,
-              subject: exam.subject || 'Môn học',
-              rank: rankTier,
-              score: scoreVal,
-              submittedTime: nowTimeStr,
-              assignment: {
-                id: exam.id,
-                title: exam.title,
-                subject: exam.subject,
-                grade: exam.grade,
-                questions: exam.questions
-              },
-              questionSnapshot: qSnapshot,
-              answers,
-              answersById
-            };
+            // 5. Thưởng, callbacks, live session
             try {
-              const savedHw = localStorage.getItem(`eduplay_student_submissions_${authenticStudentCode}`);
-              const parsedHw = savedHw ? JSON.parse(savedHw) : [];
-              localStorage.setItem(`eduplay_student_submissions_${authenticStudentCode}`, JSON.stringify([hwSub, ...parsedHw.filter((s: any) => s.id !== hwSub.id)]));
-              if (currentUserId && currentUserId !== authenticStudentCode) {
-                localStorage.setItem(`eduplay_student_submissions_${currentUserId}`, JSON.stringify([hwSub, ...parsedHw.filter((s: any) => s.id !== hwSub.id)]));
+              if (isAssignment) {
+                awardAssignmentReward(currentUserId, exam.id || 'as-submit', exam.title, correct, questions.length || 1, scoreNumber);
+              } else {
+                awardExamReward(currentUserId, exam.id || 'ex-manual', exam.title, scoreNumber);
               }
-            } catch {}
+
+              if (onSubmitted) {
+                onSubmitted(examSub);
+              }
+
+              if (mode === 'assignment' && activeExamSession?.exam?.enableRealtimeLeaderboard) {
+                const effectiveInfo = getEffectiveStudentClassAndGrade();
+                const gameProfile = getStudentGameProfile(currentUserId, currentUserName);
+                const avatarEmoji = gameProfile.equippedAvatar || gameProfile.avatar || '🌟';
+                const timeSpentSec = Math.max(10, Math.floor((Date.now() - activeExamSession.startTime) / 1000));
+
+                completeQuizLiveSession({
+                  targetId: exam.id || 'ex-manual',
+                  studentId: currentUserId,
+                  studentName: currentUserName,
+                  studentClass: effectiveInfo.studentClass,
+                  studentAvatar: avatarEmoji,
+                  score: scoreNumber,
+                  scoreStr: scoreVal,
+                  percentage: scorePercentage,
+                  totalQuestions: totalQ,
+                  answeredCount: totalQ,
+                  timeSpentSeconds: timeSpentSec
+                });
+              }
+            } catch (errReward) {
+              console.error('Secondary error rewards/live:', errReward);
+            }
+          } catch (bgErr) {
+            console.error('Background secondary sync error:', bgErr);
           }
+        }, 0);
 
-          window.dispatchEvent(new Event('eduplay_student_submissions_updated'));
-          window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
-          window.dispatchEvent(new Event('storage'));
-        } catch (err) {
-          console.error('Error saving exam submission:', err);
-        }
-
-        // Thưởng bài tập / đề kiểm tra
-        if (isAssignment) {
-          awardAssignmentReward(currentUserId, exam.id || 'as-submit', exam.title, correct, questions.length || 1, scoreNumber);
-        } else {
-          try {
-            awardExamReward(currentUserId, exam.id || 'ex-manual', exam.title, scoreNumber);
-          } catch (err) {
-            console.error('Error awarding exam reward:', err);
-          }
-        }
-
-        if (onSubmitted) {
-          try {
-            onSubmitted(examSub);
-          } catch (err) {
-            console.error('Error invoking onSubmitted callback:', err);
-          }
-        }
-
-        // Complete live quiz session in Firestore & localStorage (Chỉ áp dụng cho Bài tập / mode === 'assignment' khi bật Real-time)
-        if (mode === 'assignment' && activeExamSession?.exam?.enableRealtimeLeaderboard) {
-          try {
-            const effectiveInfo = getEffectiveStudentClassAndGrade();
-            const gameProfile = getStudentGameProfile(currentUserId, currentUserName);
-            const avatarEmoji = gameProfile.equippedAvatar || gameProfile.avatar || '🌟';
-            const sessionDuration = activeExamSession?.durationMinutes || 15;
-            const timeSpentSec = Math.max(10, Math.floor((Date.now() - activeExamSession.startTime) / 1000));
-
-            completeQuizLiveSession({
-              targetId: exam.id || 'ex-manual',
-              studentId: currentUserId,
-              studentName: currentUserName,
-              studentClass: effectiveInfo.studentClass,
-              studentAvatar: avatarEmoji,
-              score: scoreNumber,
-              scoreStr: scoreVal,
-              percentage: scorePercentage,
-              totalQuestions: totalQ,
-              answeredCount: totalQ,
-              timeSpentSeconds: timeSpentSec
-            });
-          } catch (err) {
-            console.error('Error completing live quiz session on submit:', err);
-          }
-        }
       }
-
-      if (slowNetworkTimerRef.current) clearTimeout(slowNetworkTimerRef.current);
-      setSlowNetworkWarning(false);
-
-      // Khi nộp thành công: khóa vĩnh viễn
-      isExecutingSubmitRef.current = false;
-      hasSubmittedRef.current = true;
-      submittingRef.current = true;
-      isSubmittingRef.current = true;
-      setIsSubmitting(false);
-
-      setToast({
-        message: `Nộp bài thành công! Điểm số: ${scoreVal}`,
-        type: 'success'
-      });
-
-      setActiveExamSession(null);
-
-      setDetailSubmission({
-        exam,
-        score: scoreVal,
-        time: nowTimeStr,
-        answers,
-        title: exam.title,
-        subject: exam.subject || 'Môn học',
-        rank: rankTier
-      });
     } catch (err) {
       console.error('Fatal error during executeSubmitExam:', err);
       if (slowNetworkTimerRef.current) clearTimeout(slowNetworkTimerRef.current);
       setSlowNetworkWarning(false);
-      // Chỉ mở khóa nút khi THỰC SỰ THẤT BẠI trong catch để học sinh kiểm tra mạng và bấm nộp lại
-      isExecutingSubmitRef.current = false;
-      submittingRef.current = false;
-      isSubmittingRef.current = false;
-      hasSubmittedRef.current = false;
-      setIsSubmitting(false);
+      setSubmissionError('Chưa gửi được bài lên hệ thống. Bài của em đã được lưu trên máy này. Em đừng đóng trang, bấm Gửi lại');
       setToast({
-        message: 'Chưa nộp được, em kiểm tra mạng rồi bấm Nộp lại nhé!',
+        message: 'Chưa gửi được bài lên hệ thống, em bấm Gửi lại nhé!',
         type: 'error'
       });
-      setSubmissionError('Chưa nộp được do sự cố kết nối mạng. Em kiểm tra lại kết nối mạng rồi bấm "Nộp lại" nhé!');
+    } finally {
+      setIsSubmitting(false);
+      isSubmittingRef.current = false;
+      submittingRef.current = false;
+      isExecutingSubmitRef.current = false;
+      if (slowNetworkTimerRef.current) clearTimeout(slowNetworkTimerRef.current);
+      setSlowNetworkWarning(false);
     }
   };
 

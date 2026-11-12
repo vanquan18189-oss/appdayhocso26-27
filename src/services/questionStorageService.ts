@@ -26,6 +26,8 @@ import {
   collection,
   doc,
   getDocs,
+  getDoc,
+  setDoc,
   onSnapshot,
   getDocFromServer
 } from 'firebase/firestore';
@@ -669,12 +671,21 @@ export function subscribeToQuestionsFromFirestore(
 /**
  * Migration trực tiếp trên Firestore cho toàn bộ câu hỏi Sắp Xếp Thứ Tự (Ordering)
  */
-export async function migrateFirestoreOrderingData(): Promise<void> {
-  if (typeof window === 'undefined') return;
+export async function migrateFirestoreOrderingData(forceRun = false): Promise<number> {
+  if (typeof window === 'undefined') return 0;
+  let batchCount = 0;
   try {
+    // 1. Kiểm tra cờ "đã migrate" trong Firestore (app_settings/migrations, trường orderingDone)
+    const migrationRef = doc(db, 'app_settings', 'migrations');
+    const migSnap = await getDoc(migrationRef);
+    if (!forceRun && migSnap.exists() && migSnap.data()?.orderingDone === true) {
+      console.log('✨ [MIGRATION] Đã hoàn thành từ trước, tự động bỏ qua.');
+      return 0;
+    }
+
     console.log('🔄 [MIGRATION START] Đang quét và nâng cấp dữ liệu câu hỏi Sắp xếp thứ tự...');
     
-    // 1. Quét dữ liệu từ LocalStorage Cache trước
+    // 2. Quét dữ liệu từ LocalStorage Cache trước
     const cachedQuestions = getLocalCachedQuestions();
     const migratedQuestions: QuestionItem[] = [];
 
@@ -684,28 +695,26 @@ export async function migrateFirestoreOrderingData(): Promise<void> {
         const trueOrder = extractTrueOrderingFromQuestion(q);
         if (trueOrder.length > 0) {
           const newAnswerStr = trueOrder.map((s, i) => `${i + 1}. ${s}`).join('\n');
-          console.log(`📌 [MIGRATION ĐỌC DỮ LIỆU CŨ] ID: ${q.id} | Nội dung: ${q.content?.slice(0, 50)}...`);
-          console.log('   🔴 correctOrder TRƯỚC khi Migrate:', q.correctOrder);
-          console.log('   🔴 correctAnswer TRƯỚC khi Migrate:', q.correctAnswer);
-          console.log('   ✅ correctOrder SAU khi Migrate (CHUẨN SƯ PHẠM):', trueOrder);
-
-          const updatedQ: QuestionItem = {
-            ...q,
-            correctOrder: trueOrder,
-            order: (q.options || []).map((_, i) => i),
-            indices: (q.options || []).map((_, i) => i),
-            correctAnswer: newAnswerStr
-          };
-          migratedQuestions.push(updatedQ);
+          const isAlreadyCorrect = Array.isArray(q.correctOrder) && q.correctOrder.length === trueOrder.length && q.correctOrder.every((val, idx) => val === trueOrder[idx]) && q.correctAnswer === newAnswerStr;
+          
+          if (!isAlreadyCorrect) {
+            const updatedQ: QuestionItem = {
+              ...q,
+              correctOrder: trueOrder,
+              order: (q.options || []).map((_, i) => i),
+              indices: (q.options || []).map((_, i) => i),
+              correctAnswer: newAnswerStr
+            };
+            migratedQuestions.push(updatedQ);
+          }
         }
       }
     });
 
-    // 2. Đọc trực tiếp từ Firestore để ghi đè
+    // 3. Đọc trực tiếp từ Firestore để ghi đè những câu thật sự cần đổi
     const snap = await getDocs(collection(db, QUESTIONS_COLLECTION));
     if (!snap.empty) {
       const batch = trackedWriteBatch(db);
-      let batchCount = 0;
 
       snap.docs.forEach(docSnap => {
         const q = { ...(docSnap.data() as QuestionItem), id: docSnap.id };
@@ -714,22 +723,26 @@ export async function migrateFirestoreOrderingData(): Promise<void> {
           const trueOrder = extractTrueOrderingFromQuestion(q);
           if (trueOrder.length > 0) {
             const newAnswerStr = trueOrder.map((s, i) => `${i + 1}. ${s}`).join('\n');
-            const sanitized = sanitizeQuestionForFirestore({
-              ...q,
-              correctOrder: trueOrder,
-              order: (q.options || []).map((_, i) => i),
-              indices: (q.options || []).map((_, i) => i),
-              correctAnswer: newAnswerStr
-            });
-            batch.set(doc(db, QUESTIONS_COLLECTION, q.id), sanitized);
-            batchCount++;
+            const isAlreadyCorrect = Array.isArray(q.correctOrder) && q.correctOrder.length === trueOrder.length && q.correctOrder.every((val, idx) => val === trueOrder[idx]) && q.correctAnswer === newAnswerStr;
+
+            if (!isAlreadyCorrect) {
+              const sanitized = sanitizeQuestionForFirestore({
+                ...q,
+                correctOrder: trueOrder,
+                order: (q.options || []).map((_, i) => i),
+                indices: (q.options || []).map((_, i) => i),
+                correctAnswer: newAnswerStr
+              });
+              batch.set(doc(db, QUESTIONS_COLLECTION, q.id), sanitized);
+              batchCount++;
+            }
           }
         }
       });
 
       if (batchCount > 0) {
         await batch.commit();
-        console.log(`🚀 [MIGRATION FIRESTORE] Đã ghi đè trực tiếp thành công ${batchCount} câu hỏi Sắp xếp thứ tự vào Firestore!`);
+        console.log(`🚀 [MIGRATION FIRESTORE] Đã ghi đè thành công ${batchCount} câu hỏi Sắp xếp thứ tự vào Firestore!`);
       }
     }
 
@@ -739,16 +752,15 @@ export async function migrateFirestoreOrderingData(): Promise<void> {
         return found ? found : q;
       }));
     }
+
+    // 4. Lưu cờ "đã migrate" vào Firestore
+    await setDoc(migrationRef, { orderingDone: true, updatedAt: new Date().toISOString() }, { merge: true });
+
+    return batchCount;
   } catch (err) {
     console.warn('Lỗi trong quá trình chạy Migration Firestore:', err);
+    return 0;
   }
-}
-
-// Chạy Migration tự động khi ứng dụng khởi chạy
-if (typeof window !== 'undefined') {
-  setTimeout(() => {
-    migrateFirestoreOrderingData().catch(console.warn);
-  }, 500);
 }
 
 
