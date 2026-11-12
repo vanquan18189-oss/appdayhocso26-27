@@ -42,7 +42,8 @@ import {
 import { getStudentGameProfile } from '../../services/studentGameStoreService';
 import { getEffectiveStudentClassAndGrade, getCurrentStudentSession, getAuthenticStudentCode, normalizeClassKey } from '../../services/studentSessionService';
 import { studentResultService } from '../../services/studentResultService';
-import { normalizeStudentCode, formatStandardStudentCode, normalizeStudentName, getRecordType } from '../../services/studentCode';
+import { normalizeStudentCode, formatStandardStudentCode, isValidStudentCode, isSameStudent, getRecordType } from '../../services/studentCode';
+import { clearRetakeTombstone, isStudentRetakeTombstoned } from '../../services/examCompletionService';
 import { saveExamDraft, deleteExamDraft, loadAllActiveDraftsForStudent, ExamDraftRecord } from '../../services/examDraftService';
 import { generateRuleBasedExamComment } from '../../services/studentCommentAiService';
 import { subscribeToExamsFromFirestore, getExamsFromFirestore, getLocalCachedExams, isExamDeleted, isValidOfficialExam } from '../../services/examStorageService';
@@ -867,16 +868,13 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
   // Exam history / submissions for student - Tách riêng biệt độc lập cho Đề kiểm tra (type === 'exam')
   const session = getCurrentStudentSession();
   const studentInfoSession = getEffectiveStudentClassAndGrade();
-  const cleanClass = (studentInfoSession.studentClass || '3C').replace(/^Lớp\s*/i, '').trim().toUpperCase();
-  const authenticStudentCode = normalizeStudentCode(formatStandardStudentCode(
-    getAuthenticStudentCode(
-      session,
-      currentUserId,
-      studentInfoSession.studentClass,
-      studentInfoSession.studentName || currentUserName
-    ),
-    cleanClass
-  ));
+  const cleanClass = (studentInfoSession.studentClass || '').replace(/^Lớp\s*/i, '').trim().toUpperCase();
+  const rawAuthCode = getAuthenticStudentCode(
+    session,
+    currentUserId,
+    studentInfoSession.studentClass
+  );
+  const authenticStudentCode = isValidStudentCode(rawAuthCode) ? normalizeStudentCode(rawAuthCode) : '';
   const effectiveStudentCode = authenticStudentCode;
   const effectiveStudentName = session?.name || session?.fullName || currentUserName || studentInfoSession.studentName || 'Học sinh';
 
@@ -900,16 +898,17 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
 
   const [examHistory, setExamHistory] = useState<Array<ExamSubmissionItem>>(() => {
     try {
-      const keys = [authenticStudentCode, currentUserId, session?.sddcn, session?.code, session?.maHs].filter(Boolean) as string[];
+      if (!authenticStudentCode) return [];
+      const studentIdentity = { code: authenticStudentCode, className: studentInfoSession.studentClass };
       let foundItems: any[] = [];
-      for (const k of keys) {
-        const saved = localStorage.getItem(`eduplay_student_exam_subs_${k}`);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            foundItems = parsed;
-            break;
-          }
+      const saved = localStorage.getItem(`eduplay_student_exam_subs_${authenticStudentCode}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          foundItems = parsed.filter((s: any) =>
+            isSameStudent(studentIdentity, s, cleanClass) &&
+            !isStudentRetakeTombstoned(String(s.examId || s.exam?.id || ''), authenticStudentCode)
+          );
         }
       }
       if (foundItems.length === 0) {
@@ -917,10 +916,10 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         if (allSubsRaw) {
           const parsedAll = JSON.parse(allSubsRaw);
           if (Array.isArray(parsedAll)) {
-            foundItems = parsedAll.filter((s: any) => {
-              const cands = [s.studentId, s.studentCode, s.maHs, s.code, s.sddcn].filter(Boolean).map(c => normalizeStudentCode(String(c)));
-              return cands.includes(authenticStudentCode);
-            });
+            foundItems = parsedAll.filter((s: any) =>
+              isSameStudent(studentIdentity, s, cleanClass) &&
+              !isStudentRetakeTombstoned(String(s.examId || s.exam?.id || ''), authenticStudentCode)
+            );
           }
         }
       }
@@ -947,47 +946,38 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
 
     const syncExamHistory = async () => {
       try {
-        const keys = [authenticStudentCode, currentUserId, session?.sddcn, session?.code, session?.maHs].filter(Boolean) as string[];
+        if (!authenticStudentCode) {
+          if (!isCancelled) setExamHistory([]);
+          return;
+        }
+        const studentIdentity = { code: authenticStudentCode, className: studentInfoSession.studentClass };
         let localItems: ExamSubmissionItem[] = [];
 
-        // 1. Load from localStorage
-        for (const k of keys) {
-          const saved = localStorage.getItem(`eduplay_student_exam_subs_${k}`);
-          if (saved) {
-            try {
-              const parsed = JSON.parse(saved);
-              if (Array.isArray(parsed) && parsed.length > 0) {
-                localItems = parsed.filter(isExamSubmission);
-                break;
-              }
-            } catch {}
-          }
+        // 1. Load from localStorage strictly by full student code + class verification
+        const saved = localStorage.getItem(`eduplay_student_exam_subs_${authenticStudentCode}`);
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              localItems = parsed
+                .filter(isExamSubmission)
+                .filter((s: any) =>
+                  isSameStudent(studentIdentity, s, cleanClass) &&
+                  !isStudentRetakeTombstoned(String(s.examId || s.exam?.id || ''), authenticStudentCode)
+                );
+            }
+          } catch {}
         }
 
         // 2. Query & Sync from Firestore liveExams documents (embedded submissions array)
         const firestoreItems: ExamSubmissionItem[] = [];
         (liveExams || []).forEach((ex) => {
           if (!ex || !Array.isArray(ex.submissions)) return;
+          if (isStudentRetakeTombstoned(ex.id, authenticStudentCode)) return;
+
           const matchedSub = ex.submissions.find((s: any) => {
             if (!s) return false;
-            const candidates = [
-              s.studentId,
-              s.studentCode,
-              s.maHs,
-              s.code,
-              s.sddcn,
-              s.userId,
-              s.studentName,
-              s.name
-            ].filter(Boolean).map(c => normalizeStudentCode(String(c)));
-
-            const targetKeys = [
-              authenticStudentCode,
-              normalizeStudentCode(currentUserId || ''),
-              (effectiveStudentName || '').toLowerCase().trim()
-            ].filter(Boolean);
-
-            return candidates.some(c => targetKeys.includes(c) || c.toLowerCase() === (effectiveStudentName || '').toLowerCase().trim());
+            return isSameStudent(studentIdentity, s, cleanClass);
           });
 
           if (matchedSub) {
@@ -999,6 +989,8 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
               submissionType: 'exam' as const,
               examId: ex.id,
               studentId: authenticStudentCode,
+              studentCode: authenticStudentCode,
+              studentClass: studentInfoSession.studentClass,
               sddcn: authenticStudentCode,
               studentPersistentId: authenticStudentCode,
               academicYear: session?.academicYear || '2026-2027',
@@ -1016,12 +1008,13 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
         // 3. For any liveExam that the student hasn't matched yet, check sub-collection exams/{docId}/submissions/{studentCode}
         if (db && liveExams.length > 0) {
           const promises = liveExams.map(async (ex) => {
+            if (isStudentRetakeTombstoned(ex.id, authenticStudentCode)) return null;
             const alreadyMatched = firestoreItems.some(item => isExamSubmissionMatch(item, ex)) ||
                                    localItems.some(item => isExamSubmissionMatch(item, ex));
             if (alreadyMatched) return null;
 
             const examBaseId = (ex.originalExamId || ex.id || '').replace(/^(ex|as)-/, '').replace(/-class-.*$/, '');
-            const rawClass = ex.targetClass || studentClass || '3C';
+            const rawClass = ex.targetClass || studentClass || cleanClass;
             const clsKey = normalizeClassKey(rawClass).toLowerCase();
 
             const candDocIds = Array.from(new Set([
@@ -1031,21 +1024,18 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
               ex.originalExamId
             ].filter(Boolean) as string[]));
 
-            const candStudentCodes = Array.from(new Set([
-              authenticStudentCode,
-              normalizeStudentCode(currentUserId || ''),
-              session?.code ? normalizeStudentCode(session.code) : '',
-              session?.id ? normalizeStudentCode(session.id) : '',
-              session?.sddcn ? normalizeStudentCode(session.sddcn) : ''
-            ].filter(Boolean) as string[]));
-
             for (const docId of candDocIds) {
-              for (const sc of candStudentCodes) {
+              const candidateSubDocIds = [
+                `${authenticStudentCode}_${docId}_1`,
+                authenticStudentCode
+              ];
+              for (const subDocKey of candidateSubDocIds) {
                 try {
-                  const subDocRef = doc(db, 'exams', docId, 'submissions', sc);
+                  const subDocRef = doc(db, 'exams', docId, 'submissions', subDocKey);
                   const subSnap = await getDoc(subDocRef);
                   if (subSnap.exists()) {
                     const data = subSnap.data();
+                    if (!isSameStudent(studentIdentity, data, cleanClass)) continue;
                     const numScore = data.score !== undefined ? data.score : (data.totalScore !== undefined ? data.totalScore : '-');
                     const rankTier = data.rank || 'Hoàn thành 🎯';
                     return {
@@ -1054,36 +1044,8 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                       submissionType: 'exam' as const,
                       examId: ex.id,
                       studentId: authenticStudentCode,
-                      sddcn: authenticStudentCode,
-                      studentPersistentId: authenticStudentCode,
-                      academicYear: session?.academicYear || '2026-2027',
-                      title: ex.title,
-                      subject: ex.subject || 'Môn học',
-                      rank: rankTier,
-                      score: String(numScore),
-                      submittedTime: formatSubmissionDateTime(data.submittedAt || data.submittedTime || getCurrentSubmissionTimestamp()),
-                      exam: ex,
-                      answers: data.answers || {},
-                      answersById: data.answersById,
-                      questionSnapshot: data.questionSnapshot
-                    } as ExamSubmissionItem;
-                  }
-                } catch {}
-
-                // Also check assignments collection if assignment-oriented
-                try {
-                  const asDocRef = doc(db, 'assignments', docId, 'submissions', sc);
-                  const asSnap = await getDoc(asDocRef);
-                  if (asSnap.exists()) {
-                    const data = asSnap.data();
-                    const numScore = data.score !== undefined ? data.score : (data.totalScore !== undefined ? data.totalScore : '-');
-                    const rankTier = data.rank || 'Hoàn thành 🎯';
-                    return {
-                      id: data.id || `sub-${ex.id}-${authenticStudentCode}`,
-                      type: 'exam' as const,
-                      submissionType: 'exam' as const,
-                      examId: ex.id,
-                      studentId: authenticStudentCode,
+                      studentCode: authenticStudentCode,
+                      studentClass: studentInfoSession.studentClass,
                       sddcn: authenticStudentCode,
                       studentPersistentId: authenticStudentCode,
                       academicYear: session?.academicYear || '2026-2027',
@@ -1140,9 +1102,6 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           setExamHistory(mergedList);
           try {
             localStorage.setItem(`eduplay_student_exam_subs_${authenticStudentCode}`, JSON.stringify(mergedList));
-            if (currentUserId && currentUserId !== authenticStudentCode) {
-              localStorage.setItem(`eduplay_student_exam_subs_${currentUserId}`, JSON.stringify(mergedList));
-            }
             const allSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
             if (allSubsRaw) {
               const allSubs = JSON.parse(allSubsRaw);
@@ -1166,14 +1125,12 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
       const candIds: string[] = e?.detail?.candDocIds || [];
       if (!resetCode || normalizeStudentCode(resetCode) === normalizeStudentCode(authenticStudentCode)) {
         if (resetExamId) {
-          // Immediately remove from activeDrafts so UI does not show "Đang làm dở"
           setActiveDrafts(prev => {
             const next = { ...prev };
             delete next[resetExamId];
             candIds.forEach(cid => { delete next[cid]; });
             return next;
           });
-          // Immediately remove from examHistory state so card turns into "Bắt đầu làm bài"
           setExamHistory(prev => prev.filter(item => {
             const key = getSubmissionExamKey(item);
             const itemExamId = String(item.examId || item.exam?.id || '').toLowerCase();
@@ -1200,7 +1157,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
       window.removeEventListener('eduplay_submission_reset', handleSubmissionReset);
       window.removeEventListener('storage', syncExamHistory);
     };
-  }, [liveExams, authenticStudentCode, currentUserId, effectiveStudentName]);
+  }, [liveExams, authenticStudentCode, cleanClass, studentInfoSession.studentClass]);
 
   const examSubmissions = examHistory;
   const setExamSubmissions = setExamHistory;
@@ -1335,101 +1292,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
     return () => clearInterval(interval);
   }, [activeExamSession, remainingSeconds, authenticStudentCode, currentUserId, effectiveStudentName, studentInfoSession.studentClass]);
 
-  // Re-sync submissions when student user switches or liveExams update
-  useEffect(() => {
-    try {
-      const keys = [effectiveStudentCode, currentUserId, session?.sddcn].filter(Boolean) as string[];
-      let localItems: any[] = [];
-      for (const k of keys) {
-        const saved = localStorage.getItem(`eduplay_student_exam_subs_${k}`);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            localItems = parsed;
-            break;
-          }
-        }
-      }
-
-      // Also scan liveExams submissions
-      const firestoreItems: ExamSubmissionItem[] = [];
-      (liveExams || []).forEach((ex) => {
-        if (!ex || !Array.isArray(ex.submissions)) return;
-        const matchedSub = ex.submissions.find((s: any) => {
-          if (!s) return false;
-          const candidates = [
-            s.studentId,
-            s.studentCode,
-            s.maHs,
-            s.code,
-            s.userId,
-            s.studentName,
-            s.name,
-            s.sddcn
-          ].filter(Boolean).map(c => String(c).trim().toLowerCase());
-
-          const targetKeys = [
-            effectiveStudentCode.toLowerCase().trim(),
-            (currentUserId || '').toLowerCase().trim(),
-            (effectiveStudentName || '').toLowerCase().trim()
-          ].filter(Boolean);
-
-          return candidates.some(c => targetKeys.includes(c));
-        });
-
-        if (matchedSub) {
-          const numScore = matchedSub.totalScore !== undefined ? matchedSub.totalScore : (matchedSub.score !== undefined ? matchedSub.score : '-');
-          const rankTier = matchedSub.rank || (typeof numScore === 'number' ? (numScore >= 8 ? 'Xuất sắc' : numScore >= 5 ? 'Đạt' : 'Cần cố gắng') : 'Hoàn thành');
-          firestoreItems.push({
-            id: matchedSub.id || `sub-${ex.id}-${effectiveStudentCode}`,
-            type: 'exam' as const,
-            submissionType: 'exam' as const,
-            examId: ex.id,
-            studentId: effectiveStudentCode,
-            title: ex.title,
-            subject: ex.subject || 'Môn học',
-            rank: rankTier,
-            score: String(numScore),
-            submittedTime: formatSubmissionDateTime(matchedSub.submittedAt || matchedSub.submittedTime || getCurrentSubmissionTimestamp()),
-            exam: ex,
-            answers: matchedSub.answers || {}
-          });
-        }
-      });
-
-      // Merge LocalStorage and Firestore items (keyed strictly by canonical examId)
-      const mergedMap = new Map<string, ExamSubmissionItem>();
-      localItems.forEach((item: any) => {
-        const key = getSubmissionExamKey(item);
-        if (key) mergedMap.set(key, {
-          ...item,
-          type: 'exam' as const,
-          submissionType: 'exam' as const,
-          examId: item.examId || item.exam?.id || key
-        });
-      });
-      firestoreItems.forEach(item => {
-        const key = getSubmissionExamKey(item);
-        if (!key) return;
-        const existing = mergedMap.get(key);
-        if (!existing) {
-          mergedMap.set(key, item);
-        } else {
-          mergedMap.set(key, {
-            ...existing,
-            ...item,
-            answers: (item.answers && Object.keys(item.answers).length > 0) ? item.answers : existing.answers
-          });
-        }
-      });
-
-      const mergedList = Array.from(mergedMap.values()).filter(isExamSubmission);
-      setExamHistory(mergedList);
-      localStorage.setItem(`eduplay_student_exam_subs_${effectiveStudentCode}`, JSON.stringify(mergedList));
-    } catch (err) {
-      console.warn('Lỗi đồng bộ lịch sử đề kiểm tra:', err);
-    }
-  }, [effectiveStudentCode, currentUserId, effectiveStudentName, liveExams]);
+  // Đã gộp toàn bộ đồng bộ lịch sử bài làm vào syncExamHistory phía trên (chỉ nhận diện bằng mã học sinh đầy đủ + lớp, tuyệt đối không dùng họ tên).
 
   // Auto start exam/assignment when initialActiveExam is passed (only once per initial exam ID)
   useEffect(() => {
@@ -1545,17 +1408,24 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
       if (!isPreviewMode) {
         const session = getCurrentStudentSession();
         const effectiveInfo = getEffectiveStudentClassAndGrade();
-        const effectiveStudentClass = session?.className || effectiveInfo.studentClass || 'Lớp 3C';
+        const effectiveStudentClass = session?.className || effectiveInfo.studentClass || '';
         const effectiveStudentName = session?.name || session?.fullName || effectiveInfo.studentName || currentUserName;
-        const cleanClass = (effectiveStudentClass || '3C').replace(/^Lớp\s*/i, '').trim().toUpperCase();
-        const authenticStudentCode = normalizeStudentCode(formatStandardStudentCode(
-          getAuthenticStudentCode(session, currentUserId, effectiveStudentClass, effectiveStudentName),
-          cleanClass
-        ));
+        const rawCode = getAuthenticStudentCode(session, currentUserId, effectiveStudentClass);
+        const authenticStudentCode = isValidStudentCode(rawCode) ? normalizeStudentCode(rawCode) : '';
+        if (!authenticStudentCode) {
+          setAlertModal({
+            title: '⚠️ Không xác định được mã học sinh',
+            message: 'Không xác định được mã học sinh, vui lòng đăng xuất và đăng nhập lại',
+            type: 'restricted'
+          });
+          return;
+        }
         const effectiveAcademicYear = session?.academicYear || '2026-2027';
 
         // ID chính thức của đề kiểm tra hiện hành
         const officialExamId = exam.id;
+        clearRetakeTombstone(officialExamId, authenticStudentCode);
+        if (exam.originalExamId) clearRetakeTombstone(exam.originalExamId, authenticStudentCode);
 
         // Dùng ID cố định ${studentId}_${examId}_${attemptNumber} để setDoc idempotent tuyệt đối
         const attemptNumber = 1;
@@ -1574,6 +1444,8 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           submissionType: 'exam',
           examId: officialExamId,
           studentId: authenticStudentCode,
+          studentCode: authenticStudentCode,
+          studentClass: effectiveStudentClass,
           attemptNumber,
           sddcn: session?.sddcn || authenticStudentCode,
           studentPersistentId: authenticStudentCode,
@@ -1616,9 +1488,12 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             questionSnapshot: qSnapshot,
             answers,
             answersById,
-            violationCount: finalViolationCount || 3,
+            violationCount: finalViolationCount || (isViolationLock ? 3 : 0),
             isViolationLocked: isViolationLock,
-            violationReason: violationReason || '',
+            isViolationLock: isViolationLock,
+            isTimeoutLock: !isViolationLock,
+            isTimeout: !isViolationLock,
+            violationReason: violationReason || (!isViolationLock ? 'Đã hết thời gian làm bài thi quy định' : ''),
             feedback: isViolationLock 
               ? 'Bài thi bị khóa & tự động nộp do học sinh vi phạm quy chế rời màn hình/chuyển tab quá 3 lần.' 
               : (scoreNumber >= 8 ? 'Làm bài xuất sắc, nắm chắc kiến thức.' : (scoreNumber >= 5 ? 'Đã hoàn thành đạt yêu cầu.' : 'Cần ôn tập và rèn luyện thêm.'))
@@ -1642,9 +1517,12 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             attempts: 1,
             answers,
             answersById,
-            violationCount: finalViolationCount || 0,
+            violationCount: finalViolationCount || (isViolationLock ? 3 : 0),
             isViolationLocked: isViolationLock,
-            violationReason: violationReason || '',
+            isViolationLock: isViolationLock,
+            isTimeoutLock: !isViolationLock,
+            isTimeout: !isViolationLock,
+            violationReason: violationReason || (!isViolationLock ? 'Đã hết thời gian làm bài thi quy định' : ''),
             feedback: fullExamRecord.feedback || ''
           });
 
@@ -1667,22 +1545,16 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                 attemptNumber,
                 updatedAt: new Date().toISOString()
               }), { merge: true });
-              console.log(`💾 [Timeout Auto-Submit] Đã ghi trực tiếp vào Firestore: exams/${officialExamId}/submissions/${fixedDocId}`);
             } catch (errSub) {
               console.error(`❌ Lỗi ghi trực tiếp subcollection exams/${officialExamId}/submissions:`, errSub);
             }
 
-            // Ghi duy nhất 1 document chuẩn ${studentCode}_${examId}_${attempt} (không ghi kép doc authenticStudentCode)
-
-            // Cập nhật mảng submissions trên master document của đề kiểm tra (dùng slimExamRecord để không vượt quá giới hạn 1MB Firestore)
+            // Cập nhật mảng submissions trên master document của đề kiểm tra
             const examRef = doc(db, 'exams', officialExamId);
             try {
               await runTransaction(db, async (transaction) => {
                 const examSnap = await transaction.get(examRef);
-                if (!examSnap.exists()) {
-                  console.warn(`[Timeout Auto-Submit] Document exams/${officialExamId} không tồn tại trên Firestore, không tạo bản nháp lỗi.`);
-                  return;
-                }
+                if (!examSnap.exists()) return;
 
                 const currentData = examSnap.data();
                 const existingSubs = Array.isArray(currentData.submissions) ? [...currentData.submissions] : [];
@@ -1690,7 +1562,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                 const filtered = existingSubs.filter((s: any) => {
                   const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
                   const sId = String(s.id || '').toLowerCase();
-                  return sCode !== authenticStudentCode.toLowerCase() && sId !== fixedDocId.toLowerCase();
+                  return sCode !== authenticStudentCode && !isSameStudent(authenticStudentCode, s) && sId !== fixedDocId.toLowerCase();
                 });
                 filtered.unshift(slimExamRecord);
                 const deduplicatedDocSubs = deduplicateExamSubmissions(filtered);
@@ -1725,7 +1597,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                   const origFiltered = origExisting.filter((s: any) => {
                     const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
                     const sId = String(s.id || '').toLowerCase();
-                    return sCode !== authenticStudentCode.toLowerCase() && sId !== fixedDocId.toLowerCase();
+                    return sCode !== authenticStudentCode && !isSameStudent(authenticStudentCode, s) && sId !== fixedDocId.toLowerCase();
                   });
                   origFiltered.unshift(slimExamRecord);
                   const deduplicatedOrigSubs = deduplicateExamSubmissions(origFiltered);
@@ -1736,8 +1608,6 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                 });
               } catch {}
             }
-
-
           }
 
           // 2. Đồng bộ vào kho student_results
@@ -1775,15 +1645,12 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             const sKey = getSubmissionExamKey(s);
             const curKey = getSubmissionExamKey(examSub);
             const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
-            return !(sKey === curKey && sCode === authenticStudentCode.toLowerCase());
+            return !(sKey === curKey && (sCode === authenticStudentCode || isSameStudent(authenticStudentCode, s)));
           }) : [];
           filteredAll.unshift(fullExamRecord);
           const deduplicatedAll = deduplicateExamSubmissions(filteredAll);
           localStorage.setItem('eduplay_all_exam_submissions', JSON.stringify(deduplicatedAll));
           localStorage.setItem(`eduplay_student_exam_subs_${authenticStudentCode}`, JSON.stringify(updatedSubmissions));
-          if (currentUserId && currentUserId !== authenticStudentCode) {
-            localStorage.setItem(`eduplay_student_exam_subs_${currentUserId}`, JSON.stringify(updatedSubmissions));
-          }
 
           window.dispatchEvent(new Event('eduplay_exam_submissions_updated'));
           window.dispatchEvent(new Event('storage'));
@@ -1791,11 +1658,11 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           console.error('Error saving exam submission to Firestore on timeout:', err);
         }
 
-        // Thưởng đề kiểm tra / bài tập
+        // Thưởng đề kiểm tra / bài tập theo đúng mã học sinh đầy đủ
         if (isAssignment) {
-          awardAssignmentReward(currentUserId, exam.id || 'as-timeout', exam.title, correct, questions.length || 1, scoreNumber);
+          awardAssignmentReward(authenticStudentCode, exam.id || 'as-timeout', exam.title, correct, questions.length || 1, scoreNumber);
         } else {
-          awardExamReward(currentUserId, exam.id || 'ex-auto', exam.title, scoreNumber);
+          awardExamReward(authenticStudentCode, exam.id || 'ex-auto', exam.title, scoreNumber);
         }
 
         // Sync completion to live quiz sessions
@@ -2176,6 +2043,14 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
   }, [todoExams, filteredExamHistory]);
 
   const handleStartExam = (exam: ExamPaper) => {
+    if (!isPreviewMode && !authenticStudentCode) {
+      setAlertModal({
+        title: '⚠️ Không xác định được mã học sinh',
+        message: 'Không xác định được mã học sinh, vui lòng đăng xuất và đăng nhập lại',
+        type: 'restricted'
+      });
+      return;
+    }
     const isAssignment = mode === 'assignment' || 
       (exam.title && (exam.title.toLowerCase().includes('bài tập') || exam.title.toLowerCase().includes('luyện tập') || exam.title.toLowerCase().includes('rèn luyện'))) ||
       exam.examType === 'Luyện tập' ||
@@ -2366,17 +2241,24 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
       if (!isPreviewMode) {
         const session = getCurrentStudentSession();
         const effectiveInfo = getEffectiveStudentClassAndGrade();
-        const effectiveStudentClass = session?.className || effectiveInfo.studentClass || 'Lớp 3C';
+        const effectiveStudentClass = session?.className || effectiveInfo.studentClass || '';
         const effectiveStudentName = session?.name || session?.fullName || effectiveInfo.studentName || currentUserName;
-        const cleanClass = (effectiveStudentClass || '3C').replace(/^Lớp\s*/i, '').trim().toUpperCase();
-        const authenticStudentCode = normalizeStudentCode(formatStandardStudentCode(
-          getAuthenticStudentCode(session, currentUserId, effectiveStudentClass, effectiveStudentName),
-          cleanClass
-        ));
+        const rawCode = getAuthenticStudentCode(session, currentUserId, effectiveStudentClass);
+        const authenticStudentCode = isValidStudentCode(rawCode) ? normalizeStudentCode(rawCode) : '';
+        if (!authenticStudentCode) {
+          setAlertModal({
+            title: '⚠️ Không xác định được mã học sinh',
+            message: 'Không xác định được mã học sinh, vui lòng đăng xuất và đăng nhập lại',
+            type: 'restricted'
+          });
+          return;
+        }
         const effectiveAcademicYear = session?.academicYear || '2026-2027';
 
         // ID chính thức của đề kiểm tra hiện hành
         const officialExamId = exam.id;
+        clearRetakeTombstone(officialExamId, authenticStudentCode);
+        if (exam.originalExamId) clearRetakeTombstone(exam.originalExamId, authenticStudentCode);
 
         // Dùng ID cố định ${studentId}_${examId}_${attemptNumber} thay vì random timestamp để ghi đè chuẩn xác
         const attemptNumber = 1;
@@ -2407,6 +2289,8 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           submissionType: isAssignment ? ('assignment' as const) : ('exam' as const),
           examId: officialExamId,
           studentId: authenticStudentCode,
+          studentCode: authenticStudentCode,
+          studentClass: effectiveStudentClass,
           attemptNumber,
           sddcn: session?.sddcn || authenticStudentCode,
           studentPersistentId: authenticStudentCode,
@@ -2494,22 +2378,16 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                 attemptNumber,
                 updatedAt: new Date().toISOString()
               }), { merge: true });
-              console.log(`💾 [Nộp bài] Đã ghi trực tiếp vào Firestore: exams/${officialExamId}/submissions/${fixedDocId}`);
             } catch (subErr) {
               console.error(`❌ Lỗi ghi trực tiếp Firestore subcollection exams/${officialExamId}/submissions:`, subErr);
             }
 
-            // Ghi duy nhất 1 document chuẩn ${studentCode}_${examId}_${attempt} (không ghi kép doc authenticStudentCode)
-
-            // 2. Cập nhật mảng submissions trên master document của đề thi (dùng slimExamRecord chống vượt ngưỡng 1MB)
+            // 2. Cập nhật mảng submissions trên master document của đề thi
             const examRef = doc(db, 'exams', officialExamId);
             try {
               await runTransaction(db, async (transaction) => {
                 const examSnap = await transaction.get(examRef);
-                if (!examSnap.exists()) {
-                  console.warn(`[Nộp bài] Document exams/${officialExamId} không tồn tại trên Firestore, không tạo bản nháp lỗi.`);
-                  return;
-                }
+                if (!examSnap.exists()) return;
 
                 const currentData = examSnap.data();
                 const existingSubs = Array.isArray(currentData.submissions) ? [...currentData.submissions] : [];
@@ -2517,7 +2395,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                 const filtered = existingSubs.filter((s: any) => {
                   const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
                   const sId = String(s.id || '').toLowerCase();
-                  return sCode !== authenticStudentCode.toLowerCase() && sId !== fixedDocId.toLowerCase();
+                  return sCode !== authenticStudentCode && !isSameStudent(authenticStudentCode, s) && sId !== fixedDocId.toLowerCase();
                 });
                 filtered.unshift(slimExamRecord);
                 const deduplicatedDocSubs = deduplicateExamSubmissions(filtered);
@@ -2552,7 +2430,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                   const origFiltered = origExisting.filter((s: any) => {
                     const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
                     const sId = String(s.id || '').toLowerCase();
-                    return sCode !== authenticStudentCode.toLowerCase() && sId !== fixedDocId.toLowerCase();
+                    return sCode !== authenticStudentCode && !isSameStudent(authenticStudentCode, s) && sId !== fixedDocId.toLowerCase();
                   });
                   origFiltered.unshift(slimExamRecord);
                   const deduplicatedOrigSubs = deduplicateExamSubmissions(origFiltered);
@@ -2563,8 +2441,6 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                 });
               } catch {}
             }
-
-
           }
 
           // 3. Đồng bộ vào kho student_results cho officialExamId (và originalExamId nếu có)
@@ -2597,9 +2473,6 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
 
           // 4. Global cache & local storage (đã khử trùng 100%)
           localStorage.setItem(`eduplay_student_exam_subs_${authenticStudentCode}`, JSON.stringify(updatedSubmissions));
-          if (currentUserId && currentUserId !== authenticStudentCode) {
-            localStorage.setItem(`eduplay_student_exam_subs_${currentUserId}`, JSON.stringify(updatedSubmissions));
-          }
 
           const allSubsRaw = localStorage.getItem('eduplay_all_exam_submissions');
           const allSubs = allSubsRaw ? JSON.parse(allSubsRaw) : [];
@@ -2607,7 +2480,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             const sKey = getSubmissionExamKey(s);
             const curKey = getSubmissionExamKey(examSub);
             const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
-            return !(sKey === curKey && sCode === authenticStudentCode.toLowerCase());
+            return !(sKey === curKey && (sCode === authenticStudentCode || isSameStudent(authenticStudentCode, s)));
           }) : [];
           filteredAll.unshift(fullExamRecord);
           const deduplicatedAll = deduplicateExamSubmissions(filteredAll);
@@ -2618,7 +2491,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             const examSubs = examSubsRaw ? JSON.parse(examSubsRaw) : [];
             const filteredExamSubs = Array.isArray(examSubs) ? examSubs.filter((s: any) => {
               const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
-              return sCode !== authenticStudentCode.toLowerCase();
+              return sCode !== authenticStudentCode && !isSameStudent(authenticStudentCode, s);
             }) : [];
             filteredExamSubs.unshift(fullExamRecord);
             const deduplicatedExamSubs = deduplicateExamSubmissions(filteredExamSubs);
@@ -2631,12 +2504,12 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
           console.error('Error saving exam submission:', err);
         }
 
-        // Thưởng bài tập / đề kiểm tra
+        // Thưởng bài tập / đề kiểm tra theo đúng mã học sinh đầy đủ
         if (isAssignment) {
-          awardAssignmentReward(currentUserId, exam.id || 'as-submit', exam.title, correct, questions.length || 1, scoreNumber);
+          awardAssignmentReward(authenticStudentCode, exam.id || 'as-submit', exam.title, correct, questions.length || 1, scoreNumber);
         } else {
           try {
-            awardExamReward(currentUserId, exam.id || 'ex-manual', exam.title, scoreNumber);
+            awardExamReward(authenticStudentCode, exam.id || 'ex-manual', exam.title, scoreNumber);
           } catch (err) {
             console.error('Error awarding exam reward:', err);
           }
@@ -4630,6 +4503,14 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
   return (
     <div className="space-y-6 pb-12 w-full">
       {renderAntiCheatModal()}
+      {!isPreviewMode && !authenticStudentCode && (
+        <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 flex items-center gap-3 text-amber-900 shadow-sm">
+          <AlertTriangle className="w-6 h-6 text-amber-600 shrink-0" />
+          <div className="text-sm font-bold">
+            Không xác định được mã học sinh, vui lòng đăng xuất và đăng nhập lại
+          </div>
+        </div>
+      )}
       {/* HEADER SECTION */}
       <div className="bg-gradient-to-r from-blue-700 via-sky-600 to-indigo-700 rounded-[28px] p-7 sm:p-9 text-white shadow-2xl relative overflow-hidden border border-sky-400/40 min-h-[170px] flex items-center">
         {/* Background Ambient Glows & Sparkles Decor */}

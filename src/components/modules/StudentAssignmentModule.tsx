@@ -36,7 +36,7 @@ import {
   getCurrentStudentSession
 } from '../../services/studentSessionService';
 import { studentResultService } from '../../services/studentResultService';
-import { getRecordType } from '../../services/studentCode';
+import { getRecordType, isSameStudent, isValidStudentCode, normalizeStudentCode } from '../../services/studentCode';
 import {
   subscribeToAssignmentsFromFirestore,
   getAssignmentsFromFirestore,
@@ -220,12 +220,12 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
 
   const studentSession = getCurrentStudentSession();
   const effectiveInfo = getEffectiveStudentClassAndGrade();
-  const effectiveUserId = getAuthenticStudentCode(
+  const rawAuthCode = getAuthenticStudentCode(
     studentSession, 
     currentUserId || studentId, 
-    effectiveInfo.studentClass, 
-    currentUserName || studentName || effectiveInfo.studentName
+    effectiveInfo.studentClass
   );
+  const effectiveUserId = isValidStudentCode(rawAuthCode) ? normalizeStudentCode(rawAuthCode) : '';
   const effectiveUserName = studentSession?.name || studentSession?.fullName || currentUserName || studentName || effectiveInfo.studentName || 'Học sinh';
 
   const [activeTab, setActiveTab] = useState<'todo' | 'history'>('todo');
@@ -329,6 +329,11 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
   // Re-sync assignment history from LocalStorage, student_results, and assignments/{assignmentId}/submissions/{effectiveUserId} (Single Source of Truth)
   useEffect(() => {
     try {
+      if (!effectiveUserId) {
+        setAssignmentHistory([]);
+        return;
+      }
+      const studentIdentity = { code: effectiveUserId, className: effectiveInfo.studentClass };
       const saved = localStorage.getItem(`eduplay_student_submissions_${effectiveUserId}`);
       let localItems: AssignmentSubmissionItem[] = [];
       if (saved) {
@@ -336,6 +341,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
         if (Array.isArray(parsed)) {
           localItems = parsed
             .filter(isAssignmentSubmission)
+            .filter((s: any) => isSameStudent(studentIdentity, s, effectiveInfo.studentClass))
             .map((s: any) => ({
               ...s,
               type: 'assignment' as const,
@@ -351,29 +357,13 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
         }
       }
 
-      // Query & Sync from Firestore live assignments documents & sub-collections
+      // Query & Sync from Firestore live assignments documents (chỉ khớp theo mã học sinh đầy đủ + lớp, tuyệt đối không khớp theo tên)
       const firestoreItems: AssignmentSubmissionItem[] = [];
       (liveAssignments || []).forEach((as) => {
         if (!as || !Array.isArray(as.submissions)) return;
         const matchedSub = as.submissions.find((s: any) => {
           if (!s) return false;
-          const candidates = [
-            s.studentId,
-            s.studentCode,
-            s.maHs,
-            s.code,
-            s.userId,
-            s.studentName,
-            s.name
-          ].filter(Boolean).map(c => String(c).trim().toLowerCase());
-
-          const targetKeys = [
-            effectiveUserId.toLowerCase().trim(),
-            (studentId || '').toLowerCase().trim(),
-            (effectiveUserName || '').toLowerCase().trim()
-          ].filter(Boolean);
-
-          return candidates.some(c => targetKeys.includes(c));
+          return isSameStudent(studentIdentity, s, effectiveInfo.studentClass);
         });
 
         if (matchedSub) {
@@ -554,6 +544,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       studentCode: effectiveUserId,
       maHs: effectiveUserId,
       code: effectiveUserId,
+      studentClass: effectiveInfo.studentClass,
       studentName: effectiveUserName || 'Học sinh',
       score: numScore,
       totalScore: numScore,
@@ -566,15 +557,10 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
       status: 'submitted' as const
     };
 
-    // Update parent state if available
+    // Update parent state if available (tuyệt đối không lọc theo tên)
     if (onSaveAssignment && newSub.assignment) {
       const existingSubs = Array.isArray(newSub.assignment.submissions) ? [...newSub.assignment.submissions] : [];
-      const filtered = existingSubs.filter((s: any) => 
-        (s.studentId || '').toLowerCase() !== effectiveUserId.toLowerCase() &&
-        (s.studentCode || '').toLowerCase() !== effectiveUserId.toLowerCase() &&
-        (s.maHs || '').toLowerCase() !== effectiveUserId.toLowerCase() &&
-        (s.studentName || '').toLowerCase() !== (effectiveUserName || '').toLowerCase()
-      );
+      const filtered = existingSubs.filter((s: any) => !isSameStudent(effectiveUserId, s, effectiveInfo.studentClass));
       filtered.push(submissionRecord as any);
       const updatedAssignment: HomeworkAssignment = {
         ...newSub.assignment,
@@ -585,7 +571,7 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
     }
 
     // Save directly to Firestore for instant real-time sync across teachers & students using runTransaction (Atomic operation)
-    if (db && newSub.assignment?.id) {
+    if (db && newSub.assignment?.id && effectiveUserId) {
       const assignmentId = newSub.assignment.id;
       const assignRef = doc(db, 'assignments', assignmentId);
       const subDocRef = doc(db, 'assignments', assignmentId, 'submissions', effectiveUserId);
@@ -598,19 +584,14 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
           existingSubs = Array.isArray(currentData.submissions) ? [...currentData.submissions] : [];
         }
 
-        // Filter out previous submission by same student to ensure deduplication
-        const filtered = existingSubs.filter((s: any) => 
-          (s.studentId || '').toLowerCase() !== effectiveUserId.toLowerCase() &&
-          (s.studentCode || '').toLowerCase() !== effectiveUserId.toLowerCase() &&
-          (s.maHs || '').toLowerCase() !== effectiveUserId.toLowerCase() &&
-          (s.studentName || '').toLowerCase() !== (effectiveUserName || '').toLowerCase()
-        );
+        // Filter out previous submission by same student strictly by full student code + class
+        const filtered = existingSubs.filter((s: any) => !isSameStudent(effectiveUserId, s, effectiveInfo.studentClass));
 
         filtered.push(submissionRecord);
 
-        // Calculate unique submitted student IDs and unique count
+        // Calculate unique submitted student IDs strictly by full student code (không dùng tên)
         const uniqueStudentKeys = new Set(
-          filtered.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.studentName || '').trim().toLowerCase()).filter(Boolean)
+          filtered.map((s: any) => normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || '')).filter(Boolean)
         );
         const count = uniqueStudentKeys.size;
         const submittedIdsList = Array.from(uniqueStudentKeys);
@@ -854,6 +835,14 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
 
   return (
     <div className="space-y-6 pb-12 w-full">
+      {!isPreviewMode && !effectiveUserId && (
+        <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 flex items-center gap-3 text-amber-900 shadow-sm">
+          <AlertCircle className="w-6 h-6 text-amber-600 shrink-0" />
+          <div className="text-sm font-bold">
+            Không xác định được mã học sinh, vui lòng đăng xuất và đăng nhập lại
+          </div>
+        </div>
+      )}
       {isDebugMode && (
         <div className="bg-slate-900 text-emerald-300 p-4 rounded-2xl text-xs font-mono space-y-2 border border-emerald-500/40">
           <div className="font-bold text-white flex items-center justify-between">

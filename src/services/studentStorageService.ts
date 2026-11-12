@@ -99,7 +99,8 @@ export function deduplicateAndNormalizeStudents(
   const finalSeenIds = new Set<string>();
   return uniqueStudents.map((st, idx) => {
     const stt = idx + 1;
-    const code = formatStandardStudentCode(st.code, key, stt);
+    const validFullCode = formatStandardStudentCode(st.code);
+    const code = validFullCode || (st.code ? normalizeStudentCode(st.code) : `${key}26-27-${stt}`);
     
     // Ensure every record has a unique ID and no collisions
     let id = st.id && !finalSeenIds.has(st.id) ? st.id : `st-${key}-${stt}`;

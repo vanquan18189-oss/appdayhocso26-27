@@ -1,9 +1,8 @@
 import { getStudentsFromLocalStorage, getClassStudentCount, generateDefaultClassRoster } from './studentStorageService';
-import { formatStandardStudentCode, normalizeStudentCode } from './studentCode';
+import { formatStandardStudentCode, normalizeStudentCode, isSameStudent, extractFullStudentCode } from './studentCode';
 import { db } from '../firebaseConfig';
 import { collection, getDocs } from 'firebase/firestore';
 import { ExamPaper } from '../types';
-// import { safeStorage } from '../utils/safeStorage';
 
 export interface ExamCompletionStats {
   totalStudents: number;
@@ -13,8 +12,35 @@ export interface ExamCompletionStats {
   unmatchedSubmissions: any[];
   validSubmissions: any[];
   realDocCount: number;
+  violationCount: number;
+  timeoutCount: number;
   lastRefreshedAt?: string;
   error?: string;
+}
+
+export function isSubmissionViolationLocked(sub: any): boolean {
+  if (!sub) return false;
+  if (sub.isViolationLocked === true || sub.isViolationLock === true) return true;
+  const reason = String(sub.violationReason || '').toLowerCase();
+  if (reason.includes('vi phạm') || reason.includes('rời khỏi') || reason.includes('chuyển tab') || reason.includes('rời màn hình')) return true;
+  const rank = String(sub.rank || '').toLowerCase();
+  if (rank.includes('vi phạm') || rank.includes('khóa do vi phạm')) return true;
+  const feedback = String(sub.feedback || '').toLowerCase();
+  if (feedback.includes('vi phạm quy chế') || feedback.includes('rời màn hình')) return true;
+  return false;
+}
+
+export function isSubmissionTimeoutLocked(sub: any): boolean {
+  if (!sub) return false;
+  if (isSubmissionViolationLocked(sub)) return false;
+  if (sub.isTimeoutLock === true || sub.isTimeout === true || sub.timeout === true || sub.submitReason === 'timeout') return true;
+  const reason = String(sub.violationReason || '').toLowerCase();
+  if (reason.includes('hết thời gian') || reason.includes('hết giờ')) return true;
+  const feedback = String(sub.feedback || '').toLowerCase();
+  if (feedback.includes('hết thời gian') || feedback.includes('hết giờ') || feedback.includes('tự động nộp do hết')) return true;
+  const rank = String(sub.rank || '').toLowerCase();
+  if (rank.includes('hết giờ') || rank.includes('he_gio')) return true;
+  return false;
 }
 
 // In-memory cache for direct Firestore completion stats
@@ -24,14 +50,97 @@ const examCompletionStatsCache = new Map<string, ExamCompletionStats>();
 const globalFirestoreExamSubs = new Map<string, any[]>();
 const globalExamRealDocCounts = new Map<string, number>();
 
+// Tombstone map preventing deleted/retake submissions from being resurrected by stale snapshots or caches
+const retakeTombstoneMap = new Map<string, number>();
+
+function getExamBaseKey(examId: string): string {
+  return String(examId || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^ex-/, '')
+    .replace(/^as-/, '')
+    .replace(/-class-.*$/, '');
+}
+
+export function setRetakeTombstone(examId: string, studentCode: string, durationMs: number = 30000): void {
+  const normCode = normalizeStudentCode(studentCode);
+  const baseKey = getExamBaseKey(examId);
+  if (!normCode || !baseKey) return;
+  retakeTombstoneMap.set(`${baseKey}__${normCode}`, Date.now() + durationMs);
+}
+
+export function clearRetakeTombstone(examId: string, studentCode: string): void {
+  const normCode = normalizeStudentCode(studentCode);
+  const baseKey = getExamBaseKey(examId);
+  if (!normCode || !baseKey) return;
+  retakeTombstoneMap.delete(`${baseKey}__${normCode}`);
+}
+
+export function isStudentRetakeTombstoned(examId: string, studentOrSub: any): boolean {
+  const code = typeof studentOrSub === 'string'
+    ? normalizeStudentCode(studentOrSub)
+    : extractFullStudentCode(studentOrSub);
+  const baseKey = getExamBaseKey(examId);
+  if (!code || !baseKey) return false;
+  const exp = retakeTombstoneMap.get(`${baseKey}__${code}`);
+  if (!exp) return false;
+  if (Date.now() > exp) {
+    retakeTombstoneMap.delete(`${baseKey}__${code}`);
+    return false;
+  }
+  return true;
+}
+
+export function purgeExamCompletionCacheForStudent(
+  examId: string,
+  studentCode: string,
+  candDocIds: string[] = []
+): void {
+  const normCode = normalizeStudentCode(studentCode);
+  if (!normCode) return;
+
+  setRetakeTombstone(examId, normCode, 30000);
+
+  const allExamKeys = new Set<string>([
+    String(examId || '').trim().toLowerCase(),
+    ...candDocIds.map(id => String(id || '').trim().toLowerCase())
+  ].filter(Boolean));
+
+  const targetBase = getExamBaseKey(examId);
+
+  globalFirestoreExamSubs.forEach((subs, key) => {
+    if (allExamKeys.has(key) || (targetBase && getExamBaseKey(key) === targetBase)) {
+      const filtered = Array.isArray(subs)
+        ? subs.filter(s => !isSameStudent(normCode, s) && extractFullStudentCode(s) !== normCode)
+        : [];
+      globalFirestoreExamSubs.set(key, filtered);
+      globalExamRealDocCounts.set(key, filtered.length);
+    }
+  });
+
+  examCompletionStatsCache.forEach((_, key) => {
+    if (allExamKeys.has(key) || (targetBase && getExamBaseKey(key) === targetBase)) {
+      examCompletionStatsCache.delete(key);
+      if (typeof window !== 'undefined') {
+        try {
+          sessionStorage.removeItem(`eduplay_exam_completion_${key}`);
+        } catch {}
+      }
+    }
+  });
+}
+
 export function registerFirestoreExamSubs(examId: string, subs: any[], docCount?: number) {
   if (examId) {
     const key = String(examId).trim().toLowerCase();
-    globalFirestoreExamSubs.set(key, subs);
+    const filtered = Array.isArray(subs)
+      ? subs.filter(s => !isStudentRetakeTombstoned(examId, s))
+      : [];
+    globalFirestoreExamSubs.set(key, filtered);
     if (typeof docCount === 'number') {
-      globalExamRealDocCounts.set(key, docCount);
+      globalExamRealDocCounts.set(key, filtered.length);
     } else {
-      globalExamRealDocCounts.set(key, subs.length);
+      globalExamRealDocCounts.set(key, filtered.length);
     }
   }
 }
@@ -59,21 +168,15 @@ export function getCachedExamCompletion(examId: string): ExamCompletionStats | u
 
 /**
  * Đếm trực tiếp và truy vấn submissions từ Firestore subcollection exams/{examId}/submissions
- * Thực hiện mỗi khi vào trang, đổi bộ lọc, chuyển trang, đóng bảng chi tiết hoặc bấm "Làm mới số liệu".
- * Chỉ đọc tối đa số đề trong trang hiện tại (tối đa 10 đề) để kiểm soát hạn mức quota.
- * Hoàn toàn READ-ONLY, không ghi Firestore.
  */
 export async function fetchDirectExamCompletions(exams: ExamPaper[]): Promise<Map<string, ExamCompletionStats>> {
   const resultMap = new Map<string, ExamCompletionStats>();
   if (!Array.isArray(exams) || exams.length === 0) return resultMap;
 
   const nowTime = new Date().toLocaleTimeString('vi-VN');
-
-  // Limit to at most 10 exams per page for quota safety
   const targetExams = exams.slice(0, 10);
 
   if (!db) {
-    // If no db, calculate from local/memory
     targetExams.forEach(exam => {
       if (!exam?.id) return;
       const stats = getExamCompletion(exam.id, exam.targetClass || '', exam.submissions);
@@ -97,7 +200,6 @@ export async function fetchDirectExamCompletions(exams: ExamPaper[]): Promise<Ma
     const originalExamId = exam.originalExamId;
     const targetClass = exam.targetClass || '';
 
-    // Determine candidate Firestore doc IDs for this exam
     const cleanExamId = String(examId).trim();
     const cleanOriginalId = originalExamId ? String(originalExamId).trim() : '';
     const examBaseId = (cleanOriginalId || cleanExamId).replace(/^ex-/, '').replace(/^as-/, '').replace(/-class-.*$/, '');
@@ -126,6 +228,7 @@ export async function fetchDirectExamCompletions(exams: ExamPaper[]): Promise<Ma
         snap.forEach(d => {
           const data = d.data();
           const subObj = { ...data, id: d.id, docId: d.id };
+          if (isStudentRetakeTombstoned(examId, subObj)) return;
           const subKey = `${d.id}__${normalizeStudentCode(data.studentCode || data.maHs || data.studentId || '')}`;
           if (!seenSubKeys.has(subKey)) {
             seenSubKeys.add(subKey);
@@ -138,10 +241,9 @@ export async function fetchDirectExamCompletions(exams: ExamPaper[]): Promise<Ma
       }
     }
 
-    // Also include explicit submissions on exam paper object if available
     if (Array.isArray(exam.submissions) && exam.submissions.length > 0) {
       exam.submissions.forEach((sub: any) => {
-        if (!sub) return;
+        if (!sub || isStudentRetakeTombstoned(examId, sub)) return;
         const subKey = `${sub.id || sub.studentCode}__${normalizeStudentCode(sub.studentCode || sub.maHs || sub.studentId || '')}`;
         if (!seenSubKeys.has(subKey)) {
           seenSubKeys.add(subKey);
@@ -150,13 +252,11 @@ export async function fetchDirectExamCompletions(exams: ExamPaper[]): Promise<Ma
       });
     }
 
-    // Register into memory store
     registerFirestoreExamSubs(examId, collectedSubs, totalRealDocCount);
     if (originalExamId && originalExamId !== examId) {
       registerFirestoreExamSubs(originalExamId, collectedSubs, totalRealDocCount);
     }
 
-    // Compute unified completion stats
     const stats = getExamCompletion(examId, targetClass, collectedSubs, totalRealDocCount);
     stats.lastRefreshedAt = nowTime;
     if (fetchError && collectedSubs.length === 0) {
@@ -179,17 +279,7 @@ export async function fetchDirectExamCompletions(exams: ExamPaper[]): Promise<Ma
 
 /**
  * Hàm chung tính toán số lượng hoàn thành và thống kê bài nộp cho một đề thi và lớp học.
- * Dùng thống nhất cho:
- * 1. Danh sách đề thi (ExamManagementModule)
- * 2. Bảng chi tiết nộp bài (StudentSubmissionDetailModal / Tracking modal)
- * 3. Thống kê & phổ điểm (statsExam)
- * 4. Xuất file Excel (.xlsx)
- *
- * Quy tắc:
- * - "Đã làm" = số học sinh trong danh sách lớp được giao có ít nhất 1 bài nộp hợp lệ.
- * - Một học sinh một lần: nhiều lần nộp của cùng Mã HS chuẩn chỉ tính 1.
- * - Bài nộp không khớp học sinh nào trong danh sách lớp không cộng vào "Đã làm", gom vào "Bài nộp chưa khớp".
- * - Mẫu số lấy theo sĩ số học sinh hiện tại của lớp.
+ * Sử dụng duy nhất hàm isSameStudent (so khớp chính xác mã đầy đủ có tiền tố lớp + kiểm tra lớp).
  */
 export function getExamCompletion(
   examId: string,
@@ -205,7 +295,9 @@ export function getExamCompletion(
       totalAttempts: 0,
       unmatchedSubmissions: [],
       validSubmissions: [],
-      realDocCount: 0
+      realDocCount: 0,
+      violationCount: 0,
+      timeoutCount: 0
     };
   }
 
@@ -215,15 +307,16 @@ export function getExamCompletion(
   const classStudentsRoster = rawRoster.map((st, idx) => ({
     ...st,
     stt: st.stt || (idx + 1),
-    code: formatStandardStudentCode(st.code, cleanClass, st.stt || (idx + 1)),
+    code: formatStandardStudentCode(st.code) || normalizeStudentCode(st.code),
+    className: st.className || stdClassName,
     name: st.name || st.fullName || `Học sinh ${idx + 1}`,
     fullName: st.fullName || st.name || `Học sinh ${idx + 1}`
   }));
 
   const totalStudents = Math.max(classStudentsRoster.length, getClassStudentCount(stdClassName, 38), 1);
 
-  // Gather candidate submissions
   const allCandidates: any[] = [];
+  const candidateKeys = new Set<string>();
   const targetExamId = String(examId || '').trim().toLowerCase();
   const targetBaseId = targetExamId.replace(/-class-.*$/, '').replace(/^ex-/, '');
 
@@ -236,34 +329,36 @@ export function getExamCompletion(
     return false;
   };
 
-  // 1. Explicit submissions passed directly (e.g. from fetchDirectExamCompletions)
+  const addCandidate = (sub: any) => {
+    if (!sub || isStudentRetakeTombstoned(examId, sub)) return;
+    const subId = String(sub.id || sub.docId || '').trim();
+    const stCode = extractFullStudentCode(sub) || normalizeStudentCode(String(sub.studentCode || sub.maHs || sub.studentId || sub.code || ''));
+    const uniqueKey = subId ? `${subId}__${stCode}` : `${stCode}__${JSON.stringify(sub.answers || {})}`;
+    if (!candidateKeys.has(uniqueKey)) {
+      candidateKeys.add(uniqueKey);
+      allCandidates.push(sub);
+    }
+  };
+
   if (Array.isArray(explicitSubmissions) && explicitSubmissions.length > 0) {
-    explicitSubmissions.forEach(sub => {
-      if (sub) allCandidates.push(sub);
-    });
+    explicitSubmissions.forEach(sub => addCandidate(sub));
   }
 
-  // 2. Global Firestore submissions in memory
   if (globalFirestoreExamSubs.size > 0) {
     globalFirestoreExamSubs.forEach((subs, sExamId) => {
       if (isExamMatch(sExamId) && Array.isArray(subs)) {
-        subs.forEach(item => {
-          if (item) allCandidates.push(item);
-        });
+        subs.forEach(item => addCandidate(item));
       }
     });
   }
 
-  // 3. Fallback to localStorage caches only if no candidates found yet
-  if (allCandidates.length === 0 && typeof window !== 'undefined') {
+  if (typeof window !== 'undefined') {
     try {
       const examSubsRaw = localStorage.getItem(`eduplay_exam_subs_${examId}`);
       if (examSubsRaw) {
         const parsed = JSON.parse(examSubsRaw);
         if (Array.isArray(parsed)) {
-          parsed.forEach((item: any) => {
-            if (item) allCandidates.push(item);
-          });
+          parsed.forEach((item: any) => addCandidate(item));
         }
       }
     } catch {}
@@ -277,10 +372,30 @@ export function getExamCompletion(
             if (item) {
               const sExamId = String(item.examId || item.id || item.exam?.id || '').trim().toLowerCase();
               if (isExamMatch(sExamId)) {
-                allCandidates.push(item);
+                addCandidate(item);
               }
             }
           });
+        }
+      }
+    } catch {}
+
+    try {
+      const keys = Object.keys(localStorage);
+      for (const key of keys) {
+        if (key && (key.startsWith('eduplay_student_exam_subs_') || key.startsWith('eduplay_student_exam_submissions_'))) {
+          const raw = localStorage.getItem(key);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+              parsed.forEach((item: any) => {
+                if (item && isExamMatch(item.examId || item.id || item.exam?.id)) {
+                  // Không dùng fallbackCode cắt số cuối; chỉ nhận bản ghi có mã đầy đủ hợp lệ bên trong
+                  addCandidate(item);
+                }
+              });
+            }
+          }
         }
       }
     } catch {}
@@ -289,49 +404,56 @@ export function getExamCompletion(
   const validSubmissions: any[] = [];
   const unmatchedSubmissions: any[] = [];
   const matchedStudentCodes = new Set<string>();
+  const violationStudentCodes = new Set<string>();
+  const timeoutStudentCodes = new Set<string>();
 
-  allCandidates.forEach((sub) => {
-    if (!sub) return;
-    const subStudentId = normalizeStudentCode(String(sub.studentCode || sub.maHs || sub.studentId || sub.code || sub.sddcn || sub.fallbackCode || ''));
-    const subStudentName = String(sub.studentName || sub.name || sub.fullName || '').trim().toLowerCase();
+  const usedCandidateIndices = new Set<number>();
 
-    // Matching rule: match by standard student code
-    const matchedRoster = classStudentsRoster.find(st => {
-      const rosterCode = st.code.toUpperCase();
-      const candCodes = [sub.studentCode, sub.maHs, sub.studentId, sub.code, sub.docId, sub.id]
-        .filter(Boolean)
-        .flatMap(c => {
-          const rawStr = String(c);
-          const norm = normalizeStudentCode(rawStr);
-          const std = formatStandardStudentCode(rawStr, cleanClass);
-          return [norm, std];
-        });
-      return candCodes.some(c => c === rosterCode);
+  // So khớp học sinh trong danh sách lớp bằng hàm duy nhất isSameStudent
+  classStudentsRoster.forEach(st => {
+    const stdCode = normalizeStudentCode(st.code);
+    if (!stdCode) return;
+
+    const matchIdx = allCandidates.findIndex((sub, idx) => {
+      if (usedCandidateIndices.has(idx) || !sub) return false;
+      return isSameStudent(st, sub, cleanClass);
     });
 
-    if (matchedRoster) {
-      const standardizedCode = matchedRoster.code.toUpperCase();
-      if (!matchedStudentCodes.has(standardizedCode)) {
-        matchedStudentCodes.add(standardizedCode);
-        validSubmissions.push({
-          ...sub,
-          standardizedStudentCode: standardizedCode,
-          studentName: matchedRoster.fullName
-        });
-      }
-    } else {
-      let reason = 'Mã học sinh không tồn tại trong danh sách lớp';
-      if (!subStudentId || subStudentId === 'u-4' || subStudentId === 'hs-temp') {
-        reason = 'Sử dụng Auth UID hoặc mã tạm thời không khớp Mã HS chuẩn';
-      } else if (!subStudentId.includes(cleanClass)) {
-        reason = `Mã HS (${subStudentId}) không thuộc lớp ${cleanClass}`;
-      }
-      unmatchedSubmissions.push({
+    if (matchIdx !== -1) {
+      usedCandidateIndices.add(matchIdx);
+      const sub = allCandidates[matchIdx];
+      matchedStudentCodes.add(stdCode);
+      validSubmissions.push({
         ...sub,
-        unmatchedReason: reason,
-        rawIdentifier: subStudentId || subStudentName || 'Không rõ'
+        standardizedStudentCode: stdCode,
+        studentName: st.fullName
       });
+
+      if (isSubmissionViolationLocked(sub)) {
+        violationStudentCodes.add(stdCode);
+      } else if (isSubmissionTimeoutLocked(sub)) {
+        timeoutStudentCodes.add(stdCode);
+      }
     }
+  });
+
+  // Collect unmatched candidates
+  allCandidates.forEach((sub, idx) => {
+    if (usedCandidateIndices.has(idx) || !sub) return;
+    const subStudentId = normalizeStudentCode(String(sub.studentCode || sub.maHs || sub.studentId || sub.code || sub.sddcn || ''));
+    const subStudentName = String(sub.studentName || sub.name || sub.fullName || '').trim().toLowerCase();
+
+    let reason = 'Mã học sinh không tồn tại trong danh sách lớp';
+    if (!subStudentId || subStudentId === 'U-4' || subStudentId === 'HS-TEMP') {
+      reason = 'Sử dụng Auth UID hoặc mã tạm thời không khớp Mã HS chuẩn';
+    } else if (!subStudentId.startsWith(cleanClass)) {
+      reason = `Mã HS (${subStudentId}) không thuộc lớp ${cleanClass}`;
+    }
+    unmatchedSubmissions.push({
+      ...sub,
+      unmatchedReason: reason,
+      rawIdentifier: subStudentId || subStudentName || 'Không rõ'
+    });
   });
 
   const resolvedDocCount = typeof realDocCount === 'number'
@@ -341,6 +463,8 @@ export function getExamCompletion(
   const stats: ExamCompletionStats = {
     totalStudents,
     validCount: matchedStudentCodes.size,
+    violationCount: violationStudentCodes.size,
+    timeoutCount: timeoutStudentCodes.size,
     unmatchedCount: unmatchedSubmissions.length,
     totalAttempts: allCandidates.length,
     unmatchedSubmissions,

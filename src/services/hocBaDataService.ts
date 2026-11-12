@@ -2,7 +2,7 @@ import { ExamPaper, HomeworkAssignment, Lesson5EPlan, GameItem, StudentRecord } 
 import { getSubjectsForClassOrGrade, SchoolClassItem } from './classStorageService';
 import { getStudentAssignedSubjects, isSubjectMatch } from './studentSessionService';
 import { getCurrentActiveAcademicYear, getStudentClassInfo } from './studentStorageService';
-import { normalizeStudentCode, isValidStudentCode, getRecordType } from './studentCode';
+import { normalizeStudentCode, isValidStudentCode, isSameStudent, getRecordType } from './studentCode';
 import { formatScore, roundTotalScore, formatTotalScore, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../utils/scoreUtils';
 import { db } from './firebase';
 import { query, collection, where, getDocs } from 'firebase/firestore';
@@ -384,101 +384,51 @@ export function getStudentCandidateIdentifiers(
   addIdVariations(studentId);
   addIdVariations(studentCode);
 
-  // Tự động kiểm tra thêm session học sinh nếu có trong hệ thống
+  // Tự động kiểm tra thêm session học sinh nếu khớp MÃ ĐẦY ĐỦ (tuyệt đối không khớp theo tên)
   if (typeof window !== 'undefined') {
     try {
       const sessRaw = localStorage.getItem('eduplay_student_session');
       if (sessRaw) {
         const sess = JSON.parse(sessRaw);
-        const sName = (sess.name || sess.fullName || '').trim().toLowerCase();
-        const matchesSession =
-          !normName ||
-          normName === 'học sinh' ||
-          (sName && (sName === normName || sName.includes(normName) || normName.includes(sName))) ||
-          (sess.id && candidateIds.has(sess.id)) ||
-          (sess.code && candidateIds.has(sess.code));
+        const sessCode = normalizeStudentCode(sess.code || sess.studentCode || sess.maHs || '');
+        const matchesSession = Boolean(sessCode && candidateIds.has(sessCode));
 
         if (matchesSession) {
-          addIdVariations(sess.id);
           addIdVariations(sess.code);
           addIdVariations((sess as any).studentCode);
           addIdVariations((sess as any).maHs);
-          addIdVariations((sess as any).username);
         }
       }
     } catch {}
-
-    // Quét danh sách học sinh lưu trong LocalStorage để tìm khớp tên nếu có
-    if (normName && normName !== 'học sinh') {
-      try {
-        const allDbRaw = localStorage.getItem('eduplay_all_students_db');
-        if (allDbRaw) {
-          const parsed = JSON.parse(allDbRaw);
-          const list = Array.isArray(parsed) ? parsed : (typeof parsed === 'object' ? Object.values(parsed).flat() : []);
-          if (Array.isArray(list)) {
-            const matched = list.find((st: any) => {
-              const sName = (st.fullName || st.name || '').trim().toLowerCase();
-              return sName === normName || sName.includes(normName) || normName.includes(sName);
-            });
-            if (matched) {
-              addIdVariations(matched.id);
-              addIdVariations(matched.code);
-              addIdVariations((matched as any).studentCode);
-              addIdVariations((matched as any).username);
-            }
-          }
-        }
-      } catch {}
-    }
   }
 
-  // Tương thích dự phòng mã 'u-4' nếu khớp session, không có mã rõ ràng hoặc tài khoản khách
-  if (
-    candidateIds.has('u-4') ||
-    studentId === 'u-4' ||
-    studentCode === 'u-4' ||
-    normName.includes('lê minh anh') ||
-    candidateIds.size === 0 ||
-    (!studentId && !studentCode)
-  ) {
-    candidateIds.add('u-4');
-  }
-
-  const result = { candidateIds, normName };
+  const result = { candidateIds, normName: '' };
   candidateIdentifiersCache.set(cacheKey, result);
   return result;
 }
 
 /**
- * Kiểm tra xem một bản ghi bài nộp (submission) có thuộc về học sinh này không bằng Mã HS chuẩn duy nhất
+ * Kiểm tra xem một bản ghi bài nộp (submission) có thuộc về học sinh này không bằng Mã HS đầy đủ chuẩn duy nhất (tuyệt đối không dùng họ tên)
  */
 export function isSubmissionBelongsToStudent(
   sub: any,
   studentCodeOrIds: string | Set<string>,
-  normName?: string
+  _normName?: string
 ): boolean {
   if (!sub) return false;
   const subCode = normalizeStudentCode(sub.studentCode || sub.code || sub.maHs || sub.studentId || '');
   
   if (typeof studentCodeOrIds === 'string') {
     const normTarget = normalizeStudentCode(studentCodeOrIds);
-    if (subCode && normTarget && subCode === normTarget) return true;
-    const rawTarget = studentCodeOrIds.trim();
-    const subRawId = (sub.studentId || sub.id || sub.userId || '').trim();
-    if (rawTarget && subRawId && rawTarget.toLowerCase() === subRawId.toLowerCase()) return true;
+    if (!normTarget) return false;
+    if (isSameStudent(normTarget, sub)) return true;
+    if (subCode && subCode === normTarget) return true;
     return false;
   } else if (studentCodeOrIds instanceof Set) {
     const candidateIds = studentCodeOrIds;
-    const sId = (sub.studentId || sub.id || sub.userId || '').trim();
-    const sCode = (sub.studentCode || sub.code || sub.maHs || '').trim();
-    const sName = (sub.studentName || sub.name || '').trim().toLowerCase();
-
-    if (sId && candidateIds.has(sId)) return true;
-    if (sId && candidateIds.has(sId.toLowerCase())) return true;
-    if (sCode && candidateIds.has(sCode)) return true;
-    if (sCode && candidateIds.has(sCode.toLowerCase())) return true;
-    if (subCode && candidateIds.has(subCode)) return true;
-    if (normName && sName && (sName === normName || sName.includes(normName) || normName.includes(sName))) return true;
+    if (subCode && isValidStudentCode(subCode) && candidateIds.has(subCode)) {
+      return isSameStudent(subCode, sub);
+    }
     return false;
   }
   return false;

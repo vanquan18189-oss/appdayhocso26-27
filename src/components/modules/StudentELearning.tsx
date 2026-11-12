@@ -109,7 +109,7 @@ export const StudentELearning: React.FC<StudentELearningProps> = ({
 
   const effectiveClass = currentClass || resolvedClass;
   const effectiveUserName = currentUserName || resolvedName || 'Học sinh';
-  const effectiveUserId = getAuthenticStudentCode(undefined, currentUserId || resolvedId, effectiveClass, effectiveUserName);
+  const effectiveUserId = getAuthenticStudentCode(undefined, currentUserId || resolvedId, effectiveClass);
   const effectiveGrade = resolvedGrade;
 
   const [selectedLesson, setSelectedLesson] = useState<Lesson5EPlan | null>(null);
@@ -831,6 +831,14 @@ export const StudentELearning: React.FC<StudentELearningProps> = ({
 
   return (
     <div className="space-y-6 pb-12 w-full">
+      {!effectiveUserId && (
+        <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-4 flex items-center gap-3 text-amber-900 shadow-sm">
+          <AlertCircle className="w-6 h-6 text-amber-600 shrink-0" />
+          <div className="text-sm font-bold">
+            Không xác định được mã học sinh, vui lòng đăng xuất và đăng nhập lại
+          </div>
+        </div>
+      )}
       {/* HEADER SECTION */}
       <div className="bg-gradient-to-r from-amber-600 via-yellow-600 to-orange-500 rounded-[28px] p-7 sm:p-9 text-white shadow-2xl relative overflow-hidden border border-amber-300/40 min-h-[170px] flex items-center">
         {/* Background Ambient Glows & Sparkles Decor */}

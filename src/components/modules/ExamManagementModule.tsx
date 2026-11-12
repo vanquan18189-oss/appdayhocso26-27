@@ -4,10 +4,10 @@ import { sortStudentsByName } from '../../utils/vietnameseNameSort';
 import { formatScore, formatTotalScore, roundTotalScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
 import { getTeachersFromLocalStorage, resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
 import { getStudentsFromLocalStorage, getClassStudentCount, deleteStudentFromClass, generateDefaultClassRoster, normalizeClassKey } from '../../services/studentStorageService';
-import { formatStandardStudentCode, normalizeStudentCode } from '../../services/studentCode';
+import { formatStandardStudentCode, normalizeStudentCode, isSameStudent, extractFullStudentCode } from '../../services/studentCode';
 import { seedInitialExamsManually, deleteAllExamsFromFirestore, isValidOfficialExam } from '../../services/examStorageService';
 // import { bulkDeleteAllSubmissions } from '../../services/bulkSubmissionCleanupService';
-import { getExamCompletion, registerFirestoreExamSubs, fetchDirectExamCompletions, getCachedExamCompletion, ExamCompletionStats } from '../../services/examCompletionService';
+import { getExamCompletion, registerFirestoreExamSubs, fetchDirectExamCompletions, getCachedExamCompletion, isStudentRetakeTombstoned, ExamCompletionStats } from '../../services/examCompletionService';
 import { downloadBulkSubmissionsZip } from '../../services/bulkSubmissionZipService';
 import { auth } from '../../services/firebase';
 import { collection, onSnapshot, doc, getDocFromServer, deleteDoc, runTransaction } from 'firebase/firestore';
@@ -842,13 +842,17 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
         const unsub = onSnapshot(subColRef, (snapshot) => {
           const subs: any[] = [];
           snapshot.forEach((docSnap) => {
-            subs.push({ ...docSnap.data(), id: docSnap.id, docId: docSnap.id });
+            const subObj = { ...docSnap.data(), id: docSnap.id, docId: docSnap.id };
+            if (!isStudentRetakeTombstoned(examDocId, subObj)) {
+              subs.push(subObj);
+            }
           });
           subsPerDoc.set(docId, subs);
 
           const aggregated = new Map<string, any>();
           subsPerDoc.forEach((arr) => {
             arr.forEach(s => {
+              if (isStudentRetakeTombstoned(examDocId, s)) return;
               const k = s.docId || s.id;
               if (k) aggregated.set(k, s);
             });
@@ -875,13 +879,18 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     const targetClassName = trackingExam.targetClass || 'Lớp 3C';
     const cleanClass = targetClassName.replace(/^Lớp\s*/i, '').trim().toUpperCase();
     const rawRoster = getStudentsFromLocalStorage(targetClassName) || generateDefaultClassRoster(targetClassName, 38);
-    const classStudentsRoster = rawRoster.map((st, idx) => ({
-      ...st,
-      stt: st.stt || (idx + 1),
-      code: formatStandardStudentCode(st.code, cleanClass, st.stt || (idx + 1)),
-      name: st.name || st.fullName || `Học sinh ${idx + 1}`,
-      fullName: st.fullName || st.name || `Học sinh ${idx + 1}`
-    }));
+    const classStudentsRoster = rawRoster.map((st, idx) => {
+      const sttNum = st.stt || (idx + 1);
+      const validFull = formatStandardStudentCode(st.code);
+      return {
+        ...st,
+        stt: sttNum,
+        code: validFull || (st.code ? normalizeStudentCode(st.code) : `${cleanClass}26-27-${sttNum}`),
+        className: st.className || targetClassName,
+        name: st.name || st.fullName || `Học sinh ${idx + 1}`,
+        fullName: st.fullName || st.name || `Học sinh ${idx + 1}`
+      };
+    });
     
     // Gather all potential submissions for this exam
     const candidateSubmissions: any[] = [];
@@ -900,13 +909,17 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
 
     if (Array.isArray(trackingExam.submissions)) {
       trackingExam.submissions.forEach(sub => {
-        if (sub) candidateSubmissions.push(sub);
+        if (sub && !isStudentRetakeTombstoned(trackingExam.id, sub)) {
+          candidateSubmissions.push(sub);
+        }
       });
     }
 
     if (trackingFirestoreSubs.length > 0) {
       trackingFirestoreSubs.forEach(sub => {
-        if (sub) candidateSubmissions.push(sub);
+        if (sub && !isStudentRetakeTombstoned(trackingExam.id, sub)) {
+          candidateSubmissions.push(sub);
+        }
       });
     }
 
@@ -917,7 +930,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
           const allSubs = JSON.parse(allSubsRaw);
           if (Array.isArray(allSubs)) {
             allSubs.forEach((item: any) => {
-              if (item && isExamMatch(item.examId || item.id || item.exam?.id)) {
+              if (item && isExamMatch(item.examId || item.id || item.exam?.id) && !isStudentRetakeTombstoned(trackingExam.id, item)) {
                 candidateSubmissions.push(item);
               }
             });
@@ -931,27 +944,26 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
           const examSubs = JSON.parse(examSubsRaw);
           if (Array.isArray(examSubs)) {
             examSubs.forEach((item: any) => {
-              if (item) candidateSubmissions.push(item);
+              if (item && !isStudentRetakeTombstoned(trackingExam.id, item)) {
+                candidateSubmissions.push(item);
+              }
             });
           }
         }
       } catch {}
 
       try {
-        for (let i = 0; i < localStorage.length; i++) {
-          const key = localStorage.key(i);
+        const allKeys = Object.keys(localStorage);
+        for (const key of allKeys) {
           if (key && (key.startsWith('eduplay_student_exam_subs_') || key.startsWith('eduplay_student_exam_submissions_'))) {
             const raw = localStorage.getItem(key);
             if (raw) {
               const parsed = JSON.parse(raw);
               if (Array.isArray(parsed)) {
                 parsed.forEach((item: any) => {
-                  if (item && isExamMatch(item.examId || item.id || item.exam?.id)) {
-                    const fallbackCode = key.replace('eduplay_student_exam_subs_', '').replace('eduplay_student_exam_submissions_', '');
-                    candidateSubmissions.push({
-                      ...item,
-                      fallbackCode
-                    });
+                  if (item && isExamMatch(item.examId || item.id || item.exam?.id) && !isStudentRetakeTombstoned(trackingExam.id, item)) {
+                    // Tuyệt đối không gắn fallbackCode từ khóa LocalStorage để tránh tự khớp mã ngắn
+                    candidateSubmissions.push(item);
                   }
                 });
               }
@@ -961,22 +973,19 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       } catch {}
     }
 
-    // Match candidate submissions uniquely to each student in roster strictly by normalized studentCode (Rule 3)
+    // Match candidate submissions uniquely to each student in roster strictly by isSameStudent (Full code + Class)
     const studentSubMap = new Map<string, any>();
     const usedSubIndices = new Set<number>();
 
     classStudentsRoster.forEach(st => {
       const stdCode = st.code.toUpperCase();
 
-      // QUY TẮC KHỚP BẮT BUỘC (MỤC 3):
-      // Một bài nộp chỉ thuộc về một học sinh khi và chỉ khi studentCode (đã chuẩn hóa) bằng đúng Mã HS của học sinh đó.
-      // CẤM khớp lỏng theo tên, STT, SĐDCN hay dự phòng lấy bài nộp của học sinh khác.
+      // QUY TẮC DUY NHẤT:
+      // Một bài nộp chỉ thuộc về một học sinh khi và chỉ khi khớp MÃ ĐẦY ĐỦ có tiền tố lớp và khớp lớp (isSameStudent).
+      // TUYỆT ĐỐI KHÔNG khớp theo họ tên hoặc số cuối mã.
       const matchIdx = candidateSubmissions.findIndex((sub, idx) => {
         if (usedSubIndices.has(idx) || !sub) return false;
-        const cands = [sub.studentCode, sub.maHs, sub.studentId, sub.code, sub.docId, sub.id]
-          .filter(Boolean)
-          .map(c => normalizeStudentCode(String(c)));
-        return cands.some(c => c === stdCode);
+        return isSameStudent(st, sub, cleanClass);
       });
 
       if (matchIdx !== -1) {
@@ -1107,7 +1116,9 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
         totalAttempts: 0,
         unmatchedSubmissions: [],
         validSubmissions: [],
-        realDocCount: 0
+        realDocCount: 0,
+        violationCount: 0,
+        timeoutCount: 0
       };
     }
     const candSubs = trackingFirestoreSubs.length > 0 ? trackingFirestoreSubs : trackingExam.submissions;
@@ -1232,13 +1243,18 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     const targetClassName = statsExam.targetClass || 'Lớp 3C';
     const cleanClass = targetClassName.replace(/^Lớp\s*/i, '').trim().toUpperCase();
     const rawRoster = getStudentsFromLocalStorage(targetClassName) || generateDefaultClassRoster(targetClassName, 38);
-    const classStudentsRoster = rawRoster.map((st, idx) => ({
-      ...st,
-      stt: st.stt || (idx + 1),
-      code: formatStandardStudentCode(st.code, cleanClass, st.stt || (idx + 1)),
-      name: st.name || st.fullName || `Học sinh ${idx + 1}`,
-      fullName: st.fullName || st.name || `Học sinh ${idx + 1}`
-    }));
+    const classStudentsRoster = rawRoster.map((st, idx) => {
+      const sttNum = st.stt || (idx + 1);
+      const validFull = formatStandardStudentCode(st.code);
+      return {
+        ...st,
+        stt: sttNum,
+        code: validFull || (st.code ? normalizeStudentCode(st.code) : `${cleanClass}26-27-${sttNum}`),
+        className: st.className || targetClassName,
+        name: st.name || st.fullName || `Học sinh ${idx + 1}`,
+        fullName: st.fullName || st.name || `Học sinh ${idx + 1}`
+      };
+    });
     const classTotalStudents = Math.max(classStudentsRoster.length, getClassStudentCount(targetClassName, 38), 1);
 
     // 1. Gather all submissions matching this exam
@@ -1264,8 +1280,9 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       return false;
     };
 
-    const processSub = (item: any, fallbackId?: string) => {
+    const processSub = (item: any) => {
       if (!item) return;
+      if (isStudentRetakeTombstoned(statsExam.id, item)) return;
       const subExamId = String(item.examId || item.id || item.exam?.id || '').trim().toLowerCase();
       if (!isMatch(subExamId)) return;
 
@@ -1280,19 +1297,12 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
 
       if (numScore === null) return;
 
-      const studentId = item.studentId || item.maHs || item.studentCode || fallbackId || item.studentName || item.name || 'unknown';
-      const studentName = item.studentName || item.name || item.fullName || 'Học sinh';
+      // Chỉ khớp học sinh theo MÃ ĐẦY ĐỦ + LỚP (tuyệt đối không khớp theo tên hay cắt số cuối)
+      const matchedRoster = classStudentsRoster.find(st => isSameStudent(st, item, cleanClass));
+      if (!matchedRoster) return;
 
-      // Find if student is in roster to get standardized name & code
-      const matchedRoster = classStudentsRoster.find(st => 
-        (st.code && String(st.code).toUpperCase() === String(studentId).toUpperCase()) ||
-        formatStandardStudentCode(studentId, cleanClass) === st.code ||
-        (st.name && st.name.trim().toLowerCase() === studentName.trim().toLowerCase()) ||
-        (st.fullName && st.fullName.trim().toLowerCase() === studentName.trim().toLowerCase())
-      );
-
-      const uniqueKey = matchedRoster?.code || matchedRoster?.id || studentId;
-      const finalName = matchedRoster?.name || matchedRoster?.fullName || studentName;
+      const uniqueKey = matchedRoster.code;
+      const finalName = matchedRoster.name || matchedRoster.fullName || 'Học sinh';
 
       const existing = subMap.get(uniqueKey);
       if (!existing || (numScore > existing.score)) {
@@ -1340,17 +1350,16 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
         }
       } catch {}
 
-      // Quét tất cả storage keys của học sinh
+      // Quét tất cả storage keys của học sinh (không gắn fallbackCode)
       try {
-        for (let i = 0; i < localStorage.length; i++) {
-          const key = localStorage.key(i);
+        const allKeys = Object.keys(localStorage);
+        for (const key of allKeys) {
           if (key && (key.startsWith('eduplay_student_exam_subs_') || key.startsWith('eduplay_student_exam_submissions_'))) {
             const raw = localStorage.getItem(key);
             if (raw) {
               const parsed = JSON.parse(raw);
               if (Array.isArray(parsed)) {
-                const fallbackCode = key.replace('eduplay_student_exam_subs_', '').replace('eduplay_student_exam_submissions_', '');
-                parsed.forEach(sub => processSub(sub, fallbackCode));
+                parsed.forEach(sub => processSub(sub));
               }
             }
           }
@@ -1465,6 +1474,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const [gradingStudent, setGradingStudent] = useState<any>(null);
   const [retakeStudent, setRetakeStudent] = useState<{id: string, name: string} | null>(null);
   const [deleteStudent, setDeleteStudent] = useState<{id: string, name: string} | null>(null);
+  const isSubmittingRetakeRef = useRef(false);
   const [editingExam, setEditingExam] = useState<ExamPaper | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [editExamType, setEditExamType] = useState('Thường xuyên');
@@ -3353,7 +3363,7 @@ return (
                         {(() => {
                           const cachedStats = getCachedExamCompletion(exam.id);
                           const liveStats = directStatsMap.get(exam.id);
-                          const stats = liveStats || cachedStats;
+                          const stats = liveStats || cachedStats || getExamCompletion(exam.id, exam.targetClass || '', exam.submissions);
 
                           if (isDirectRefreshing && !stats) {
                             return (
@@ -3363,19 +3373,7 @@ return (
                             );
                           }
 
-                          if (!stats) {
-                            const computed = getExamCompletion(exam.id, exam.targetClass || '');
-                            const submittedCount = computed.validCount;
-                            const total = computed.totalStudents;
-                            const pct = total > 0 ? Math.round((submittedCount / total) * 100) : 0;
-                            return (
-                              <span className="font-bold text-blue-600 font-mono text-xs">
-                                {submittedCount}/{total} ({pct}%)
-                              </span>
-                            );
-                          }
-
-                          if (stats.error) {
+                          if (stats.error && stats.validCount === 0) {
                             return (
                               <span 
                                 className="font-bold text-rose-600 border-b border-dashed border-rose-400 cursor-help text-xs"
@@ -3389,11 +3387,25 @@ return (
                           const submittedCount = stats.validCount;
                           const total = stats.totalStudents;
                           const pct = total > 0 ? Math.round((submittedCount / total) * 100) : 0;
+                          const violationCount = stats.violationCount || 0;
+                          const timeoutCount = stats.timeoutCount || 0;
 
                           return (
-                            <span className="font-bold text-blue-600 font-mono text-xs">
-                              {submittedCount}/{total} ({pct}%)
-                            </span>
+                            <div className="flex flex-col items-center justify-center">
+                              <span className="font-bold text-blue-600 font-mono text-xs">
+                                {submittedCount}/{total} ({pct}%)
+                              </span>
+                              {violationCount > 0 && (
+                                <span className="text-[10px] text-rose-600 font-medium leading-tight mt-0.5 whitespace-nowrap">
+                                  trong đó {violationCount} bài bị khóa do vi phạm
+                                </span>
+                              )}
+                              {timeoutCount > 0 && (
+                                <span className="text-[10px] text-amber-600 font-medium leading-tight mt-0.5 whitespace-nowrap">
+                                  {timeoutCount} bài tự nộp do hết giờ
+                                </span>
+                              )}
+                            </div>
                           );
                         })()}
                       </td>
@@ -5737,45 +5749,59 @@ return (
               <button
                 disabled={isDeletingSubmission}
                 onClick={async () => {
+                  if (isSubmittingRetakeRef.current) return;
                   if (retakeStudent && trackingExam) {
+                    isSubmittingRetakeRef.current = true;
                     setIsDeletingSubmission(true);
                     const stId = retakeStudent.id;
                     const stName = retakeStudent.name;
+                    const examIdToReset = trackingExam.id;
+                    const origExamIdToReset = trackingExam.originalExamId;
+                    const targetClassToReset = trackingExam.targetClass;
+                    const normCode = normalizeStudentCode(stId);
+
                     try {
                       await resetOrDeleteStudentExamSubmission({
                         studentCode: stId,
-                        studentName: stName,
                         studentId: stId,
-                        examId: trackingExam.id,
-                        originalExamId: trackingExam.originalExamId,
-                        targetClass: trackingExam.targetClass
+                        examId: examIdToReset,
+                        originalExamId: origExamIdToReset,
+                        targetClass: targetClassToReset
                       });
 
-                      const normCode = normalizeStudentCode(stId);
-
-                      // Update local state immediately
-                      const filteredSubs = Array.isArray(trackingExam.submissions)
-                        ? trackingExam.submissions.filter((s: any) => normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || s.id || '') !== normCode)
-                        : [];
-                      setTrackingExam(prev => prev ? { ...prev, submissions: filteredSubs } : null);
-                      onSaveExam({ ...trackingExam, submissions: filteredSubs });
-
-                      setTrackingFirestoreSubs(prev => prev.filter((s: any) => {
-                        const code = normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || s.id || '');
-                        const idLower = String(s.id || '').toLowerCase();
+                      // Cập nhật ngay trạng thái bộ nhớ RAM để tránh tải lại bài cũ
+                      const filterFn = (s: any) => {
+                        if (!s) return false;
+                        if (isSameStudent(normCode, s, targetClassToReset)) return false;
+                        if (extractFullStudentCode(s) === normCode) return false;
+                        const sCode = normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || s.id || '');
+                        const idLower = String(s.id || s.docId || '').toLowerCase();
                         const codeLower = normCode.toLowerCase();
-                        return code !== normCode && !idLower.startsWith(`${codeLower}_`) && !idLower.includes(codeLower);
-                      }));
+                        return sCode !== normCode && !idLower.startsWith(`${codeLower}_`) && idLower !== codeLower;
+                      };
 
+                      const filteredSubs = Array.isArray(trackingExam.submissions)
+                        ? trackingExam.submissions.filter(filterFn)
+                        : [];
+
+                      setTrackingExam(prev => prev ? { ...prev, submissions: filteredSubs } : null);
+                      try {
+                        onSaveExam({ ...trackingExam, submissions: filteredSubs });
+                      } catch {}
+
+                      setTrackingFirestoreSubs(prev => prev.filter(filterFn));
                       setSubmissionsVersion(v => v + 1);
                       setToast({ message: `Đã cho phép học sinh ${stName} thi lại thành công! Trạng thái đã được đặt về chưa làm bài.`, type: 'success' });
                     } catch (err: any) {
                       setToast({ message: `Không thể cập nhật cho thi lại: ${err?.message || 'Lỗi kết nối cơ sở dữ liệu'}`, type: 'error' });
                     } finally {
+                      isSubmittingRetakeRef.current = false;
                       setIsDeletingSubmission(false);
                       setRetakeStudent(null);
                     }
                   } else {
+                    isSubmittingRetakeRef.current = false;
+                    setIsDeletingSubmission(false);
                     setRetakeStudent(null);
                   }
                 }}
@@ -5803,7 +5829,7 @@ return (
         onConfirm={() => {
           if (deletingExam) {
             if (!isExamOwner(deletingExam)) {
-              alert('Bạn không có quyền xóa nội dung này!');
+              setToast({ message: 'Bạn không có quyền xóa nội dung này!', type: 'error' });
               setDeletingExam(null);
               return;
             }
@@ -5821,45 +5847,57 @@ return (
         isOpen={!!deleteStudent}
         onClose={() => !isDeletingSubmission && setDeleteStudent(null)}
         onConfirm={async () => {
+          if (isSubmittingRetakeRef.current) return;
           if (deleteStudent && trackingExam) {
+            isSubmittingRetakeRef.current = true;
             setIsDeletingSubmission(true);
             const stId = deleteStudent.id;
             const stName = deleteStudent.name;
+            const examIdToReset = trackingExam.id;
+            const origExamIdToReset = trackingExam.originalExamId;
+            const targetClassToReset = trackingExam.targetClass;
+            const normCode = normalizeStudentCode(stId);
+
             try {
               await resetOrDeleteStudentExamSubmission({
                 studentCode: stId,
-                studentName: stName,
                 studentId: stId,
-                examId: trackingExam.id,
-                originalExamId: trackingExam.originalExamId,
-                targetClass: trackingExam.targetClass
+                examId: examIdToReset,
+                originalExamId: origExamIdToReset,
+                targetClass: targetClassToReset
               });
 
-              const normCode = normalizeStudentCode(stId);
+              const filterFn = (s: any) => {
+                if (!s) return false;
+                if (isSameStudent(normCode, s, targetClassToReset)) return false;
+                if (extractFullStudentCode(s) === normCode) return false;
+                const sCode = normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || s.id || '');
+                const idLower = String(s.id || s.docId || '').toLowerCase();
+                const codeLower = normCode.toLowerCase();
+                return sCode !== normCode && !idLower.startsWith(`${codeLower}_`) && idLower !== codeLower;
+              };
 
-              // Update local state immediately
               const filteredSubs = Array.isArray(trackingExam.submissions)
-                ? trackingExam.submissions.filter((s: any) => normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || s.id || '') !== normCode)
+                ? trackingExam.submissions.filter(filterFn)
                 : [];
               setTrackingExam(prev => prev ? { ...prev, submissions: filteredSubs } : null);
-              onSaveExam({ ...trackingExam, submissions: filteredSubs });
+              try {
+                onSaveExam({ ...trackingExam, submissions: filteredSubs });
+              } catch {}
 
-              setTrackingFirestoreSubs(prev => prev.filter((s: any) => {
-                const code = normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || s.id || '');
-                const idLower = String(s.id || '').toLowerCase();
-                const codeLower = normCode.toLowerCase();
-                return code !== normCode && !idLower.startsWith(`${codeLower}_`) && !idLower.includes(codeLower);
-              }));
-
+              setTrackingFirestoreSubs(prev => prev.filter(filterFn));
               setSubmissionsVersion(v => v + 1);
               setToast({ message: `Đã xóa kết quả bài làm của học sinh ${stName} thành công!`, type: 'success' });
             } catch (err: any) {
               setToast({ message: `Không thể xóa bài làm: ${err?.message || 'Lỗi kết nối cơ sở dữ liệu'}`, type: 'error' });
             } finally {
+              isSubmittingRetakeRef.current = false;
               setIsDeletingSubmission(false);
               setDeleteStudent(null);
             }
           } else {
+            isSubmittingRetakeRef.current = false;
+            setIsDeletingSubmission(false);
             setDeleteStudent(null);
           }
         }}

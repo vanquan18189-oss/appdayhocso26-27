@@ -8,11 +8,12 @@ import {
   getDocs, 
   deleteField 
 } from 'firebase/firestore';
-import { normalizeStudentCode, normalizeStudentName } from './studentCode';
+import { normalizeStudentCode, isSameStudent } from './studentCode';
 import { deleteExamDraft } from './examDraftService';
 import { invalidateAllSubmissionsCache } from './hocBaDataService';
 import { normalizeClassKey } from './studentSessionService';
 import { backupSubmissionBeforeDelete } from './unmatchedSubmissionsService';
+import { purgeExamCompletionCacheForStudent } from './examCompletionService';
 
 export interface ResetSubmissionOptions {
   studentCode: string;
@@ -25,18 +26,18 @@ export interface ResetSubmissionOptions {
 
 /**
  * Xóa triệt để và đồng bộ toàn bộ dữ liệu bài làm của học sinh trên Firestore & LocalStorage:
- * - Subcollection `exams/{examId}/submissions` (tất cả các bản ghi khớp mã/tên)
+ * - Subcollection `exams/{examId}/submissions` (chỉ khớp theo mã đầy đủ + lớp, tuyệt đối không khớp theo tên)
  * - Mảng `submissions` trong master document `exams/{examId}`
  * - Các biến thể doc ID: standardDocId, legacyDocId, originalExamId
  * - Hồ sơ kết quả `student_results/{studentCode}` (xóa subcollection doc và xóa key exams.{examId})
  * - Bản nháp `exam_drafts/{studentCode}_{examId}`
  * - Tiến độ làm bài `exam_progress` (nếu có)
- * - Toàn bộ cache LocalStorage và broadcast sự kiện đồng bộ
+ * - Toàn bộ cache LocalStorage, cache RAM và broadcast sự kiện đồng bộ
  */
 export async function resetOrDeleteStudentExamSubmission(
   options: ResetSubmissionOptions
 ): Promise<{ success: boolean; deletedCount: number }> {
-  const { studentCode, studentName, studentId, examId, originalExamId, targetClass } = options;
+  const { studentCode, studentId, examId, originalExamId, targetClass } = options;
   const normCode = normalizeStudentCode(studentCode || studentId || '');
   if (!normCode) {
     throw new Error('Mã học sinh không hợp lệ.');
@@ -45,7 +46,6 @@ export async function resetOrDeleteStudentExamSubmission(
     throw new Error('Mã đề kiểm tra không hợp lệ.');
   }
 
-  const normName = studentName ? normalizeStudentName(studentName) : '';
   const classKey = normalizeClassKey(targetClass || '').toLowerCase();
   const examBaseId = (originalExamId || examId || '').replace(/^ex-/, '').replace(/^as-/, '').replace(/-class-.*$/, '');
 
@@ -55,6 +55,9 @@ export async function resetOrDeleteStudentExamSubmission(
     `ex-${examBaseId}-class-lp${classKey}`,
     originalExamId
   ].filter(Boolean) as string[]));
+
+  // Ngay lập tức đánh dấu tombstone và xóa khỏi bộ nhớ RAM cache để tránh tự động tải lại bài cũ
+  purgeExamCompletionCacheForStudent(examId, normCode, candDocIds);
 
   let deletedCount = 0;
 
@@ -75,17 +78,11 @@ export async function resetOrDeleteStudentExamSubmission(
 
           const isIdMatch = docIdStr === targetLower ||
                             docIdStr.startsWith(`${targetLower}_`) ||
-                            docIdStr.startsWith(`sub-${docId.toLowerCase()}-${targetLower}`) ||
-                            docIdStr.includes(targetLower);
+                            docIdStr === `sub-${docId.toLowerCase()}-${targetLower}`;
 
-          const isCodeMatch = Boolean(docCode && docCode === normCode);
+          const isCodeMatch = Boolean(docCode && docCode === normCode) || isSameStudent(normCode, data, targetClass);
 
-          const isNameMatch = Boolean(
-            normName && 
-            normalizeStudentName(data.studentName || data.name || '') === normName
-          );
-
-          if (isIdMatch || isCodeMatch || isNameMatch) {
+          if (isIdMatch || isCodeMatch) {
             deletePromises.push(
               deleteDoc(doc(db, 'exams', docId, 'submissions', docSnap.id))
                 .then(() => { deletedCount++; })
@@ -109,15 +106,15 @@ export async function resetOrDeleteStudentExamSubmission(
         if (masterSnap.exists()) {
           const masterData = masterSnap.data();
           if (Array.isArray(masterData.submissions)) {
+            const targetLower = normCode.toLowerCase();
             const filteredSubs = masterData.submissions.filter((s: any) => {
               if (!s) return false;
               const sCode = normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || '');
               const sId = String(s.id || '').toLowerCase();
-              const sName = normalizeStudentName(s.studentName || s.name || '');
 
               if (sCode === normCode) return false;
-              if (sId.includes(normCode.toLowerCase())) return false;
-              if (normName && sName === normName) return false;
+              if (isSameStudent(normCode, s, targetClass)) return false;
+              if (sId === targetLower || sId.startsWith(`${targetLower}_`) || sId === `sub-${docId.toLowerCase()}-${targetLower}`) return false;
               return true;
             });
 
@@ -133,10 +130,12 @@ export async function resetOrDeleteStudentExamSubmission(
           const asColRef = collection(db, 'assignments', docId, 'submissions');
           const asSnap = await getDocs(asColRef);
           const asDeletePromises: Promise<any>[] = [];
+          const targetLower = normCode.toLowerCase();
           asSnap.forEach((docSnap) => {
             const data = docSnap.data();
             const docCode = normalizeStudentCode(data.studentCode || data.code || data.maHs || data.studentId || '');
-            if (docCode === normCode || docSnap.id.includes(normCode.toLowerCase())) {
+            const docIdStr = docSnap.id.toLowerCase();
+            if (docCode === normCode || isSameStudent(normCode, data, targetClass) || docIdStr === targetLower || docIdStr.startsWith(`${targetLower}_`)) {
               asDeletePromises.push(deleteDoc(doc(db, 'assignments', docId, 'submissions', docSnap.id)).catch(() => {}));
             }
           });
@@ -149,7 +148,8 @@ export async function resetOrDeleteStudentExamSubmission(
             if (Array.isArray(asData.submissions)) {
               const filteredAsSubs = asData.submissions.filter((s: any) => {
                 const sCode = normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || '');
-                return sCode !== normCode && !String(s.id || '').includes(normCode.toLowerCase());
+                const sId = String(s.id || '').toLowerCase();
+                return sCode !== normCode && !isSameStudent(normCode, s, targetClass) && sId !== targetLower && !sId.startsWith(`${targetLower}_`);
               });
               await updateDoc(asMasterRef, {
                 submissions: filteredAsSubs,
@@ -207,7 +207,7 @@ export async function resetOrDeleteStudentExamSubmission(
   if (typeof window !== 'undefined') {
     try {
       // Xóa các key bài làm riêng biệt của học sinh
-      const studentKeys = [normCode, studentId, studentCode].filter(Boolean) as string[];
+      const studentKeys = Array.from(new Set([normCode, studentCode].filter(Boolean).map(k => normalizeStudentCode(String(k)))));
       studentKeys.forEach(k => {
         localStorage.removeItem(`eduplay_student_exam_subs_${k}`);
         localStorage.removeItem(`eduplay_student_exam_submissions_${k}`);
@@ -230,16 +230,16 @@ export async function resetOrDeleteStudentExamSubmission(
             const sCode = normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || '');
             const sExamId = String(s.examId || s.id || s.exam?.id || '').trim();
             const isMatchExam = candDocIds.some(cid => sExamId.includes(cid));
-            if (sCode === normCode && isMatchExam) return false;
+            if ((sCode === normCode || isSameStudent(normCode, s)) && isMatchExam) return false;
             return true;
           });
           localStorage.setItem('eduplay_all_exam_submissions', JSON.stringify(filtered));
         }
       }
 
-      // Quét toàn bộ key tiền tố eduplay_student_exam_subs_
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
+      // Quét toàn bộ key tiền tố eduplay_student_exam_subs_ (chụp mảng keys trước khi lặp để tránh lệch chỉ mục)
+      const allKeys = Object.keys(localStorage);
+      for (const k of allKeys) {
         if (k && (k.startsWith('eduplay_student_exam_subs_') || k.startsWith('eduplay_student_exam_submissions_'))) {
           const raw = localStorage.getItem(k);
           if (raw) {
@@ -250,7 +250,7 @@ export async function resetOrDeleteStudentExamSubmission(
                   const itemExamId = String(item.examId || item.id || item.exam?.id || '');
                   const itemCode = normalizeStudentCode(item.studentCode || item.code || item.maHs || item.studentId || '');
                   const isMatchExam = candDocIds.some(cid => itemExamId.includes(cid));
-                  if (itemCode === normCode && isMatchExam) return false;
+                  if ((itemCode === normCode || isSameStudent(normCode, item)) && isMatchExam) return false;
                   return true;
                 });
                 localStorage.setItem(k, JSON.stringify(cleaned));
@@ -267,6 +267,7 @@ export async function resetOrDeleteStudentExamSubmission(
   // 3. Làm mới Cache và Broadcast sự kiện toàn hệ thống
   try {
     invalidateAllSubmissionsCache();
+    purgeExamCompletionCacheForStudent(examId, normCode, candDocIds);
   } catch {}
 
   if (typeof window !== 'undefined') {
@@ -442,7 +443,7 @@ export interface ResetAssignmentSubmissionOptions {
 export async function resetOrDeleteStudentAssignmentSubmission(
   options: ResetAssignmentSubmissionOptions
 ): Promise<{ success: boolean; deletedCount: number }> {
-  const { studentCode, studentName, studentId, assignmentId, originalAssignmentId, targetClass } = options;
+  const { studentCode, studentId, assignmentId, originalAssignmentId, targetClass } = options;
   const normCode = normalizeStudentCode(studentCode || studentId || '');
   if (!normCode) {
     throw new Error('Mã học sinh không hợp lệ.');
@@ -451,7 +452,6 @@ export async function resetOrDeleteStudentAssignmentSubmission(
     throw new Error('Mã bài tập không hợp lệ.');
   }
 
-  const normName = studentName ? normalizeStudentName(studentName) : '';
   const classKey = normalizeClassKey(targetClass || '').toLowerCase();
   const assignBaseId = (originalAssignmentId || assignmentId || '').replace(/^as-/, '').replace(/^ex-/, '').replace(/-class-.*$/, '');
 
@@ -479,16 +479,11 @@ export async function resetOrDeleteStudentAssignmentSubmission(
 
           const isIdMatch = docIdStr === targetLower ||
                             docIdStr.startsWith(`${targetLower}_`) ||
-                            docIdStr.startsWith(`sub-${docId.toLowerCase()}-${targetLower}`) ||
-                            docIdStr.includes(targetLower);
+                            docIdStr === `sub-${docId.toLowerCase()}-${targetLower}`;
 
-          const isCodeMatch = Boolean(docCode && docCode === normCode);
-          const isNameMatch = Boolean(
-            normName && 
-            normalizeStudentName(data.studentName || data.name || '') === normName
-          );
+          const isCodeMatch = Boolean(docCode && docCode === normCode) || isSameStudent(normCode, data, targetClass);
 
-          if (isIdMatch || isCodeMatch || isNameMatch) {
+          if (isIdMatch || isCodeMatch) {
             deletePromises.push(
               deleteDoc(doc(db, 'assignments', docId, 'submissions', docSnap.id))
                 .then(() => { deletedCount++; })
@@ -508,20 +503,20 @@ export async function resetOrDeleteStudentAssignmentSubmission(
         if (masterSnap.exists()) {
           const masterData = masterSnap.data();
           if (Array.isArray(masterData.submissions)) {
+            const targetLower = normCode.toLowerCase();
             const filteredSubs = masterData.submissions.filter((s: any) => {
               if (!s) return false;
               const sCode = normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || '');
               const sId = String(s.id || '').toLowerCase();
-              const sName = normalizeStudentName(s.studentName || s.name || '');
 
               if (sCode === normCode) return false;
-              if (sId.includes(normCode.toLowerCase())) return false;
-              if (normName && sName === normName) return false;
+              if (isSameStudent(normCode, s, targetClass)) return false;
+              if (sId === targetLower || sId.startsWith(`${targetLower}_`) || sId === `sub-${docId.toLowerCase()}-${targetLower}`) return false;
               return true;
             });
 
             const uniqueStudentKeys = new Set(
-              filteredSubs.map((s: any) => (s.studentId || s.studentCode || s.maHs || s.studentName || '').trim().toLowerCase()).filter(Boolean)
+              filteredSubs.map((s: any) => normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || '')).filter(Boolean)
             );
             const count = uniqueStudentKeys.size;
 
@@ -567,7 +562,7 @@ export async function resetOrDeleteStudentAssignmentSubmission(
 
   if (typeof window !== 'undefined') {
     try {
-      const studentKeys = [normCode, studentId, studentCode].filter(Boolean) as string[];
+      const studentKeys = Array.from(new Set([normCode, studentCode].filter(Boolean).map(k => normalizeStudentCode(String(k)))));
       studentKeys.forEach(k => {
         localStorage.removeItem(`eduplay_student_submissions_${k}`);
       });
@@ -580,15 +575,15 @@ export async function resetOrDeleteStudentAssignmentSubmission(
             const sCode = normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || '');
             const sAssignmentId = String(s.assignmentId || s.id || '').trim();
             const isMatch = candDocIds.some(cid => sAssignmentId.includes(cid));
-            if (sCode === normCode && isMatch) return false;
+            if ((sCode === normCode || isSameStudent(normCode, s)) && isMatch) return false;
             return true;
           });
           localStorage.setItem('eduplay_all_assignment_submissions', JSON.stringify(filtered));
         }
       }
 
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
+      const allKeys = Object.keys(localStorage);
+      for (const k of allKeys) {
         if (k && k.startsWith('eduplay_student_submissions_')) {
           const raw = localStorage.getItem(k);
           if (raw) {
@@ -599,7 +594,7 @@ export async function resetOrDeleteStudentAssignmentSubmission(
                   const itemAssignId = String(item.assignmentId || item.id || '');
                   const itemCode = normalizeStudentCode(item.studentCode || item.code || item.maHs || item.studentId || '');
                   const isMatch = candDocIds.some(cid => itemAssignId.includes(cid));
-                  if (itemCode === normCode && isMatch) return false;
+                  if ((itemCode === normCode || isSameStudent(normCode, item)) && isMatch) return false;
                   return true;
                 });
                 localStorage.setItem(k, JSON.stringify(cleaned));

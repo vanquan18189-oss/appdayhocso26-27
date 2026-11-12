@@ -42,6 +42,7 @@ import { doc, setDoc, getDoc, runTransaction } from 'firebase/firestore';
 import { getLocalCachedAssignments } from '../../services/assignmentStorageService';
 import { getLocalCachedExams } from '../../services/examStorageService';
 import { generateRuleBasedExamComment } from '../../services/studentCommentAiService';
+import { isSameStudent, normalizeStudentCode } from '../../services/studentCode';
 
 export interface QuestionEvaluation {
   questionId: string;
@@ -660,8 +661,10 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
             if (snap.exists()) {
               const currentData = snap.data();
               const existingSubs = Array.isArray(currentData.submissions) ? [...currentData.submissions] : [];
+              const normCode = normalizeStudentCode(studentCode);
               const filtered = existingSubs.filter((s: any) => 
-                (s.studentCode || s.maHs || s.studentId || s.code || '').toLowerCase() !== studentCode.toLowerCase()
+                normalizeStudentCode(s.studentCode || s.maHs || s.studentId || s.code || '') !== normCode &&
+                !isSameStudent(normCode, s)
               );
               filtered.unshift(updatedSubmissionPayload);
               transaction.update(masterDocRef, {
@@ -678,15 +681,16 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
       // 3. Cập nhật Local Storage
       if (typeof window !== 'undefined') {
         const storagePrefix = mode === 'assignment' ? 'eduplay_student_submissions_' : 'eduplay_student_exam_subs_';
+        const normCode = normalizeStudentCode(studentCode);
         try {
-          const savedRaw = localStorage.getItem(`${storagePrefix}${studentCode}`);
+          const savedRaw = localStorage.getItem(`${storagePrefix}${normCode}`);
           const parsed = savedRaw ? JSON.parse(savedRaw) : [];
           if (Array.isArray(parsed)) {
             const filtered = parsed.filter((s: any) => 
               (s.id !== targetDocId && s.assignmentId !== targetDocId && s.examId !== targetDocId)
             );
             filtered.unshift(updatedSubmissionPayload);
-            localStorage.setItem(`${storagePrefix}${studentCode}`, JSON.stringify(filtered));
+            localStorage.setItem(`${storagePrefix}${normCode}`, JSON.stringify(filtered));
           }
         } catch {}
 
@@ -698,7 +702,7 @@ export const StudentSubmissionDetailModal: React.FC<StudentSubmissionDetailModal
           if (Array.isArray(allParsed)) {
             const filteredAll = allParsed.filter((s: any) => 
               !(s.id === targetDocId || s.assignmentId === targetDocId || s.examId === targetDocId) ||
-              (s.studentCode || s.maHs || s.studentId) !== studentCode
+              (normalizeStudentCode(s.studentCode || s.maHs || s.studentId || '') !== normCode && !isSameStudent(normCode, s))
             );
             filteredAll.unshift(updatedSubmissionPayload);
             localStorage.setItem(allKey, JSON.stringify(filteredAll));

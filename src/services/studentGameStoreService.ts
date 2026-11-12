@@ -204,24 +204,29 @@ export const INITIAL_BADGES: BadgeItem[] = [
   }
 ];
 
-import { getCurrentStudentSession, getEffectiveStudentClassAndGrade } from './studentSessionService';
+import { getCurrentStudentSession, getEffectiveStudentClassAndGrade, getAuthenticStudentCode } from './studentSessionService';
+import { isValidStudentCode, normalizeStudentCode } from './studentCode';
 
 export const resolveAuthenticStudentId = (studentId?: string): string => {
-  if (typeof window === 'undefined') return studentId || 'HS001';
+  if (typeof window === 'undefined') {
+    const clean = normalizeStudentCode(studentId || '');
+    return isValidStudentCode(clean) ? clean : '';
+  }
   try {
     const session = getCurrentStudentSession();
-    if (session?.code || session?.studentCode || session?.maHs) {
-      return String(session.code || session.studentCode || session.maHs).trim();
-    }
     const effectiveInfo = getEffectiveStudentClassAndGrade();
-    if (effectiveInfo?.studentId && effectiveInfo.studentId !== 'u-4') {
-      return effectiveInfo.studentId;
+    const authCode = getAuthenticStudentCode(session, studentId || effectiveInfo?.studentId, effectiveInfo?.studentClass);
+    if (authCode && isValidStudentCode(authCode)) {
+      return normalizeStudentCode(authCode);
     }
   } catch {}
-  if (studentId && studentId !== 'u-4' && !studentId.startsWith('u-') && studentId.length <= 15) {
-    return studentId;
+  if (studentId) {
+    const clean = normalizeStudentCode(studentId);
+    if (isValidStudentCode(clean)) {
+      return clean;
+    }
   }
-  return 'HS001';
+  return '';
 };
 
 const GAME_PROFILE_STORAGE_KEY = 'eduplay_student_game_profile';

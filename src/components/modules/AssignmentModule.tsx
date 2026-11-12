@@ -70,7 +70,7 @@ import { getStudentsFromLocalStorage, getClassStudentCount, generateDefaultClass
 import { auth, db } from '../../services/firebase';
 import { doc, onSnapshot, getDoc, setDoc, collection, getDocs, deleteDoc, runTransaction } from 'firebase/firestore';
 import { trackedSetDoc } from '../../services/firestoreWriteTracker';
-import { normalizeStudentCode, formatStandardStudentCode, normalizeStudentName } from '../../services/studentCode';
+import { normalizeStudentCode, formatStandardStudentCode, isSameStudent } from '../../services/studentCode';
 import { checkQuestionCorrectLocal } from './StudentExamModule';
 import { useAcademicYear } from '../../contexts/AcademicYearContext';
 import { formatScore, formatTotalScore, roundTotalScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
@@ -624,7 +624,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
 
     const addSubKey = (s: any) => {
       if (!s) return;
-      const k = (s.studentId || s.studentCode || s.maHs || s.code || s.studentName || s.name || '').trim().toLowerCase();
+      const k = normalizeStudentCode(s.studentCode || s.code || s.maHs || s.studentId || '');
       if (k) uniqueStudentKeys.add(k);
     };
 
@@ -635,7 +635,8 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     // 2. submittedIds
     if (Array.isArray(as.submittedIds)) {
       as.submittedIds.forEach((id: string) => {
-        if (id) uniqueStudentKeys.add(id.trim().toLowerCase());
+        const norm = normalizeStudentCode(id);
+        if (norm) uniqueStudentKeys.add(norm);
       });
     }
 
@@ -648,26 +649,26 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     if (typeof window !== 'undefined' && as.targetClass) {
       const roster = getStudentsFromLocalStorage(as.targetClass) || [];
       roster.forEach(st => {
-        const keys = [st.code, st.id, st.username].filter(Boolean) as string[];
-        keys.forEach(k => {
-          try {
-            const raw = localStorage.getItem(`eduplay_student_submissions_${k}`);
-            if (raw) {
-              const parsed = JSON.parse(raw);
-              if (Array.isArray(parsed)) {
-                const matched = parsed.find((item: any) =>
-                  item.assignment?.id === as.id ||
-                  item.id === as.id ||
-                  item.assignmentId === as.id ||
-                  (item.title && item.title === as.title)
-                );
-                if (matched) {
-                  addSubKey({ studentId: st.code, studentName: st.fullName || st.name });
-                }
+        const stdCode = formatStandardStudentCode(st.code) || normalizeStudentCode(st.code);
+        if (!stdCode) return;
+        try {
+          const raw = localStorage.getItem(`eduplay_student_submissions_${stdCode}`);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+              const matched = parsed.find((item: any) =>
+                (item.assignment?.id === as.id ||
+                item.id === as.id ||
+                item.assignmentId === as.id ||
+                (item.title && item.title === as.title)) &&
+                isSameStudent(st, item, as.targetClass)
+              );
+              if (matched) {
+                addSubKey({ studentCode: stdCode });
               }
             }
-          } catch {}
-        });
+          }
+        } catch {}
       });
 
       // Also check eduplay_exam_subs_{as.id}
@@ -688,14 +689,10 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     return 0;
   }, [detailAssignment, liveSubmissions, submissionSyncTick]);
 
-  // Dynamic tracking students derived from detailAssignment submissions and class roster
+  // Dynamic tracking students derived from detailAssignment submissions and class roster (chỉ khớp theo mã học sinh đầy đủ + lớp, tuyệt đối không dùng họ tên)
   const trackingStudentsList = useMemo(() => {
     if (!detailAssignment) return [];
     
-    // Debug log as requested by user
-    console.log("Current Assignment ID querying:", detailAssignment.id);
-
-    // Get authentic class students roster or default fallback
     const targetClassName = detailAssignment.targetClass || 'Lớp 3A';
     const classStudentsRoster = getStudentsFromLocalStorage(targetClassName) || [];
     
@@ -703,104 +700,43 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
       ...(Array.isArray(detailAssignment.submissions) ? detailAssignment.submissions : []),
       ...liveSubmissions
     ];
-    const subMap = new Map<string, any>();
-
-    const indexSubmission = (sub: any) => {
-      if (!sub) return;
-      const candidates = [
-        sub.studentId,
-        sub.maHs,
-        sub.studentCode,
-        sub.code,
-        sub.username,
-        sub.userId,
-        sub.id,
-        sub.studentName,
-        sub.name,
-        sub.fullName
-      ];
-
-      candidates.forEach(cand => {
-        if (cand && typeof cand === 'string') {
-          const raw = cand.trim().toLowerCase();
-          if (raw) {
-            subMap.set(raw, sub);
-            // Normalized key (remove "st-", "hs-", "user-", accents/dashes/spaces)
-            const clean = raw.replace(/^(st|hs|user|u)[\-_]?/i, '').replace(/[\s\-_]/g, '');
-            if (clean) subMap.set(clean, sub);
-
-            const stdCode = normalizeStudentCode(cand);
-            if (stdCode) {
-              subMap.set(stdCode, sub);
-              subMap.set(stdCode.toLowerCase(), sub);
-              const cleanStd = stdCode.toLowerCase().replace(/[\s\-_]/g, '');
-              if (cleanStd) subMap.set(cleanStd, sub);
-            }
-
-            const formatted = formatStandardStudentCode(cand, targetClassName);
-            if (formatted) {
-              subMap.set(formatted, sub);
-              subMap.set(formatted.toLowerCase(), sub);
-            }
-          }
-        }
-      });
-
-      const sName = sub.studentName || sub.name || sub.fullName;
-      if (sName && typeof sName === 'string') {
-        const normName = normalizeStudentName(sName);
-        if (normName) subMap.set(normName, sub);
-        subMap.set(sName.trim().toLowerCase(), sub);
-      }
-    };
-
-    // Index all existing submissions on detailAssignment and liveSubmissions
-    subList.forEach(sub => indexSubmission(sub));
 
     // Also scan localStorage for submissions of each student in this class
     if (typeof window !== 'undefined') {
       classStudentsRoster.forEach(st => {
-        const storageKeysToCheck = [
-          st.code,
-          st.id,
-          st.username,
-          st.code?.toLowerCase(),
-          st.id?.toLowerCase()
-        ].filter(Boolean) as string[];
-
-        for (const sk of storageKeysToCheck) {
-          try {
-            const raw = localStorage.getItem(`eduplay_student_submissions_${sk}`);
-            if (raw) {
-              const parsed = JSON.parse(raw);
-              if (Array.isArray(parsed)) {
-                const matched = parsed.find((item: any) => 
-                  item.assignment?.id === detailAssignment.id ||
-                  item.id === detailAssignment.id ||
-                  item.assignmentId === detailAssignment.id ||
-                  (item.title && item.title === detailAssignment.title)
-                );
-                if (matched) {
-                  const localSub = {
-                    id: matched.id || `sub-${st.code}`,
-                    studentId: st.code,
-                    studentCode: st.code,
-                    maHs: st.code,
-                    studentName: st.fullName || st.name,
-                    score: matched.score !== undefined ? matched.score : (matched.totalScore !== undefined ? matched.totalScore : '-'),
-                    totalScore: matched.totalScore !== undefined ? matched.totalScore : (matched.score !== undefined ? matched.score : '-'),
-                    submittedAt: matched.submittedTime || matched.submittedAt || new Date().toLocaleString('vi-VN'),
-                    submittedTime: matched.submittedTime || matched.submittedAt || new Date().toLocaleString('vi-VN'),
-                    answers: matched.answers || [],
-                    status: 'submitted'
-                  };
-                  indexSubmission(localSub);
-                  break;
-                }
+        const stdCode = formatStandardStudentCode(st.code) || normalizeStudentCode(st.code);
+        if (!stdCode) return;
+        try {
+          const raw = localStorage.getItem(`eduplay_student_submissions_${stdCode}`);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+              const matched = parsed.find((item: any) => 
+                (item.assignment?.id === detailAssignment.id ||
+                item.id === detailAssignment.id ||
+                item.assignmentId === detailAssignment.id ||
+                (item.title && item.title === detailAssignment.title)) &&
+                isSameStudent(st, item, targetClassName)
+              );
+              if (matched) {
+                subList.push({
+                  id: matched.id || `sub-${stdCode}`,
+                  studentId: stdCode,
+                  studentCode: stdCode,
+                  maHs: stdCode,
+                  studentClass: targetClassName,
+                  studentName: st.fullName || st.name,
+                  score: matched.score !== undefined ? matched.score : (matched.totalScore !== undefined ? matched.totalScore : '-'),
+                  totalScore: matched.totalScore !== undefined ? matched.totalScore : (matched.score !== undefined ? matched.score : '-'),
+                  submittedAt: matched.submittedTime || matched.submittedAt || new Date().toLocaleString('vi-VN'),
+                  submittedTime: matched.submittedTime || matched.submittedAt || new Date().toLocaleString('vi-VN'),
+                  answers: matched.answers || [],
+                  status: 'submitted'
+                });
               }
             }
-          } catch {}
-        }
+          }
+        } catch {}
       });
     }
 
@@ -808,32 +744,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     const questionCount = questions.length > 0 ? questions.length : 5;
 
     const resultList = classStudentsRoster.map((st, idx) => {
-      const lookupKeys = [
-        st.code,
-        st.id,
-        st.username,
-        normalizeStudentCode(st.code),
-        normalizeStudentCode(st.id),
-        formatStandardStudentCode(st.code, targetClassName),
-        formatStandardStudentCode(st.id, targetClassName),
-        st.code?.toLowerCase(),
-        st.id?.toLowerCase(),
-        st.username?.toLowerCase(),
-        st.id?.replace(/^(st|hs|user|u)[\-_]?/i, '').replace(/[\s\-_]/g, ''),
-        st.code?.toLowerCase().replace(/[\s\-_]/g, ''),
-        st.id?.toLowerCase().replace(/[\s\-_]/g, ''),
-        normalizeStudentName(st.fullName || st.name),
-        st.fullName?.trim().toLowerCase(),
-        st.name?.trim().toLowerCase(),
-      ].filter(Boolean) as string[];
-
-      let submission: any = null;
-      for (const k of lookupKeys) {
-        if (subMap.has(k)) {
-          submission = subMap.get(k);
-          break;
-        }
-      }
+      const submission = subList.find(sub => isSameStudent(st, sub, targetClassName)) || null;
 
       if (submission) {
         const rawAnswers = submission.answers || submission.studentAnswers || submission.answersById;

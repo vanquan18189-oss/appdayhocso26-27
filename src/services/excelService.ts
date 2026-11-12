@@ -838,7 +838,7 @@ export function buildExamWorkbook(exam: ExamPaper): { workbook: XLSX.WorkBook; d
     const unSortedRoster = rawRoster.map((st, idx) => ({
       ...st,
       stt: st.stt || (idx + 1),
-      code: formatStandardStudentCode(st.code, cleanClass, st.stt || (idx + 1)),
+      code: formatStandardStudentCode(st.code) || (st.code ? String(st.code).trim().toUpperCase() : `${cleanClass}26-27-${st.stt || (idx + 1)}`),
       name: st.name || st.fullName || `Học sinh ${idx + 1}`,
       fullName: st.fullName || st.name || `Học sinh ${idx + 1}`
     }));
@@ -1320,7 +1320,7 @@ export function exportSoNhanXetToExcel(params: {
     const fullName = `${st.lastName} ${st.firstName}`.trim();
     const genderTag = st.isFemale ? ' (Nữ)' : '';
     const nameWithGender = `${fullName}${genderTag}`;
-    const studentCode = st.code || formatStandardStudentCode(st.id, displayClass, idx + 1);
+    const studentCode = st.code || formatStandardStudentCode(st.id) || st.id || '';
 
     const testTitle = comment?.testTitle || (testName !== 'Tất cả bài kiểm tra' ? testName : '');
     const qCount = comment?.totalQuestions;
@@ -1428,7 +1428,7 @@ export function exportSoTongKetToExcel(params: {
   ];
 
   students.forEach((st, idx) => {
-    const studentCode = st.code || formatStandardStudentCode(st.id, st.className || displayClass, idx + 1);
+    const studentCode = st.code || formatStandardStudentCode(st.id) || st.id || '';
     const row: any[] = isAllClasses
       ? [
           idx + 1,

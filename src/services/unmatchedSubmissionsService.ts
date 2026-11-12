@@ -137,7 +137,7 @@ export function findAutoMatches(
   // Pre-process class roster
   const normalizedRoster = classRoster.map(st => ({
     ...st,
-    code: formatStandardStudentCode(st.code || st.id || '', st.className || '', st.stt),
+    code: formatStandardStudentCode(st.code || st.id || '') || normalizeStudentCode(st.code || st.id || ''),
     normCode: normalizeStudentCode(st.code || st.id || ''),
     normName: normalizeVietnamese(st.name || st.fullName || ''),
     rawName: st.name || st.fullName || ''
@@ -224,68 +224,23 @@ export function findAutoMatches(
       return;
     }
 
-    // 2. Thử khớp theo họ tên (bỏ dấu tiếng Việt, không phân biệt hoa thường)
+    // 2. Tuyệt đối KHÔNG tự động ghép theo họ tên. Đưa vào danh sách chờ giáo viên xác nhận thủ công.
     const normSubName = normalizeVietnamese(studentName);
-    if (!normSubName) {
-      manualCandidates.push({
-        sub,
-        subDocId,
-        oldCode,
-        studentName: studentName || 'Không có tên',
-        score,
-        submittedTime: formattedTime,
-        rawSubmittedAt,
-        reason: 'Không có thông tin họ tên trên bài nộp'
-      });
-      return;
-    }
+    const nameMatches = normSubName ? normalizedRoster.filter(st => st.normName === normSubName) : [];
 
-    const nameMatches = normalizedRoster.filter(st => st.normName === normSubName);
-
-    if (nameMatches.length === 1) {
-      // Khớp duy nhất 1 học sinh -> Tự động khớp hợp lệ
-      const matchedSt = nameMatches[0];
-      autoMatches.push({
-        sub,
-        subDocId,
-        oldCode,
-        studentName,
-        score,
-        submittedTime: formattedTime,
-        rawSubmittedAt,
-        proposedStudent: {
-          id: matchedSt.id,
-          code: matchedSt.code,
-          name: matchedSt.rawName
-        },
-        matchType: 'name'
-      });
-    } else if (nameMatches.length > 1) {
-      // Trùng tên với 2 học sinh trở lên -> Bắt buộc chọn tay
-      manualCandidates.push({
-        sub,
-        subDocId,
-        oldCode,
-        studentName,
-        score,
-        submittedTime: formattedTime,
-        rawSubmittedAt,
-        reason: `Trùng tên với ${nameMatches.length} học sinh trong lớp (${nameMatches.map(m => m.code).join(', ')})`,
-        potentialStudents: nameMatches.map(m => ({ id: m.id, code: m.code, name: m.rawName }))
-      });
-    } else {
-      // Không tìm thấy học sinh nào trùng tên
-      manualCandidates.push({
-        sub,
-        subDocId,
-        oldCode,
-        studentName,
-        score,
-        submittedTime: formattedTime,
-        rawSubmittedAt,
-        reason: 'Không tìm thấy học sinh trùng tên trong danh sách lớp'
-      });
-    }
+    manualCandidates.push({
+      sub,
+      subDocId,
+      oldCode,
+      studentName: studentName || 'Không rõ tên',
+      score,
+      submittedTime: formattedTime,
+      rawSubmittedAt,
+      reason: 'Mã học sinh trên bài nộp thiếu tiền tố lớp hoặc không khớp mã đầy đủ (Không tự động ghép theo họ tên, cần giáo viên xác nhận thủ công)',
+      potentialStudents: nameMatches.length > 0
+        ? nameMatches.map(m => ({ id: m.id, code: m.code, name: m.rawName }))
+        : undefined
+    });
   });
 
   return { autoMatches, manualCandidates };

@@ -160,7 +160,7 @@ function convertToHocBaStudent(st: GlobalStudentRecord): StudentRecord {
   const parts = name.trim().split(/\s+/);
   const firstName = parts.length > 0 ? parts[parts.length - 1] : '';
   const lastName = parts.length > 1 ? parts.slice(0, parts.length - 1).join(' ') : '';
-  const rawCode = st.code || (st as any).studentCode || (st as any).maHs || formatStandardStudentCode(st.id, st.className || '', (st as any).stt || 1);
+  const rawCode = st.code || (st as any).studentCode || (st as any).maHs || formatStandardStudentCode(st.id) || '';
   const code = normalizeStudentCode(rawCode);
 
   const rawEvaluations = (st as any).evaluations;

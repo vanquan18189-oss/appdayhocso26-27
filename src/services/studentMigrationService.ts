@@ -177,14 +177,12 @@ export async function renameStudentCodeAcrossSystem(
         const examId = examDoc.id;
         let examModified = false;
 
-        // Cập nhật mảng submissions nhúng
+        // Cập nhật mảng submissions nhúng (chỉ khớp theo mã cũ, tuyệt đối không khớp theo họ tên)
         if (Array.isArray(examData.submissions) && examData.submissions.length > 0) {
           const updatedSubs = examData.submissions.map((s: any) => {
             const sCode = normalizeStudentCode(s.studentCode || s.studentId || s.code || s.maHs || '');
-            const sNameNorm = normalizeStudentName(s.studentName || s.name || s.fullName || '');
-            const targetNameNorm = studentName ? normalizeStudentName(studentName) : '';
 
-            const isMatch = sCode === oldCode || (targetNameNorm && sNameNorm === targetNameNorm);
+            const isMatch = sCode === oldCode;
             if (isMatch) {
               examModified = true;
               updatedCount++;
@@ -213,16 +211,14 @@ export async function renameStudentCodeAcrossSystem(
           }
         }
 
-        // Cập nhật subcollection `exams/{examId}/submissions/`
+        // Cập nhật subcollection `exams/{examId}/submissions/` (chỉ khớp theo mã cũ, không khớp theo tên)
         try {
           const subColSnap = await getDocs(collection(db, 'exams', examId, 'submissions'));
           for (const subDoc of subColSnap.docs) {
             const subData = subDoc.data();
             const sCode = normalizeStudentCode(subData.studentCode || subData.studentId || subData.code || subData.maHs || subDoc.id);
-            const sNameNorm = normalizeStudentName(subData.studentName || subData.name || subData.fullName || '');
-            const targetNameNorm = studentName ? normalizeStudentName(studentName) : '';
 
-            if (sCode === oldCode || (targetNameNorm && sNameNorm === targetNameNorm)) {
+            if (sCode === oldCode) {
               const updatedSubPayload = {
                 ...subData,
                 studentCode: newCode,
@@ -367,35 +363,16 @@ export async function scanForMismatchedSubmissions(
     // 1. Kiểm tra xem mã hiện tại đã thuộc về học sinh chính thức nào chưa
     const existingStudentWithCode = currentCode ? studentByNormalizedCode.get(currentCode) : null;
     if (existingStudentWithCode) {
-      // Nếu mã đã khớp với học sinh chính thức và tên cũng trùng thì không coi là lệch
-      const existingNameNorm = normalizeStudentName(existingStudentWithCode.fullName || existingStudentWithCode.name || '');
-      if (!normCurrentName || normCurrentName === existingNameNorm) {
-        return;
-      }
+      return;
     }
 
-    // 2. Tìm học sinh đích thực theo studentId nội bộ hoặc theo Họ tên
+    // 2. Tìm học sinh đích thực chỉ theo studentId nội bộ (tuyệt đối không tự ghép theo Họ tên)
     let targetStudent: StudentRecord | null = null;
 
-    // Đối chiếu theo ID nội bộ
     if (subInternalId && studentByInternalId.has(subInternalId)) {
       targetStudent = studentByInternalId.get(subInternalId)!;
     } else if (subInternalId && studentByInternalId.has(subInternalId.toLowerCase())) {
       targetStudent = studentByInternalId.get(subInternalId.toLowerCase())!;
-    }
-
-    // Nếu không khớp theo ID nội bộ, đối chiếu theo Họ tên (bỏ dấu, không phân biệt hoa thường)
-    if (!targetStudent && normCurrentName) {
-      // Tìm theo tên tuyệt đối
-      const matchedByName = studentByNameList.filter(item => item.normName === normCurrentName);
-      if (matchedByName.length === 1) {
-        targetStudent = matchedByName[0].student;
-      } else if (matchedByName.length > 1) {
-        // Nếu trùng tên, ưu tiên khớp theo lớp
-        const subClass = (sub.studentClass || sub.className || sub.class || '').trim().toLowerCase();
-        const byClass = matchedByName.find(m => (m.student.className || '').toLowerCase().includes(subClass));
-        targetStudent = byClass ? byClass.student : matchedByName[0].student;
-      }
     }
 
     // 3. Nếu tìm thấy học sinh đích và mã học sinh chưa khớp với mã chuẩn mới của học sinh
