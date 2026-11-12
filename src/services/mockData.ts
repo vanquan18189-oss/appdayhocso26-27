@@ -23,6 +23,8 @@ export interface TeacherRecord {
   homeroomClasses?: string[]; // Danh sách lớp chủ nhiệm
   teachingClasses?: string[]; // Danh sách lớp giảng dạy bộ môn
   avatar?: string;         // Icon/Avatar
+  lopDay?: string[];
+  lopChuNhiem?: string;
 }
 
 export const PRIMARY_SCHOOL_SUBJECTS = [

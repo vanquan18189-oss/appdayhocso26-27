@@ -45,7 +45,8 @@ import {
   BookMarked,
   Info,
   Eye,
-  RefreshCw
+  RefreshCw,
+  Loader2
 } from 'lucide-react';
 import { UserAccount, UserRole, StudentRecord } from '../../types';
 import { PRIMARY_SCHOOL_SUBJECTS } from '../../services/mockData';
@@ -118,6 +119,7 @@ import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { doc, setDoc, deleteDoc, updateDoc, getDocs, collection, onSnapshot } from 'firebase/firestore';
 import { trackedSetDoc } from '../../services/firestoreWriteTracker';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
+import { migrateFirestoreOrderingData } from '../../services/questionStorageService';
 
 export interface TeacherRecord {
   id: string;
@@ -135,6 +137,8 @@ export interface TeacherRecord {
   teachingClasses?: string[]; // Danh sách lớp giảng dạy bộ môn
   avatar?: string;         // Đường dẫn ảnh hoặc icon linh vật
   teachingAssignments?: Array<{ subject: string; classes: string[] }>; // Danh sách cặp môn học - các lớp giảng dạy
+  lopDay?: string[]; // Mảng tên các lớp được phân công dạy bộ môn
+  lopChuNhiem?: string; // Tên lớp chủ nhiệm
 }
 
 // Danh sách dữ liệu giáo viên chi tiết toàn trường TH Quang Hưng PK1:
@@ -1276,6 +1280,26 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
       showToast('Lỗi trong quá trình di trú bài nộp!', 'error');
     } finally {
       setIsMigratingBatch(false);
+    }
+  };
+
+  // Ordering Migration State
+  const [isOrderingMigrationModalOpen, setIsOrderingMigrationModalOpen] = useState<boolean>(false);
+  const [isMigratingOrdering, setIsMigratingOrdering] = useState<boolean>(false);
+  const [orderingMigrationResult, setOrderingMigrationResult] = useState<string | null>(null);
+
+  const handleRunOrderingMigration = async () => {
+    setIsMigratingOrdering(true);
+    setOrderingMigrationResult(null);
+    try {
+      const count = await migrateFirestoreOrderingData(true);
+      setOrderingMigrationResult(`${count}`);
+      showToast(`Đã nâng cấp ${count} câu hỏi Sắp xếp thứ tự thành công!`, 'success');
+    } catch (err) {
+      showToast('Lỗi khi nâng cấp câu hỏi Sắp xếp thứ tự!', 'error');
+      setOrderingMigrationResult('Lỗi');
+    } finally {
+      setIsMigratingOrdering(false);
     }
   };
 
@@ -2441,6 +2465,20 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
                         <RefreshCw className={`w-3.5 h-3.5 ${isScanningMismatches ? 'animate-spin' : ''}`} />
                         <span>Đồng bộ lại dữ liệu theo mã học sinh</span>
                       </button>
+                      {isSystemAdmin && (
+                        <button
+                          onClick={() => {
+                            setOrderingMigrationResult(null);
+                            setIsOrderingMigrationModalOpen(true);
+                          }}
+                          disabled={isMigratingOrdering}
+                          className="px-3.5 py-2 rounded-xl text-xs font-extrabold bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white transition-all shadow-xs flex items-center gap-1.5 cursor-pointer active:scale-95"
+                          title="Nâng cấp câu hỏi Sắp xếp thứ tự lên chuẩn sư phạm mới"
+                        >
+                          <Sparkles className={`w-3.5 h-3.5 ${isMigratingOrdering ? 'animate-spin' : ''}`} />
+                          <span>Nâng cấp câu hỏi Sắp xếp thứ tự</span>
+                        </button>
+                      )}
                       <button
                         onClick={handleOpenAddStudentModal}
                         className="px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white transition-all shadow-xs flex items-center gap-1.5 cursor-pointer active:scale-95"
@@ -4385,6 +4423,71 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
         </div>
       )}
 
+      {/* MODAL NÂNG CẤP CÂU HỎI SẮP XẾP THỨ TỰ */}
+      {isOrderingMigrationModalOpen && (
+        <div className="fixed inset-0 z-60 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-lg w-full shadow-2xl overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200 border border-slate-200">
+            <div className="p-5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Sparkles className="w-6 h-6 text-purple-200 shrink-0" />
+                <div>
+                  <h3 className="text-base font-extrabold uppercase tracking-wide">
+                    Nâng cấp câu hỏi Sắp xếp thứ tự
+                  </h3>
+                  <p className="text-xs text-purple-100 font-medium">
+                    Chuẩn hóa dữ liệu câu hỏi theo chuẩn sư phạm mới
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => { if (!isMigratingOrdering) setIsOrderingMigrationModalOpen(false); }}
+                className="w-8 h-8 rounded-full bg-white/20 hover:bg-white/30 text-white flex items-center justify-center cursor-pointer transition-all"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              {orderingMigrationResult !== null ? (
+                <div className="p-5 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-center space-y-2">
+                  <div className="text-2xl font-black">🎉 Nâng cấp thành công!</div>
+                  <div className="text-sm font-bold text-emerald-700">Đã nâng cấp {orderingMigrationResult} câu</div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-xs sm:text-sm text-slate-700 leading-relaxed font-medium">
+                    Hệ thống sẽ quét toàn bộ câu hỏi Sắp xếp thứ tự trên Firestore, cập nhật lại cấu trúc `correctOrder`, `correctAnswer`, `indices` chuẩn sư phạm và lưu cờ hoàn tất.
+                  </p>
+                  <p className="text-xs text-slate-500 italic">
+                    Thao tác này chỉ thực hiện trên các câu chưa chuẩn và tự động bỏ qua nếu đã hoàn tất.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                disabled={isMigratingOrdering}
+                onClick={() => setIsOrderingMigrationModalOpen(false)}
+                className="px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-100 text-xs font-bold cursor-pointer disabled:opacity-50"
+              >
+                Đóng
+              </button>
+              <button
+                type="button"
+                disabled={isMigratingOrdering}
+                onClick={handleRunOrderingMigration}
+                className="px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-black shadow-md shadow-purple-600/30 cursor-pointer disabled:opacity-50 flex items-center gap-2"
+              >
+                {isMigratingOrdering && <Loader2 className="w-4 h-4 animate-spin text-white" />}
+                <span>{isMigratingOrdering ? 'Đang nâng cấp...' : 'Xác nhận nâng cấp'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* FLOATING SUCCESS TOAST NOTIFICATION */}
       {toastMessage && (
         <div className="fixed bottom-6 right-6 z-50 bg-emerald-600 text-white px-5 py-3.5 rounded-2xl shadow-2xl border border-emerald-400 flex items-center gap-3 animate-slide-up backdrop-blur-md">
@@ -4870,6 +4973,8 @@ const EditTeacherModal: React.FC<EditTeacherModalProps> = ({
     editingTeacher ? normalizeDepartmentName(editingTeacher.toChuyenMon, editingTeacher) : 'Tổ 1'
   );
   const [teacherAvatar, setTeacherAvatar] = useState<string>(editingTeacher ? (editingTeacher.avatar || '👩‍🏫') : '👩‍🏫');
+  const [teacherLopDay, setTeacherLopDay] = useState<string[]>(() => editingTeacher?.lopDay || editingTeacher?.teachingClasses || []);
+  const [teacherLopChuNhiem, setTeacherLopChuNhiem] = useState<string>(() => editingTeacher?.lopChuNhiem || (Array.isArray(editingTeacher?.homeroomClasses) ? editingTeacher.homeroomClasses[0] : '') || '');
   
   // Password Reset state (Optional for Admin)
   const [newPassword, setNewPassword] = useState<string>('');
@@ -5057,11 +5162,14 @@ const EditTeacherModal: React.FC<EditTeacherModalProps> = ({
       role: teacherRoleVal,
       subject: activeSubjectsStr,
       toChuyenMon: teacherToChuyenMon,
-      nhomGvCn: editingTeacher?.nhomGvCn || '',
+      nhomGvCn: teacherLopChuNhiem || editingTeacher?.nhomGvCn || '',
       avatar: teacherAvatar || '👩‍🏫',
       status: editingTeacher ? editingTeacher.status : 'active',
       teachingClasses: activeTeachingClasses,
-      teachingAssignments: teachingAssignmentsArray
+      teachingAssignments: teachingAssignmentsArray,
+      lopDay: teacherLopDay,
+      lopChuNhiem: teacherLopChuNhiem,
+      homeroomClasses: teacherLopChuNhiem ? [teacherLopChuNhiem] : []
     };
 
     onSave(savedTeacher);
@@ -5226,6 +5334,73 @@ const EditTeacherModal: React.FC<EditTeacherModalProps> = ({
                   ))}
                 </select>
               </div>
+
+              {/* ADMIN ONLY: Lớp phân công dạy & Lớp chủ nhiệm */}
+              {isSystemAdmin && (
+                <div className="sm:col-span-2 p-4 bg-amber-50/70 border border-amber-200 rounded-2xl space-y-3">
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded bg-amber-200 text-amber-900 font-black text-[10px] uppercase tracking-wider">
+                      QUẢN TRỊ VIÊN (ADMIN ONLY)
+                    </span>
+                    <span className="text-xs font-bold text-amber-950">Phân công lớp giảng dạy & Chủ nhiệm</span>
+                  </div>
+
+                  <div className="space-y-3">
+                    {/* Lớp chủ nhiệm */}
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                        Lớp chủ nhiệm (Chọn 1 lớp, có thể để trống):
+                      </label>
+                      <select
+                        value={teacherLopChuNhiem}
+                        onChange={(e) => setTeacherLopChuNhiem(e.target.value)}
+                        className="w-full p-2.5 text-xs rounded-xl border border-slate-300 font-bold bg-white focus:ring-2 focus:ring-indigo-500 cursor-pointer"
+                      >
+                        <option value="">-- Không làm chủ nhiệm lớp nào --</option>
+                        {schoolClasses.map((clsName) => (
+                          <option key={clsName} value={clsName}>
+                            {clsName}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Lớp được phân công dạy */}
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">
+                        Lớp được phân công dạy (Chọn nhiều lớp):
+                      </label>
+                      <div className="flex flex-wrap gap-1.5 p-2.5 bg-white rounded-xl border border-slate-300 max-h-36 overflow-y-auto">
+                        {schoolClasses.map((clsName) => {
+                          const isSelected = teacherLopDay.includes(clsName);
+                          return (
+                            <button
+                              key={clsName}
+                              type="button"
+                              onClick={() => {
+                                setTeacherLopDay(prev =>
+                                  isSelected ? prev.filter(c => c !== clsName) : [...prev, clsName]
+                                );
+                              }}
+                              className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1.5 border ${
+                                isSelected
+                                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                                  : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                              }`}
+                            >
+                              <span>{clsName}</span>
+                              {isSelected && <span className="text-[10px]">✓</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {teacherLopDay.length === 0 && (
+                        <p className="text-[11px] text-slate-400 mt-1 italic">Chưa chọn lớp giảng dạy nào.</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="sm:col-span-2 space-y-2">
                 <label className="block text-xs font-bold text-slate-700">Biểu Tượng Avatar / Linh Vật / Logo:</label>

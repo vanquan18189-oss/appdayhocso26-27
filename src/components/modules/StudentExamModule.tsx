@@ -1714,40 +1714,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
               } catch {}
             }
 
-            // Nếu là bài tập hoặc ID có prefix as-, đồng bộ thêm vào collection assignments
-            if (isAssignment || officialExamId.startsWith('as-')) {
-              try {
-                const asSubDocRef = doc(db, 'assignments', officialExamId, 'submissions', fixedDocId);
-                await setDoc(asSubDocRef, removeUndefined({
-                  ...fullExamRecord,
-                  id: fixedDocId,
-                  assignmentId: officialExamId,
-                  attemptNumber,
-                  updatedAt: new Date().toISOString()
-                }), { merge: true });
 
-                const asRef = doc(db, 'assignments', officialExamId);
-                await runTransaction(db, async (transaction) => {
-                  const asSnap = await transaction.get(asRef);
-                  if (!asSnap.exists()) return;
-                  const asData = asSnap.data();
-                  const asSubs = Array.isArray(asData.submissions) ? [...asData.submissions] : [];
-                  const asFiltered = asSubs.filter((s: any) => {
-                    const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
-                    const sId = String(s.id || '').toLowerCase();
-                    return sCode !== authenticStudentCode.toLowerCase() && sId !== fixedDocId.toLowerCase();
-                  });
-                  asFiltered.unshift(slimExamRecord);
-                  const deduplicatedAsSubs = deduplicateExamSubmissions(asFiltered);
-                  transaction.update(asRef, {
-                    submissions: deduplicatedAsSubs,
-                    completedCount: deduplicatedAsSubs.length,
-                    submittedCount: deduplicatedAsSubs.length,
-                    updatedAt: new Date().toISOString()
-                  });
-                });
-              } catch {}
-            }
           }
 
           // 2. Đồng bộ vào kho student_results
@@ -2594,40 +2561,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
               } catch {}
             }
 
-            // Nếu là bài tập hoặc ID có prefix as-, ghi đồng bộ cả vào assignments
-            if (isAssignment || officialExamId.startsWith('as-')) {
-              try {
-                const asSubDocRef = doc(db, 'assignments', officialExamId, 'submissions', fixedDocId);
-                await setDoc(asSubDocRef, removeUndefined({
-                  ...fullExamRecord,
-                  id: fixedDocId,
-                  assignmentId: officialExamId,
-                  attemptNumber,
-                  updatedAt: new Date().toISOString()
-                }), { merge: true });
 
-                const asRef = doc(db, 'assignments', officialExamId);
-                await runTransaction(db, async (transaction) => {
-                  const asSnap = await transaction.get(asRef);
-                  if (!asSnap.exists()) return;
-                  const asData = asSnap.data();
-                  const asSubs = Array.isArray(asData.submissions) ? [...asData.submissions] : [];
-                  const asFiltered = asSubs.filter((s: any) => {
-                    const sCode = normalizeStudentCode(s.studentId || s.studentCode || s.maHs || s.sddcn || '');
-                    const sId = String(s.id || '').toLowerCase();
-                    return sCode !== authenticStudentCode.toLowerCase() && sId !== fixedDocId.toLowerCase();
-                  });
-                  asFiltered.unshift(slimExamRecord);
-                  const deduplicatedAsSubs = deduplicateExamSubmissions(asFiltered);
-                  transaction.update(asRef, {
-                    submissions: deduplicatedAsSubs,
-                    completedCount: deduplicatedAsSubs.length,
-                    submittedCount: deduplicatedAsSubs.length,
-                    updatedAt: new Date().toISOString()
-                  });
-                });
-              } catch {}
-            }
           }
 
           // 3. Đồng bộ vào kho student_results cho officialExamId (và originalExamId nếu có)

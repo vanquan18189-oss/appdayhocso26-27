@@ -422,9 +422,57 @@ export const FirestoreDebugOverlay: React.FC = () => {
               }
             }
             items.sort((a, b) => b.size - a.size);
+
+            let studentCode = 'Học sinh';
+            try {
+              const sessionRaw = localStorage.getItem('eduplay_student_session');
+              if (sessionRaw) {
+                const parsed = JSON.parse(sessionRaw);
+                if (parsed?.code || parsed?.maHs || parsed?.studentCode) {
+                  studentCode = parsed.code || parsed.maHs || parsed.studentCode;
+                }
+              }
+              if (studentCode === 'Học sinh') {
+                studentCode = localStorage.getItem('eduplay_last_student_code') || 'Hà Quỳnh Anh';
+              }
+            } catch {}
+
+            const examSubs = JSON.parse(localStorage.getItem(`eduplay_student_exam_subs_${studentCode}`) || localStorage.getItem('eduplay_all_exam_submissions') || '[]');
+            const assignmentSubs = JSON.parse(localStorage.getItem(`eduplay_student_submissions_${studentCode}`) || '[]');
+            const allResults = [
+              ...examSubs.map((s: any) => ({ ...s, sourceType: 'exam', displayWhere: 'Phòng Kiểm Tra & Ôn Luyện' })),
+              ...assignmentSubs.map((s: any) => ({ ...s, sourceType: 'assignment', displayWhere: 'Nhiệm Vụ Học Tập' }))
+            ];
+
             return (
               <>
                 <div className="font-bold mb-2">Tổng dung lượng: {total.toFixed(2)} KB</div>
+                
+                {/* Student Results Debug List for ?debug=1 */}
+                <div className="mb-3 border-t border-slate-700 pt-3">
+                  <div className="font-bold mb-1.5 text-indigo-300">Danh sách kết quả học sinh ({studentCode}):</div>
+                  {allResults.length === 0 ? (
+                    <div className="text-slate-400 italic text-[11px]">Chưa có bài nộp nào trong LocalStorage.</div>
+                  ) : (
+                    <div className="space-y-1.5 max-h-40 overflow-y-auto custom-scrollbar">
+                      {allResults.map((res: any, idx: number) => {
+                        const rType = res.type || res.submissionType || res.sourceType || (res.examId ? 'exam' : 'assignment');
+                        const rId = res.examId || res.assignmentId || res.id || 'unknown';
+                        const displayPlace = rType === 'exam' ? 'Phòng Kiểm Tra & Ôn Luyện' : 'Nhiệm Vụ Học Tập';
+                        return (
+                          <div key={idx} className="bg-slate-800/80 p-2 rounded-lg border border-slate-700 text-[11px] font-mono flex justify-between items-center">
+                            <div>
+                              <span className="text-yellow-300 font-bold">[{rType.toUpperCase()}]</span> ID: <span className="text-white">{rId}</span>
+                              <div className="text-slate-400 text-[10px]">Nơi hiển thị: <span className="text-emerald-400 font-semibold">{displayPlace}</span> | Điểm: {res.score || '-'}</div>
+                            </div>
+                            <span className="text-[10px] text-purple-300">{res.submittedTime || res.submittedAt || 'Gần đây'}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
                 <div className="mb-2">10 khóa lớn nhất:</div>
                 <ul className="list-disc ml-4">
                   {items.slice(0, 10).map(item => (

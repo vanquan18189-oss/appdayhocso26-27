@@ -24,6 +24,7 @@ import { resolveTeacherNameByEmail, getCurrentTeacherProfile, verifyTeacherAutho
 import { useClassesList } from '../services/classStorageService';
 import { APP_NAME, APP_FULL_TITLE } from '../config/appConfig';
 import { getStudentAvatarSource } from './common/AnimalAvatars';
+import { DuplicateClassesModal } from './common/DuplicateClassesModal';
 
 interface PortalViewProps {
   onSelectPortal: (
@@ -289,6 +290,7 @@ export function PortalView({ onSelectPortal }: PortalViewProps) {
   const [pinInput, setPinInput] = useState<string>('');
   const [pinError, setPinError] = useState<string | null>(null);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
+  const [showDuplicateClassesModal, setShowDuplicateClassesModal] = useState<boolean>(false);
 
   // Teacher form state
   const [teacherEmail, setTeacherEmail] = useState<string>('');
@@ -805,6 +807,20 @@ export function PortalView({ onSelectPortal }: PortalViewProps) {
             ========================================================================= */}
         {portalMode === 'student_grades' && (
           <div className="space-y-5 mb-6 animate-in fade-in duration-200">
+            {/* Cleanup Duplicate Classes Banner */}
+            <div className="bg-amber-500/10 border border-amber-300 rounded-2xl p-3 sm:p-4 flex items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2.5 text-amber-950 font-bold">
+                <span className="text-base">⚠️</span>
+                <span>Kiểm tra & Xóa 5 lớp bị lặp tên ("Lớp LỚP 1D...5D")</span>
+              </div>
+              <button
+                onClick={() => setShowDuplicateClassesModal(true)}
+                className="px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-extrabold shadow-xs transition-all cursor-pointer whitespace-nowrap active:scale-95"
+              >
+                Mở bảng xác nhận →
+              </button>
+            </div>
+
             {/* Step 1: Grade Selection */}
             <div className="bg-amber-50/60 border border-amber-200/60 rounded-2xl p-4 sm:p-5">
               <p className="text-xs font-bold text-amber-900 mb-2.5 flex items-center gap-1.5">
@@ -1298,6 +1314,14 @@ export function PortalView({ onSelectPortal }: PortalViewProps) {
           </div>
         </div>
 
+        {/* Duplicate Classes Modal */}
+        <DuplicateClassesModal
+          isOpen={showDuplicateClassesModal}
+          onClose={() => setShowDuplicateClassesModal(false)}
+          onSuccess={() => {
+            // Success handler
+          }}
+        />
       </div>
     </div>
   );
