@@ -28,6 +28,8 @@ service cloud.firestore {
           'thanhthao@gmail.com',
           'buituyentk@gmail.com',
           'huongdiem18051995@gmail.com',
+          'tramduongtk@gmail.com',
+          'phamthanhthaotk@gmail.com',
           'admin@school.edu.vn',
           'admin@eduplay.vn'
         ] ||
@@ -81,9 +83,9 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
-    // Teachers collection
+    // Teachers collection (Restricted to authorized teachers/admins)
     match /teachers/{teacherId} {
-      allow read: if true;
+      allow read: if isAuthorizedTeacher();
       allow create: if isAdmin();
       allow update: if isAuthorizedTeacher() && (
         isAdmin() ||
@@ -93,9 +95,9 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
-    // Users collection
+    // Users collection (Restricted to authorized teachers/admins - students cannot read)
     match /users/{userId} {
-      allow read: if true;
+      allow read: if isAuthorizedTeacher();
       allow create, update: if isAuthorizedTeacher();
       allow delete: if isAdmin();
     }

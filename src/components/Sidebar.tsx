@@ -26,6 +26,7 @@ import {
   getTeachersFromLocalStorage,
   resolveTeacherNameByEmail,
   getCurrentTeacherProfile,
+  fetchCurrentTeacherProfile,
   TeacherRecord
 } from '../services/teacherStorageService';
 import { getCurrentStudentSession } from '../services/studentSessionService';
@@ -365,15 +366,36 @@ export const Sidebar: React.FC<SidebarProps> = ({
     storedTeacherEmail ||
     (userRole === 'admin' ? 'vanquan18189@gmail.com' : 'vanquan18189@gmail.com');
 
-  const teacherProfile = getCurrentTeacherProfile(effectiveTeacherEmail);
-  const effectiveTeacherRole = teacherProfile.userRole;
+  const [asyncTeacherProfile, setAsyncTeacherProfile] = useState<any>(null);
 
-  const effectiveTeacherName = resolveTeacherNameByEmail(
+  useEffect(() => {
+    let isMounted = true;
+    if (effectiveTeacherEmail) {
+      fetchCurrentTeacherProfile(effectiveTeacherEmail).then(profile => {
+        if (isMounted && profile) {
+          setAsyncTeacherProfile(profile);
+        }
+      }).catch(() => {});
+    }
+    return () => {
+      isMounted = false;
+    };
+  }, [effectiveTeacherEmail]);
+
+  const teacherProfile = asyncTeacherProfile || getCurrentTeacherProfile(effectiveTeacherEmail);
+  const effectiveTeacherRole = teacherProfile.userRole || userRole;
+
+  // Use profile name if present, never fall back to email prefix if profile has real name
+  const effectiveTeacherName = teacherProfile?.name || resolveTeacherNameByEmail(
     effectiveTeacherEmail,
     firebaseUser?.displayName || null,
     teachersList,
     userRole === 'admin' || effectiveTeacherRole === 'admin' ? 'admin' : 'teacher'
   );
+
+  const roleBadgeLabel = (userRole === 'admin' || effectiveTeacherRole === 'admin')
+    ? 'ADMIN'
+    : ((teacherProfile?.role || '').toUpperCase().includes('QUẢN TRỊ') ? 'ADMIN' : ((teacherProfile?.role || '').toUpperCase().includes('GIÁO VIÊN') ? 'GIÁO VIÊN' : 'TEACHER'));
 
   const [teacherAvatarImgError, setTeacherAvatarImgError] = useState(false);
 
@@ -1166,7 +1188,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       {effectiveTeacherName}
                     </span>
                     <span className="text-[9px] font-bold bg-[#4338CA] text-white px-1.5 py-0.2 rounded uppercase shrink-0">
-                      {userRole === 'admin' || effectiveTeacherRole === 'admin' ? 'ADMIN' : 'TEACHER'}
+                      {roleBadgeLabel}
                     </span>
                   </div>
                   <p className="text-[10px] text-slate-400 truncate font-mono mt-0.5" title={effectiveTeacherEmail}>

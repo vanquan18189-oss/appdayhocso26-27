@@ -1,7 +1,7 @@
 import { TeacherRecord, initialTeachersList } from '../components/modules/UserManagementModule';
 export type { TeacherRecord };
 import { db, auth } from './firebase';
-import { doc, getDoc, getDocs, collection, query, where } from 'firebase/firestore';
+import { doc, getDoc, getDocs, collection, query, where, setDoc } from 'firebase/firestore';
 import { trackedSetDoc, trackedDeleteDoc, trackedWriteBatch } from './firestoreWriteTracker';
 import { UserRole } from '../types';
 // import { safeStorage } from '../utils/safeStorage';
@@ -761,7 +761,71 @@ export async function fetchCurrentTeacherProfile(email?: string | null): Promise
 
   if (db && effectiveEmail) {
     try {
-      // 1. Duyệt qua collection to_chuyen_mon (các document tổ, tìm phần tử trong mảng teachers có email khớp)
+      // 1. Tra cứu trong collection users (nơi tài liệu có ID kiểu gv-01, gv-02...) theo email
+      const usersQuery = query(collection(db, 'users'), where('email', '==', effectiveEmail));
+      const usersSnap = await getDocs(usersQuery);
+      if (!usersSnap.empty) {
+        const docSnap = usersSnap.docs[0];
+        const data = docSnap.data();
+
+        if (auth?.currentUser?.uid && !data.uid) {
+          setDoc(docSnap.ref, { uid: auth.currentUser.uid }, { merge: true }).catch(() => {});
+        }
+
+        const roleStr = (data.role || '').toLowerCase();
+        const isAdmin = roleStr.includes('admin') || roleStr.includes('quản trị') || roleStr.includes('hiệu trưởng') || roleStr.includes('quản trị viên');
+        const resolvedName = (data.name === 'Nguyễn Thị Thủ' && (effectiveEmail === 'thuthuthtk@gmail.com' || docSnap.id === 'gv-12'))
+          ? 'Nguyễn Thị Thu'
+          : (data.name || resolveTeacherNameByEmail(effectiveEmail));
+
+        return {
+          id: docSnap.id || data.id || 'gv-01',
+          name: resolvedName,
+          email: data.email || effectiveEmail,
+          role: data.role || (isAdmin ? 'Quản trị viên (ADMIN)' : 'Giáo viên bộ môn'),
+          userRole: isAdmin ? 'admin' : 'teacher',
+          toChuyenMon: data.toChuyenMon,
+          subject: data.subject,
+          phone: data.phone,
+          avatar: data.avatar || '👩‍🏫',
+          homeroomClasses: data.homeroomClasses,
+          teachingClasses: data.teachingClasses
+        };
+      }
+
+      // 2. Tra cứu trong collection teachers theo email
+      const teachersQuery = query(collection(db, 'teachers'), where('email', '==', effectiveEmail));
+      const teachersSnap = await getDocs(teachersQuery);
+      if (!teachersSnap.empty) {
+        const docSnap = teachersSnap.docs[0];
+        const data = docSnap.data() as TeacherRecord;
+
+        if (auth?.currentUser?.uid && !(data as any).uid) {
+          setDoc(docSnap.ref, { uid: auth.currentUser.uid }, { merge: true }).catch(() => {});
+        }
+
+        const roleStr = (data.role || '').toLowerCase();
+        const isAdmin = roleStr.includes('admin') || roleStr.includes('quản trị') || roleStr.includes('hiệu trưởng') || roleStr.includes('quản trị viên');
+        const resolvedName = (data.name === 'Nguyễn Thị Thủ' && (effectiveEmail === 'thuthuthtk@gmail.com' || docSnap.id === 'gv-12'))
+          ? 'Nguyễn Thị Thu'
+          : (data.name || resolveTeacherNameByEmail(effectiveEmail));
+
+        return {
+          id: docSnap.id || data.id || 'gv-01',
+          name: resolvedName,
+          email: data.email || effectiveEmail,
+          role: data.role || (isAdmin ? 'Quản trị viên (ADMIN)' : 'Giáo viên bộ môn'),
+          userRole: isAdmin ? 'admin' : 'teacher',
+          toChuyenMon: data.toChuyenMon,
+          subject: data.subject,
+          phone: data.phone,
+          avatar: data.avatar || '👩‍🏫',
+          homeroomClasses: data.homeroomClasses,
+          teachingClasses: data.teachingClasses
+        };
+      }
+
+      // 3. Duyệt qua collection to_chuyen_mon
       const toSnap = await getDocs(collection(db, 'to_chuyen_mon'));
       for (const toDoc of toSnap.docs) {
         const toData = toDoc.data();
@@ -788,30 +852,6 @@ export async function fetchCurrentTeacherProfile(email?: string | null): Promise
             };
           }
         }
-      }
-
-      // 2. Tra cứu trong collection teachers (SSOT)
-      const q = query(collection(db, 'teachers'), where('email', '==', effectiveEmail));
-      const snap = await getDocs(q);
-      if (!snap.empty) {
-        const docSnap = snap.docs[0];
-        const data = docSnap.data() as TeacherRecord;
-        const isAdmin = (data.role || '').toLowerCase().includes('quản trị') ||
-                        (data.role || '').toLowerCase().includes('admin') ||
-                        (data.role || '').toLowerCase().includes('hiệu trưởng');
-        return {
-          id: docSnap.id || data.id,
-          name: (data.name === 'Nguyễn Thị Thủ' || docSnap.id === 'gv-12') ? 'Nguyễn Thị Thu' : data.name,
-          email: data.email,
-          role: data.role,
-          userRole: isAdmin ? 'admin' : 'teacher',
-          toChuyenMon: data.toChuyenMon,
-          subject: data.subject,
-          phone: data.phone,
-          avatar: data.avatar,
-          homeroomClasses: data.homeroomClasses,
-          teachingClasses: data.teachingClasses
-        };
       }
     } catch (e) {
       console.warn('Lỗi khi truy vấn hồ sơ giáo viên từ Firestore:', e);

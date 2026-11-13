@@ -6,6 +6,7 @@ import { INITIAL_EXAMS } from './mockData';
 import { removeUndefined } from './teacherStorageService';
 import { waitForWriteConfirmation, updateCollectionCacheStatus } from './firestoreWriteVerificationService';
 import { normalizeClassKey } from './studentStorageService';
+import { logSystemActivity } from './activityService';
 
 const EXAMS_CACHE_KEY = 'eduplay_cached_exams';
 
@@ -243,6 +244,15 @@ export async function saveExamToFirestore(exam: ExamPaper): Promise<void> {
     } else {
       console.warn(`⚠️ [Chưa xác nhận máy chủ Khối ${normalizedGrade}] ${writeResult.message}`);
     }
+
+    await logSystemActivity({
+      type: 'exam_assigned',
+      actorName: 'Giáo viên',
+      className: exam.targetClass || exam.grade || 'Lớp học',
+      targetTitle: exam.title || 'Đề kiểm tra',
+      module: 'Quản Lý Đề Kiểm Tra',
+      action: `Cô Nguyễn Thị Thu giao ${exam.title || 'Đề kiểm tra'} cho ${exam.targetClass || exam.grade || 'Lớp học'}`
+    }).catch(() => {});
   } catch (error) {
     console.error(`❌ [Lỗi giao/lưu đề thi Khối ${exam?.grade || '5'} lên Firestore]:`, error);
   }

@@ -7,6 +7,7 @@ import { removeUndefined, getCurrentTeacherProfile, resolveCurrentTeacherProfile
 import { waitForWriteConfirmation, updateCollectionCacheStatus } from './firestoreWriteVerificationService';
 import { normalizeClassKey } from './studentStorageService';
 import { normalizeStudentCode } from './studentCode';
+import { logSystemActivity } from './activityService';
 import './orderingMigrationService';
 
 const ASSIGNMENTS_CACHE_KEY = 'eduplay_cached_assignments';
@@ -230,6 +231,15 @@ export async function saveAssignmentToFirestore(assignment: HomeworkAssignment):
     } else {
       console.warn(`⚠️ [Chưa xác nhận máy chủ Khối ${normalizedGrade}] ${writeResult.message}`);
     }
+
+    await logSystemActivity({
+      type: 'assignment_assigned',
+      actorName: assignment.teacherName || 'Giáo viên',
+      className: assignment.targetClass || assignment.grade || 'Lớp học',
+      targetTitle: assignment.title || 'Bài tập',
+      module: 'Quản Lý Bài Tập',
+      action: `${assignment.teacherName || 'Cô Nguyễn Thị Thu'} giao bài tập ${assignment.title || 'Bài tập'} cho ${assignment.targetClass || assignment.grade || 'Lớp học'}`
+    }).catch(() => {});
   } catch (error) {
     console.error(`❌ [Lỗi giao/lưu bài tập Khối ${assignment?.grade || '5'} lên Firestore]:`, error);
   }

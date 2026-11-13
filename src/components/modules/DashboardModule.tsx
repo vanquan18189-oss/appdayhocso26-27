@@ -56,6 +56,7 @@ import {
 } from '../../services/gameStorageService';
 import { collection, getDocs, query, where, orderBy, limit, setDoc, doc } from 'firebase/firestore';
 import { db } from '../../firebaseConfig';
+import { fetchAndSynthesizeActivityLogs, ActivityLog as SynthesizedActivityLog } from '../../services/activityService';
 
 export interface DashboardModuleProps {
   onNavigate?: (module: ActiveModule) => void;
@@ -104,63 +105,32 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
 
   const schoolYear = selectedAcademicYear || '2026-2027';
   const [fetchedLogs, setFetchedLogs] = useState<ActivityLog[]>([]);
+  const [isRefreshingLogs, setIsRefreshingLogs] = useState(false);
+
+  const loadActivities = async (force: boolean = false) => {
+    try {
+      const logs = await fetchAndSynthesizeActivityLogs(schoolYear, force);
+      setFetchedLogs(logs as ActivityLog[]);
+    } catch (err) {
+      console.warn('Error loading synthesized activity logs:', err);
+    }
+  };
 
   useEffect(() => {
     let isMounted = true;
-    const fetchActivityLogs = async () => {
-      try {
-        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-        const logsRef = collection(db, 'activityLogs');
-        const q = query(
-          logsRef,
-          where('schoolYear', '==', schoolYear),
-          where('timestamp', '>=', sevenDaysAgo),
-          orderBy('timestamp', 'desc'),
-          limit(5)
-        );
-        const snap = await getDocs(q);
-        if (isMounted && !snap.empty) {
-          const list: ActivityLog[] = [];
-          snap.forEach(docSnap => {
-            const data = docSnap.data();
-            list.push({
-              id: docSnap.id,
-              user: data.user || 'Giáo viên',
-              role: data.role || 'teacher',
-              action: data.action || '',
-              module: data.module || 'Hệ thống',
-              timestamp: data.timestamp || 'Vừa xong',
-              time: data.time || data.timestamp || 'Vừa xong',
-              schoolYear: data.schoolYear || schoolYear
-            });
-          });
-          setFetchedLogs(list);
-        } else if (isMounted) {
-          const baseLogs = activityLogs || logs || [];
-          if (baseLogs.length > 0) {
-            baseLogs.slice(0, 5).forEach(async (logItem) => {
-              try {
-                const logDocRef = doc(db, 'activityLogs', logItem.id || `log-${Date.now()}-${Math.random()}`);
-                await setDoc(logDocRef, {
-                  ...logItem,
-                  schoolYear: logItem.schoolYear || schoolYear,
-                  timestamp: logItem.timestamp || new Date().toISOString()
-                }, { merge: true });
-              } catch {
-                // Ignore sync write error
-              }
-            });
-          }
-        }
-      } catch (err) {
-        console.warn('Could not query activityLogs from Firestore:', err);
-      }
-    };
-    fetchActivityLogs();
+    loadActivities().then(() => {
+      if (!isMounted) return;
+    });
     return () => {
       isMounted = false;
     };
-  }, [schoolYear, activityLogs, logs]);
+  }, [schoolYear]);
+
+  const handleRefreshActivities = async () => {
+    setIsRefreshingLogs(true);
+    await loadActivities(true);
+    setIsRefreshingLogs(false);
+  };
 
   const actualLogs = fetchedLogs.length > 0 ? fetchedLogs : (activityLogs || logs || []);
 
@@ -1900,28 +1870,32 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
                 <h3 className="text-base font-bold text-slate-900 flex items-center gap-2 font-heading">
                   <Clock className="w-5 h-5 text-[#4338CA]" /> Hoạt Động Mới Nhất
                 </h3>
-                <span className="text-[11px] font-semibold text-slate-400">
-                  Cập nhật trực tiếp
-                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleRefreshActivities}
+                    disabled={isRefreshingLogs}
+                    className="text-[11px] font-semibold text-[#4338CA] hover:text-[#3730A3] bg-[#EEF2FF] px-2 py-1 rounded-md transition-colors cursor-pointer flex items-center gap-1"
+                  >
+                    {isRefreshingLogs ? 'Đang tải...' : 'Làm mới'}
+                  </button>
+                </div>
               </div>
 
               {(() => {
                 const activities = actualLogs;
                 return activities.length === 0 ? (
                   <div className="text-center py-8 px-4 text-gray-400">
-                    {/* Icon minh họa nhẹ nhàng */}
                     <svg className="w-10 h-10 mx-auto mb-2 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
-                    <p className="text-sm font-medium text-gray-600">Chưa có hoạt động mới trong tuần qua</p>
+                    <p className="text-sm font-medium text-gray-600">Chưa có hoạt động nào trong 30 ngày qua</p>
                     <p className="text-xs text-gray-400 mt-1">Các nội dung do thầy/cô soạn thảo gần đây sẽ hiển thị tại đây.</p>
                   </div>
                 ) : (
-                  <div className="space-y-3">
+                  <div className="max-h-[420px] overflow-y-auto pr-1 space-y-3">
                     {activities.map((item: any) => {
                       const ItemIcon = item.icon || Clock;
                       return (
-                        // Hiển thị danh sách hoạt động khi có dữ liệu
                         <div key={item.id || item.timestamp} className="p-3 bg-gray-50 rounded-lg space-y-1">
                           <div className="flex items-center justify-between text-xs">
                             <span className="font-bold text-slate-800 flex items-center gap-1.5">
