@@ -1,14 +1,23 @@
-import { db, isFirestoreQuotaExceeded, markFirestoreQuotaExceeded } from './firebase';
-import { collection, doc, getDocs, onSnapshot } from 'firebase/firestore';
+import { db, isFirestoreQuotaExceeded } from './firebase';
+import { collection, doc, getDocs, getDoc } from 'firebase/firestore';
 import { trackedSetDoc, trackedDeleteDoc, trackedWriteBatch, extractFirestoreErrorDetails } from './firestoreWriteTracker';
 import { ExamPaper } from '../types';
-import { INITIAL_EXAMS } from './mockData';
 import { removeUndefined } from './teacherStorageService';
 import { waitForWriteConfirmation, updateCollectionCacheStatus } from './firestoreWriteVerificationService';
 import { normalizeClassKey } from './studentStorageService';
 import { logSystemActivity } from './activityService';
+import { toISOStringUTC } from '../utils/dateUtils';
+import { ensureReportedGrade5TechExamFixed } from './dateMigrationService';
+import {
+  attachOwnershipOnCreate,
+  getCurrentAccessContext,
+  getContentPermissions,
+  queryAccessibleCollection,
+  invalidateQueryCache
+} from './permissionService';
 
 const EXAMS_CACHE_KEY = 'eduplay_cached_exams';
+let hasCheckedReportedExamFix = false;
 
 /**
  * Kiểm tra xem một đề thi có phải là đề kiểm tra chính thức hợp lệ hay không.
@@ -24,7 +33,6 @@ export function isValidOfficialExam(exam: Partial<ExamPaper> | null | undefined)
   if (!title) return false;
 
   // Bắt buộc phải có danh sách câu hỏi hợp lệ với ít nhất 1 câu hỏi
-  // (Loại bỏ triệt để các bản ghi rác/nháp phát sinh do nộp bài chỉ chứa submissions/submissionsCount)
   if (!Array.isArray(exam.questions) || exam.questions.length === 0) {
     return false;
   }
@@ -77,19 +85,18 @@ export function deduplicateExams(exams: ExamPaper[]): ExamPaper[] {
 }
 
 /**
- * Quét và dọn dẹp các bản ghi đề thi trùng lặp và bản nháp rác trong cả LocalStorage và Firestore
+ * Quét và dọn dẹp các bản ghi đề thi trùng lặp và bản nháp rác trong LocalStorage (và Firestore đối với Admin)
  */
 export async function cleanDuplicateExams(): Promise<void> {
   try {
-    const cached = getLocalCachedExams();
+    const cached = getRawCachedExams();
     const cleanList = deduplicateExams(cached);
     if (cleanList.length !== cached.length) {
-      console.log(`🧹 Đã dọn dẹp ${cached.length - cleanList.length} đề thi trùng lặp/bản nháp rác trong LocalStorage`);
       saveExamsToLocalStorage(cleanList);
     }
 
-    // Quét Firestore để dọn dẹp các tài liệu rác/bản nháp sinh tự động không có câu hỏi hoặc không có tiêu đề
-    if (db) {
+    const access = getCurrentAccessContext();
+    if (db && access.isAdmin) {
       try {
         const snap = await getDocs(collection(db, 'exams'));
         if (!snap.empty) {
@@ -103,13 +110,11 @@ export async function cleanDuplicateExams(): Promise<void> {
           });
 
           if (ghostDocs.length > 0) {
-            console.log(`🧹 Phát hiện ${ghostDocs.length} bản nháp rác trong Firestore. Đang tiến hành làm sạch...`, ghostDocs);
             const batch = trackedWriteBatch(db, { isUserInitiated: false, actionType: 'admin_batch' });
             ghostDocs.forEach(id => {
               batch.delete(doc(db, 'exams', id));
             });
             await batch.commit();
-            console.log(`✅ Đã xóa sạch ${ghostDocs.length} bản nháp rác khỏi Cloud Firestore!`);
           }
         }
       } catch (fErr) {
@@ -121,30 +126,7 @@ export async function cleanDuplicateExams(): Promise<void> {
   }
 }
 
-// Chạy dọn dẹp tự động khi khởi động
-if (typeof window !== 'undefined') {
-  try {
-    const cached = localStorage.getItem(EXAMS_CACHE_KEY);
-    if (cached) {
-      const parsed = JSON.parse(cached);
-      if (Array.isArray(parsed)) {
-        const clean = parsed.filter(isValidOfficialExam);
-        if (clean.length !== parsed.length) {
-          localStorage.setItem(EXAMS_CACHE_KEY, JSON.stringify(deduplicateExams(clean)));
-        }
-      }
-    }
-  } catch {}
-
-  setTimeout(() => {
-    cleanDuplicateExams().catch(console.error);
-  }, 1000);
-}
-
-/**
- * Lấy danh sách đề thi từ LocalStorage Cache
- */
-export function getLocalCachedExams(): ExamPaper[] {
+function getRawCachedExams(): ExamPaper[] {
   if (typeof window === 'undefined') return [];
   try {
     const cached = localStorage.getItem(EXAMS_CACHE_KEY);
@@ -158,6 +140,16 @@ export function getLocalCachedExams(): ExamPaper[] {
     console.warn('Lỗi đọc cache đề thi từ LocalStorage:', e);
   }
   return [];
+}
+
+/**
+ * Lấy danh sách đề thi từ LocalStorage Cache (có lọc RBAC cho giáo viên thường)
+ */
+export function getLocalCachedExams(): ExamPaper[] {
+  const all = getRawCachedExams();
+  const access = getCurrentAccessContext();
+  if (access.isAdmin || access.isStudent) return all;
+  return all.filter(exam => getContentPermissions(exam, access).canView);
 }
 
 /**
@@ -179,17 +171,29 @@ export function saveExamsToLocalStorage(exams: ExamPaper[]): void {
 import { extractGradeDigit } from '../lib/constants';
 
 /**
- * Lưu một Đề kiểm tra lên Firestore
+ * Lưu một Đề kiểm tra lên Firestore (kèm metadata sở hữu & chia sẻ RBAC)
  */
-export async function saveExamToFirestore(exam: ExamPaper): Promise<void> {
+export async function saveExamToFirestore(examInput: ExamPaper): Promise<void> {
   try {
+    const current = getRawCachedExams();
+    const oldExistsIdx = current.findIndex(e => e.id === examInput.id);
+    const existingExam = oldExistsIdx >= 0 ? current[oldExistsIdx] : null;
+
+    const exam = attachOwnershipOnCreate({ ...examInput }, existingExam);
+
+    // Chuẩn hóa ngày giờ lưu vào Firestore theo chuẩn ISO 8601 UTC duy nhất
+    if (exam.startTime) {
+      const isoStart = toISOStringUTC(exam.startTime);
+      if (isoStart) exam.startTime = isoStart;
+    }
+    if (exam.endTime) {
+      const isoEnd = toISOStringUTC(exam.endTime);
+      if (isoEnd) exam.endTime = isoEnd;
+    }
+
     const targetDigit = extractGradeDigit(exam.targetClass) || extractGradeDigit(exam.grade) || '5';
     const normalizedGrade = `Khối ${targetDigit}`;
     exam.grade = normalizedGrade;
-
-    // Check if an existing record matches by OLD ID
-    const current = getLocalCachedExams();
-    const oldExistsIdx = current.findIndex(e => e.id === exam.id);
 
     if (!exam.id.startsWith('ex-') || !exam.id.includes('-class-lp')) {
       const classKey = normalizeClassKey(exam.targetClass || exam.grade || '5A');
@@ -217,72 +221,73 @@ export async function saveExamToFirestore(exam: ExamPaper): Promise<void> {
       updatedAt: new Date().toISOString()
     });
 
-    console.log(`[DEBUG] Saving Exam to Firestore:`, {
-      docId: exam.id,
-      payload: cleanedPayload
-    });
-
     try {
       await trackedSetDoc(examRef, cleanedPayload, { merge: true });
+      invalidateQueryCache('exams');
     } catch (setDocErr: any) {
       const errDetails = extractFirestoreErrorDetails(setDocErr);
-      console.error(`❌ [LỖI FIRESTORE TỪ CHỐI LƯU ĐỀ THI KHỐI ${normalizedGrade}]`, {
-        message: errDetails.message,
-        code: errDetails.code,
-        examId: exam.id,
-        grade: normalizedGrade,
-        targetClass: exam.targetClass,
-        payload: cleanedPayload
-      });
       throw new Error(errDetails.message);
     }
 
-    // Chờ xác nhận ghi từ máy chủ qua waitForPendingWrites & getDocFromServer
-    const writeResult = await waitForWriteConfirmation(examRef, 12000, false);
-    if (writeResult.success) {
-      console.log(`💾 [Máy chủ xác nhận] Đã lưu đề thi "${exam.title}" (Khối: ${normalizedGrade}, Lớp: ${exam.targetClass}, ID: ${exam.id}) lên Cloud Firestore!`);
-    } else {
-      console.warn(`⚠️ [Chưa xác nhận máy chủ Khối ${normalizedGrade}] ${writeResult.message}`);
+    await waitForWriteConfirmation(examRef, 12000, false);
+
+    // Sau khi lưu phải đọc lại từ Firestore để xác nhận giá trị đã lưu đúng
+    try {
+      const verifiedSnap = await getDoc(examRef);
+      if (verifiedSnap.exists()) {
+        const verifiedExam = { id: verifiedSnap.id, ...verifiedSnap.data() } as ExamPaper;
+        const latestCached = getRawCachedExams();
+        const idx = latestCached.findIndex(e => e.id === verifiedExam.id);
+        if (idx >= 0) {
+          latestCached[idx] = { ...latestCached[idx], ...verifiedExam };
+          saveExamsToLocalStorage(latestCached);
+        } else {
+          saveExamsToLocalStorage([verifiedExam, ...latestCached]);
+        }
+      }
+    } catch (verifyErr) {
+      console.warn('Không thể đọc lại đề thi sau khi lưu:', verifyErr);
     }
 
+    const actorName = exam.ownerName || exam.teacherName || 'Giáo viên';
     await logSystemActivity({
       type: 'exam_assigned',
-      actorName: 'Giáo viên',
+      actorName,
       className: exam.targetClass || exam.grade || 'Lớp học',
       targetTitle: exam.title || 'Đề kiểm tra',
       module: 'Quản Lý Đề Kiểm Tra',
-      action: `Cô Nguyễn Thị Thu giao ${exam.title || 'Đề kiểm tra'} cho ${exam.targetClass || exam.grade || 'Lớp học'}`
+      action: `${actorName} giao ${exam.title || 'Đề kiểm tra'} cho ${exam.targetClass || exam.grade || 'Lớp học'}`
     }).catch(() => {});
   } catch (error) {
-    console.error(`❌ [Lỗi giao/lưu đề thi Khối ${exam?.grade || '5'} lên Firestore]:`, error);
+    console.error(`❌ [Lỗi giao/lưu đề thi Khối ${examInput?.grade || '5'} lên Firestore]:`, error);
   }
 }
 
 /**
- * Lấy toàn bộ danh sách Đề kiểm tra chính thức từ Firestore
+ * Lấy danh sách Đề kiểm tra từ Firestore theo phân quyền RBAC (cache 5 phút, tối đa 20 doc/nguồn, không dùng onSnapshot)
  */
-export async function getExamsFromFirestore(): Promise<ExamPaper[]> {
+export async function getExamsFromFirestore(forceRefresh = false): Promise<ExamPaper[]> {
   try {
     if (!db) return getLocalCachedExams();
 
-    const examsSnap = await getDocs(collection(db, 'exams'));
-    if (!examsSnap.empty) {
-      const exams: ExamPaper[] = [];
-      examsSnap.forEach(docSnap => {
-        const data = docSnap.data();
-        const examObj = { id: docSnap.id, ...data } as ExamPaper;
-        if (isValidOfficialExam(examObj)) {
-          exams.push(examObj);
-        }
-      });
-      const clean = deduplicateExams(exams);
+    if (!hasCheckedReportedExamFix) {
+      hasCheckedReportedExamFix = true;
+      await ensureReportedGrade5TechExamFixed().catch(() => {});
+    }
+
+    const fetched = await queryAccessibleCollection<ExamPaper>('exams', {
+      forceRefresh,
+      maxPerSource: 20,
+      adminLimit: 50
+    });
+    const validExams = fetched.filter(isValidOfficialExam);
+    const clean = deduplicateExams(validExams);
+    updateCollectionCacheStatus('exams', false, clean.length, false);
+    if (clean.length > 0) {
       saveExamsToLocalStorage(clean);
       return clean;
     }
-
-    // Nếu rỗng, không gieo mầm dữ liệu mẫu
-    saveExamsToLocalStorage([]);
-    return [];
+    return getLocalCachedExams();
   } catch (error) {
     console.warn("Lỗi đọc danh sách đề thi từ Firestore:", error);
     return getLocalCachedExams();
@@ -290,7 +295,7 @@ export async function getExamsFromFirestore(): Promise<ExamPaper[]> {
 }
 
 /**
- * Đăng ký lắng nghe thời gian thực (Real-time listener) danh sách Đề kiểm tra từ Firestore
+ * Tải danh sách Đề kiểm tra từ Firestore theo phân quyền RBAC (không dùng onSnapshot)
  */
 export function subscribeToExamsFromFirestore(
   onUpdate: (exams: ExamPaper[]) => void,
@@ -301,49 +306,22 @@ export function subscribeToExamsFromFirestore(
     return () => {};
   }
 
-  try {
-    const examsColRef = collection(db, 'exams');
-    return onSnapshot(
-      examsColRef,
-      (snapshot) => {
-        const isFromCache = snapshot.metadata.fromCache;
-        const hasPending = snapshot.metadata.hasPendingWrites;
+  let isMounted = true;
 
-        updateCollectionCacheStatus('exams', isFromCache, snapshot.size, hasPending);
+  getExamsFromFirestore(false)
+    .then(cleanLoaded => {
+      if (!isMounted) return;
+      cleanLoaded.sort((a, b) => (b.id > a.id ? 1 : -1));
+      onUpdate(cleanLoaded);
+    })
+    .catch(err => {
+      if (onError) onError(err);
+      if (isMounted) onUpdate(getLocalCachedExams());
+    });
 
-        if (!snapshot.empty) {
-          const loadedExams: ExamPaper[] = [];
-          snapshot.forEach((docSnap) => {
-            const data = docSnap.data();
-            const examObj = { id: docSnap.id, ...data } as ExamPaper;
-            if (isValidOfficialExam(examObj)) {
-              loadedExams.push(examObj);
-            }
-          });
-          const cleanLoaded = deduplicateExams(loadedExams);
-          cleanLoaded.sort((a, b) => (b.id > a.id ? 1 : -1));
-          saveExamsToLocalStorage(cleanLoaded);
-          onUpdate(cleanLoaded);
-        } else {
-          saveExamsToLocalStorage([]);
-          onUpdate([]);
-        }
-      },
-      (err) => {
-        const msg = err?.message || String(err);
-        if (msg.includes('resource-exhausted') || msg.includes('quota') || err?.code === 'resource-exhausted') {
-          markFirestoreQuotaExceeded();
-        }
-        console.warn('Lỗi Firestore Live Exam listener:', err);
-        if (onError) onError(err);
-        onUpdate(getLocalCachedExams());
-      }
-    );
-  } catch (err) {
-    console.warn('Lỗi khởi tạo subscribeToExamsFromFirestore:', err);
-    onUpdate(getLocalCachedExams());
-    return () => {};
-  }
+  return () => {
+    isMounted = false;
+  };
 }
 
 // import { deleteSubmissionsByExam } from './cascadeCleanupService';

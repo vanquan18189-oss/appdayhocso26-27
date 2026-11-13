@@ -1,14 +1,20 @@
 import { db, auth } from './firebase';
-import { collection, doc, getDocs, onSnapshot } from 'firebase/firestore';
+import { collection, doc, getDocs, getDoc } from 'firebase/firestore';
 import { trackedSetDoc, trackedDeleteDoc, trackedWriteBatch, extractFirestoreErrorDetails } from './firestoreWriteTracker';
 import { HomeworkAssignment } from '../types';
-import { INITIAL_ASSIGNMENTS } from './mockData';
-import { removeUndefined, getCurrentTeacherProfile, resolveCurrentTeacherProfile } from './teacherStorageService';
+import { removeUndefined, resolveCurrentTeacherProfile } from './teacherStorageService';
 import { waitForWriteConfirmation, updateCollectionCacheStatus } from './firestoreWriteVerificationService';
 import { normalizeClassKey } from './studentStorageService';
 import { normalizeStudentCode } from './studentCode';
 import { logSystemActivity } from './activityService';
-import './orderingMigrationService';
+import { toISOStringUTC } from '../utils/dateUtils';
+import {
+  attachOwnershipOnCreate,
+  getCurrentAccessContext,
+  getContentPermissions,
+  queryAccessibleCollection,
+  invalidateQueryCache
+} from './permissionService';
 
 const ASSIGNMENTS_CACHE_KEY = 'eduplay_cached_assignments';
 
@@ -54,14 +60,13 @@ export function deduplicateAssignments(assignments: HomeworkAssignment[]): Homew
 }
 
 /**
- * Quét và dọn dẹp các bản ghi bài tập trùng lặp trong cả LocalStorage và Firestore
+ * Quét và dọn dẹp các bản ghi bài tập trùng lặp trong LocalStorage
  */
 export async function cleanDuplicateAssignments(): Promise<void> {
   try {
-    const cached = getLocalCachedAssignments();
+    const cached = getRawCachedAssignments();
     const cleanList = deduplicateAssignments(cached);
     if (cleanList.length !== cached.length) {
-      console.log(`🧹 Đã dọn dẹp ${cached.length - cleanList.length} bài tập trùng lặp trong LocalStorage`);
       saveAssignmentsToLocalStorage(cleanList);
     }
   } catch (err) {
@@ -69,17 +74,7 @@ export async function cleanDuplicateAssignments(): Promise<void> {
   }
 }
 
-// Chạy dọn dẹp tự động khi tải
-if (typeof window !== 'undefined') {
-  setTimeout(() => {
-    cleanDuplicateAssignments().catch(console.error);
-  }, 1000);
-}
-
-/**
- * Get assignments from LocalStorage Cache
- */
-export function getLocalCachedAssignments(): HomeworkAssignment[] {
+function getRawCachedAssignments(): HomeworkAssignment[] {
   if (typeof window === 'undefined') return [];
   try {
     const cached = localStorage.getItem(ASSIGNMENTS_CACHE_KEY);
@@ -96,6 +91,16 @@ export function getLocalCachedAssignments(): HomeworkAssignment[] {
 }
 
 /**
+ * Get assignments from LocalStorage Cache (RBAC-filtered for regular teachers)
+ */
+export function getLocalCachedAssignments(): HomeworkAssignment[] {
+  const all = getRawCachedAssignments();
+  const access = getCurrentAccessContext();
+  if (access.isAdmin || access.isStudent) return all;
+  return all.filter(item => getContentPermissions(item, access).canView);
+}
+
+/**
  * Save assignments to LocalStorage Cache and dispatch real-time events
  */
 export function saveAssignmentsToLocalStorage(assignments: HomeworkAssignment[]): void {
@@ -104,7 +109,6 @@ export function saveAssignmentsToLocalStorage(assignments: HomeworkAssignment[])
     const clean = deduplicateAssignments(assignments);
     localStorage.setItem(ASSIGNMENTS_CACHE_KEY, JSON.stringify(clean));
 
-    // Dispatch real-time events for live component and perspective view synchronization
     window.dispatchEvent(new CustomEvent('eduplay_assignments_updated', {
       detail: { assignments: clean, timestamp: Date.now() }
     }));
@@ -119,62 +123,63 @@ export function saveAssignmentsToLocalStorage(assignments: HomeworkAssignment[])
 import { extractGradeDigit } from '../lib/constants';
 
 /**
- * Save a HomeworkAssignment to Firestore
+ * Save a HomeworkAssignment to Firestore (with RBAC ownership & sharing metadata)
  */
-export async function saveAssignmentToFirestore(assignment: HomeworkAssignment): Promise<void> {
+export async function saveAssignmentToFirestore(assignmentInput: HomeworkAssignment): Promise<void> {
   try {
-    const targetDigit = extractGradeDigit(assignment.targetClass) || extractGradeDigit(assignment.grade) || '5';
-    const normalizedGrade = `Khối ${targetDigit}`;
-    assignment.grade = normalizedGrade;
+    const current = getRawCachedAssignments();
+    const existsIdx = current.findIndex(a => a.id === assignmentInput.id);
+    const existingAssignment = existsIdx >= 0 ? current[existsIdx] : null;
 
-    // 0. Resolve the authentic teacher profile using resolveCurrentTeacherProfile (SSOT)
     const currentEmail = (
-      assignment.teacherEmail ||
+      assignmentInput.ownerEmail ||
+      assignmentInput.teacherEmail ||
       (auth && auth.currentUser ? auth.currentUser.email : null) ||
       (typeof window !== 'undefined' ? localStorage.getItem('eduplay_teacher_email') : null) ||
       ''
     ).toLowerCase().trim();
 
     const profile = resolveCurrentTeacherProfile(currentEmail);
+    const assignment = attachOwnershipOnCreate({ ...assignmentInput }, existingAssignment);
 
-    // Strictly enforce teacherId: MUST be business ID (e.g. 'gv-12'), NEVER Firebase Auth UID!
-    const isInvalidTeacherId =
-      !assignment.teacherId ||
-      assignment.teacherId === 'u-4' ||
-      assignment.teacherId === 'gv-temp' ||
-      assignment.teacherId.length > 10 || // Firebase Auth UIDs are 28 characters long
-      (currentEmail.includes('thuthuthtk') && assignment.teacherId !== 'gv-12');
+    const targetDigit = extractGradeDigit(assignment.targetClass) || extractGradeDigit(assignment.grade) || '5';
+    const normalizedGrade = `Khối ${targetDigit}`;
+    assignment.grade = normalizedGrade;
 
-    if (isInvalidTeacherId) {
+    if (!assignment.teacherId || assignment.teacherId === 'u-4' || assignment.teacherId === 'gv-temp') {
       assignment.teacherId = profile.id;
     }
-
-    // Strictly enforce teacherName: MUST match authentic profile
-    const isMismatchedName =
-      !assignment.teacherName ||
-      assignment.teacherName === 'Lê Minh Anh' ||
-      assignment.teacherName === 'Nguyễn Thị Thủ' ||
-      assignment.teacherName === 'Nguyễn Thị Thủ (ADMIN)' ||
-      (currentEmail.includes('thuthuthtk') && assignment.teacherName !== 'Nguyễn Thị Thu') ||
-      (!currentEmail.includes('vanquan') && assignment.teacherName.includes('Văn Quân'));
-
-    if (isMismatchedName) {
-      assignment.teacherName = profile.name;
+    if (!assignment.teacherName) {
+      assignment.teacherName = assignment.ownerName || profile.name;
     }
-
-    // Ensure teacherEmail is populated
-    assignment.teacherEmail = profile.email || currentEmail;
-
-    // Ensure createdBy is business ID, NEVER Auth UID
-    if (assignment.createdBy && assignment.createdBy.length > 10) {
-      assignment.createdBy = profile.id;
-    } else if (!assignment.createdBy) {
+    if (!assignment.teacherEmail) {
+      assignment.teacherEmail = assignment.ownerEmail || profile.email || currentEmail;
+    }
+    if (!assignment.createdBy) {
       assignment.createdBy = profile.id;
     }
 
-    // 1. Always update local cache first (strict ID matching only, never overwrite different assignments)
-    const current = getLocalCachedAssignments();
-    const existsIdx = current.findIndex(a => a.id === assignment.id);
+    // Chuẩn hóa ngày giờ lưu vào Firestore theo chuẩn ISO 8601 UTC duy nhất
+    if ((assignment as any).startDate) {
+      const isoStart = toISOStringUTC((assignment as any).startDate);
+      if (isoStart) (assignment as any).startDate = isoStart;
+    }
+    if ((assignment as any).assignedDate) {
+      const isoAssigned = toISOStringUTC((assignment as any).assignedDate);
+      if (isoAssigned) (assignment as any).assignedDate = isoAssigned;
+    }
+    if (assignment.dueDate && assignment.dueDate.trim().toLowerCase() !== 'vô thời hạn') {
+      const isoDue = toISOStringUTC(assignment.dueDate);
+      if (isoDue) assignment.dueDate = isoDue;
+    }
+
+    // Enforce ID structure: as-[ID]-class-lp[classKey] (unless elearn-)
+    if (!assignment.id.startsWith('elearn-') && (!assignment.id.startsWith('as-') || !assignment.id.includes('-class-lp'))) {
+      const classKey = normalizeClassKey(assignment.targetClass || assignment.grade || '5A');
+      const baseId = assignment.id.replace(/^as-/, '').replace(/-class-.*$/, '');
+      assignment.id = `as-${baseId}-class-lp${classKey.toLowerCase()}`;
+    }
+
     let updated: HomeworkAssignment[];
     if (existsIdx >= 0) {
       updated = [...current];
@@ -189,13 +194,6 @@ export async function saveAssignmentToFirestore(assignment: HomeworkAssignment):
       return;
     }
 
-    // Enforce ID structure: as-[ID]-class-lp[classKey]
-    if (!assignment.id.startsWith('as-') || !assignment.id.includes('-class-lp')) {
-      const classKey = normalizeClassKey(assignment.targetClass || assignment.grade || '5A');
-      const baseId = assignment.id.replace(/^as-/, '').replace(/-class-.*$/, '');
-      assignment.id = `as-${baseId}-class-lp${classKey.toLowerCase()}`;
-    }
-
     const assignRef = doc(db, 'assignments', assignment.id);
     const cleanedPayload = removeUndefined({
       ...assignment,
@@ -204,67 +202,67 @@ export async function saveAssignmentToFirestore(assignment: HomeworkAssignment):
       updatedAt: new Date().toISOString()
     });
 
-    console.log(`[DEBUG] Saving Assignment to Firestore:`, {
-      docId: assignment.id,
-      payload: cleanedPayload
-    });
-
     try {
       await trackedSetDoc(assignRef, cleanedPayload, { merge: true });
+      invalidateQueryCache('assignments');
     } catch (setDocErr: any) {
-    // ...
       const errDetails = extractFirestoreErrorDetails(setDocErr);
-      console.error(`❌ [LỖI FIRESTORE TỪ CHỐI LƯU BÀI TẬP KHỐI ${normalizedGrade}]`, {
-        message: errDetails.message,
-        code: errDetails.code,
-        assignmentId: assignment.id,
-        grade: normalizedGrade,
-        targetClass: assignment.targetClass,
-        payload: cleanedPayload
-      });
       throw new Error(errDetails.message);
     }
 
-    const writeResult = await waitForWriteConfirmation(assignRef, 12000, false);
-    if (writeResult.success) {
-      console.log(`💾 [Máy chủ xác nhận] Đã lưu bài tập "${assignment.title}" (Khối: ${normalizedGrade}, Lớp: ${assignment.targetClass}, ID: ${assignment.id}) lên Cloud Firestore!`);
-    } else {
-      console.warn(`⚠️ [Chưa xác nhận máy chủ Khối ${normalizedGrade}] ${writeResult.message}`);
+    await waitForWriteConfirmation(assignRef, 12000, false);
+
+    // Đọc lại từ Firestore sau khi lưu để xác nhận giá trị đã lưu đúng
+    try {
+      const verifiedSnap = await getDoc(assignRef);
+      if (verifiedSnap.exists()) {
+        const verifiedDoc = { id: verifiedSnap.id, ...verifiedSnap.data() } as HomeworkAssignment;
+        const latestCached = getRawCachedAssignments();
+        const idx = latestCached.findIndex(a => a.id === verifiedDoc.id);
+        if (idx >= 0) {
+          latestCached[idx] = { ...latestCached[idx], ...verifiedDoc };
+          saveAssignmentsToLocalStorage(latestCached);
+        } else {
+          saveAssignmentsToLocalStorage([verifiedDoc, ...latestCached]);
+        }
+      }
+    } catch (verifyErr) {
+      console.warn('Không thể đọc lại bài tập sau khi lưu:', verifyErr);
     }
 
+    const actorName = assignment.ownerName || assignment.teacherName || 'Giáo viên';
     await logSystemActivity({
       type: 'assignment_assigned',
-      actorName: assignment.teacherName || 'Giáo viên',
+      actorName,
       className: assignment.targetClass || assignment.grade || 'Lớp học',
       targetTitle: assignment.title || 'Bài tập',
       module: 'Quản Lý Bài Tập',
-      action: `${assignment.teacherName || 'Cô Nguyễn Thị Thu'} giao bài tập ${assignment.title || 'Bài tập'} cho ${assignment.targetClass || assignment.grade || 'Lớp học'}`
+      action: `${actorName} giao bài tập ${assignment.title || 'Bài tập'} cho ${assignment.targetClass || assignment.grade || 'Lớp học'}`
     }).catch(() => {});
   } catch (error) {
-    console.error(`❌ [Lỗi giao/lưu bài tập Khối ${assignment?.grade || '5'} lên Firestore]:`, error);
+    console.error(`❌ [Lỗi giao/lưu bài tập Khối ${assignmentInput?.grade || '5'} lên Firestore]:`, error);
   }
 }
 
 /**
- * Fetch all assignments from Firestore
+ * Fetch accessible assignments from Firestore using RBAC scoped queries (5-minute cache, max 20 docs/source, no onSnapshot)
  */
-export async function getAssignmentsFromFirestore(): Promise<HomeworkAssignment[]> {
+export async function getAssignmentsFromFirestore(forceRefresh = false): Promise<HomeworkAssignment[]> {
   try {
     if (!db) return getLocalCachedAssignments();
 
-    const snap = await getDocs(collection(db, 'assignments'));
-    if (!snap.empty) {
-      const items: HomeworkAssignment[] = [];
-      snap.forEach(docSnap => {
-        items.push({ id: docSnap.id, ...docSnap.data() } as HomeworkAssignment);
-      });
-      saveAssignmentsToLocalStorage(items);
-      return items;
+    const items = await queryAccessibleCollection<HomeworkAssignment>('assignments', {
+      forceRefresh,
+      maxPerSource: 20,
+      adminLimit: 60
+    });
+    const clean = deduplicateAssignments(items);
+    updateCollectionCacheStatus('assignments', false, clean.length, false);
+    if (clean.length > 0) {
+      saveAssignmentsToLocalStorage(clean);
+      return clean;
     }
-
-    // Nếu rỗng, không gieo mầm dữ liệu mẫu
-    saveAssignmentsToLocalStorage([]);
-    return [];
+    return getLocalCachedAssignments();
   } catch (error) {
     console.warn("Lỗi đọc danh sách bài tập từ Firestore:", error);
     return getLocalCachedAssignments();
@@ -272,7 +270,7 @@ export async function getAssignmentsFromFirestore(): Promise<HomeworkAssignment[
 }
 
 /**
- * Subscribe to Real-time listener for assignments collection from Firestore
+ * Load assignments from Firestore using RBAC scoped queries (no onSnapshot)
  */
 export function subscribeToAssignmentsFromFirestore(
   onUpdate: (assignments: HomeworkAssignment[]) => void,
@@ -283,41 +281,22 @@ export function subscribeToAssignmentsFromFirestore(
     return () => {};
   }
 
-  try {
-    const colRef = collection(db, 'assignments');
-    return onSnapshot(
-      colRef,
-      (snapshot) => {
-        const isFromCache = snapshot.metadata.fromCache;
-        const hasPending = snapshot.metadata.hasPendingWrites;
+  let isMounted = true;
 
-        updateCollectionCacheStatus('assignments', isFromCache, snapshot.size, hasPending);
+  getAssignmentsFromFirestore(false)
+    .then(cleanLoaded => {
+      if (!isMounted) return;
+      cleanLoaded.sort((a, b) => (b.id > a.id ? 1 : -1));
+      onUpdate(cleanLoaded);
+    })
+    .catch(err => {
+      if (onError) onError(err);
+      if (isMounted) onUpdate(getLocalCachedAssignments());
+    });
 
-        if (!snapshot.empty) {
-          const loaded: HomeworkAssignment[] = [];
-          snapshot.forEach((docSnap) => {
-            loaded.push({ id: docSnap.id, ...docSnap.data() } as HomeworkAssignment);
-          });
-          const cleanLoaded = deduplicateAssignments(loaded);
-          cleanLoaded.sort((a, b) => (b.id > a.id ? 1 : -1));
-          saveAssignmentsToLocalStorage(cleanLoaded);
-          onUpdate(cleanLoaded);
-        } else {
-          saveAssignmentsToLocalStorage([]);
-          onUpdate([]);
-        }
-      },
-      (err) => {
-        console.warn('Lỗi Firestore Live Assignments listener:', err);
-        if (onError) onError(err);
-        onUpdate(getLocalCachedAssignments());
-      }
-    );
-  } catch (err) {
-    console.warn('Lỗi khởi tạo subscribeToAssignmentsFromFirestore:', err);
-    onUpdate(getLocalCachedAssignments());
-    return () => {};
-  }
+  return () => {
+    isMounted = false;
+  };
 }
 
 // import { deleteSubmissionsByAssignment } from './cascadeCleanupService';

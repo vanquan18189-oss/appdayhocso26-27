@@ -1,5 +1,6 @@
 import { db } from './firebase';
 import { collection, getDocs, doc, setDoc, deleteDoc } from 'firebase/firestore';
+import { parseDateTimeVN } from '../utils/dateUtils';
 
 export interface ActivityLog {
   id: string;
@@ -29,26 +30,7 @@ export function normalizeTimestamp(raw: any): { timeMs: number; formatted: strin
     return { timeMs: 0, formatted: 'Chưa rõ thời gian' };
   }
 
-  let date: Date | null = null;
-
-  if (typeof raw === 'number' && !isNaN(raw)) {
-    date = new Date(raw);
-  } else if (typeof raw === 'string') {
-    const parsed = Date.parse(raw);
-    if (!isNaN(parsed)) {
-      date = new Date(parsed);
-    } else {
-      date = new Date(raw);
-    }
-  } else if (raw && typeof raw === 'object') {
-    if (typeof raw.toMillis === 'function') {
-      date = new Date(raw.toMillis());
-    } else if (typeof raw.seconds === 'number') {
-      date = new Date(raw.seconds * 1000);
-    } else if (raw instanceof Date) {
-      date = raw;
-    }
-  }
+  const date = parseDateTimeVN(raw);
 
   if (!date || isNaN(date.getTime()) || date.getTime() <= 0) {
     return { timeMs: 0, formatted: String(raw || 'Chưa rõ thời gian') };

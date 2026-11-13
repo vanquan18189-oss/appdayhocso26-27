@@ -28,13 +28,18 @@ import {
   getDocs,
   getDoc,
   setDoc,
-  onSnapshot,
   getDocFromServer
 } from 'firebase/firestore';
 import { trackedSetDoc, trackedDeleteDoc, trackedWriteBatch } from './firestoreWriteTracker';
 import { INITIAL_QUESTIONS } from './mockData';
 import { waitForWriteConfirmation, updateCollectionCacheStatus } from './firestoreWriteVerificationService';
-// import { safeStorage } from '../utils/safeStorage';
+import {
+  attachOwnershipOnCreate,
+  getCurrentAccessContext,
+  getContentPermissions,
+  queryAccessibleCollection,
+  invalidateQueryCache
+} from './permissionService';
 
 export const QUESTIONS_CACHE_KEY = 'eduplay_questions_database_cache';
 export const QUESTIONS_COLLECTION = 'questions';
@@ -191,12 +196,23 @@ export function sanitizeQuestionForFirestore(q: QuestionItem): QuestionItem {
 
   if (q.authorName) cleanQ.authorName = q.authorName;
   if (q.authorType) cleanQ.authorType = q.authorType;
+  if (q.ownerId) cleanQ.ownerId = q.ownerId;
+  if (q.ownerEmail) cleanQ.ownerEmail = q.ownerEmail;
+  if (q.ownerName) cleanQ.ownerName = q.ownerName;
+  if (q.toChuyenMon) cleanQ.toChuyenMon = q.toChuyenMon;
+  if (q.teacherId) cleanQ.teacherId = q.teacherId;
+  if (q.teacherEmail) cleanQ.teacherEmail = q.teacherEmail;
+  if (q.teacherName) cleanQ.teacherName = q.teacherName;
+  if (Array.isArray(q.sharedWithTeachers)) cleanQ.sharedWithTeachers = q.sharedWithTeachers;
+  if (Array.isArray(q.sharedWithGroups)) cleanQ.sharedWithGroups = q.sharedWithGroups;
+  if (q.sharePermission) cleanQ.sharePermission = q.sharePermission;
+  if (q.allowDeleteByShared !== undefined) cleanQ.allowDeleteByShared = Boolean(q.allowDeleteByShared);
 
-  return cleanQ;
+  return attachOwnershipOnCreate(cleanQ, q);
 }
 
 /**
- * Retrieve cached questions from localStorage
+ * Retrieve cached questions from localStorage (RBAC-filtered for regular teachers)
  */
 export function getLocalCachedQuestions(): QuestionItem[] {
   let questions: QuestionItem[] = [];
@@ -240,7 +256,10 @@ export function getLocalCachedQuestions(): QuestionItem[] {
   if (fixedCount > 0 || orderingFixedCount > 0) {
     saveLocalCachedQuestions(finalQuestions);
   }
-  return finalQuestions;
+
+  const access = getCurrentAccessContext();
+  if (access.isAdmin || access.isStudent) return finalQuestions;
+  return finalQuestions.filter(q => getContentPermissions(q, access).canView);
 }
 
 /**
@@ -595,24 +614,24 @@ export async function deleteQuestionsBatchFromFirestore(
 }
 
 /**
- * Fetch all questions from Firestore directly (one-time fetch)
+ * Fetch accessible questions from Firestore using RBAC scoped queries (5-minute cache, no onSnapshot)
  */
-export async function fetchQuestionsFromFirestore(): Promise<QuestionItem[]> {
+export async function fetchQuestionsFromFirestore(forceRefresh = false): Promise<QuestionItem[]> {
   try {
     if (!db) return getLocalCachedQuestions();
 
-    const snap = await getDocs(collection(db, QUESTIONS_COLLECTION));
-    if (!snap.empty) {
+    const items = await queryAccessibleCollection<QuestionItem>(QUESTIONS_COLLECTION, {
+      forceRefresh,
+      maxPerSource: 20,
+      adminLimit: 150
+    });
+    updateCollectionCacheStatus('questions', false, items.length, false);
+    if (items.length > 0) {
       localStorage.setItem('eduplay_questions_db_initialized', 'true');
-      const items: QuestionItem[] = snap.docs.map(docSnap => ({
-        ...(docSnap.data() as QuestionItem),
-        id: docSnap.id
-      }));
       saveLocalCachedQuestions(items);
       return items;
     } else {
-      saveLocalCachedQuestions([]);
-      return [];
+      return getLocalCachedQuestions();
     }
   } catch (error) {
     console.warn('Error fetching questions from Firestore, returning local cache:', error);
@@ -621,51 +640,26 @@ export async function fetchQuestionsFromFirestore(): Promise<QuestionItem[]> {
 }
 
 /**
- * Live subscription to questions in Firestore
+ * Scoped subscription to questions in Firestore (uses 5-minute cached RBAC query, no onSnapshot)
  */
 export function subscribeToQuestionsFromFirestore(
   onData: (questions: QuestionItem[]) => void,
   onError?: (error: any) => void
 ): () => void {
-  if (!db) {
-    onData(getLocalCachedQuestions());
-    return () => {};
-  }
+  let isMounted = true;
 
-  try {
-    const qRef = collection(db, QUESTIONS_COLLECTION);
-    return onSnapshot(
-      qRef,
-      snapshot => {
-        const isFromCache = snapshot.metadata.fromCache;
-        const hasPending = snapshot.metadata.hasPendingWrites;
+  fetchQuestionsFromFirestore(false)
+    .then(loaded => {
+      if (isMounted) onData(loaded);
+    })
+    .catch(err => {
+      if (onError) onError(err);
+      if (isMounted) onData(getLocalCachedQuestions());
+    });
 
-        updateCollectionCacheStatus('questions', isFromCache, snapshot.size, hasPending);
-
-        if (!snapshot.empty) {
-          localStorage.setItem('eduplay_questions_db_initialized', 'true');
-          const loaded: QuestionItem[] = snapshot.docs.map(d => ({
-            ...(d.data() as QuestionItem),
-            id: d.id
-          }));
-          saveLocalCachedQuestions(loaded);
-          onData(loaded);
-        } else {
-          saveLocalCachedQuestions([]);
-          onData([]);
-        }
-      },
-      err => {
-        console.warn('Error in subscribeToQuestionsFromFirestore snapshot:', err);
-        if (onError) onError(err);
-        onData(getLocalCachedQuestions());
-      }
-    );
-  } catch (err) {
-    console.warn('Error setting up subscribeToQuestionsFromFirestore:', err);
-    onData(getLocalCachedQuestions());
-    return () => {};
-  }
+  return () => {
+    isMounted = false;
+  };
 }
 
 /**
