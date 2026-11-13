@@ -19,13 +19,6 @@ import {
   saveAssignedELearningLesson
 } from '../../services/elearningAssignmentService';
 import { DateTimePicker } from '../common/DateTimePicker';
-import {
-  getCurrentDateTimeVNDisplay,
-  toISOStringUTC,
-  formatDateTimeVN,
-  validateStrictDateTimeInputVN,
-  validateScheduleAndDeadline
-} from '../../utils/dateUtils';
 import { db } from '../../services/firebase';
 import { collection, onSnapshot } from 'firebase/firestore';
 
@@ -131,9 +124,8 @@ export const ELearningAssignmentModal: React.FC<ELearningAssignmentModalProps> =
 
   // Step 2: Settings
   const [title, setTitle] = useState<string>('');
-  const [startDate, setStartDate] = useState<string>(() => getCurrentDateTimeVNDisplay(0));
-  const [dueDate, setDueDate] = useState<string>(() => getCurrentDateTimeVNDisplay(7, 23, 59));
-  const [dateError, setDateError] = useState<string | null>(null);
+  const [startDate, setStartDate] = useState<string>('09/03/2026 03:31 AM');
+  const [dueDate, setDueDate] = useState<string>('10/30/2026 11:59 PM');
   const [isUnlimited, setIsUnlimited] = useState<boolean>(false);
   const [allowRetake, setAllowRetake] = useState<boolean>(true);
   const [requireInteractiveVideo, setRequireInteractiveVideo] = useState<boolean>(true);
@@ -210,9 +202,11 @@ export const ELearningAssignmentModal: React.FC<ELearningAssignmentModalProps> =
       setRequireInteractiveVideo(true);
       setSelectedClasses([]);
 
-      setStartDate(getCurrentDateTimeVNDisplay(0));
-      setDueDate(getCurrentDateTimeVNDisplay(7, 23, 59));
-      setDateError(null);
+      const now = new Date();
+      const pad = (n: number) => n.toString().padStart(2, '0');
+      const startStr = `${pad(now.getMonth() + 1)}/${pad(now.getDate())}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())} ${now.getHours() >= 12 ? 'PM' : 'AM'}`;
+      setStartDate(startStr);
+      setDueDate('10/30/2026 11:59 PM');
     }
   }, [lesson, isOpen]);
 
@@ -223,41 +217,14 @@ export const ELearningAssignmentModal: React.FC<ELearningAssignmentModalProps> =
 
     const uniqueSelectedClasses = Array.from(new Set(selectedClasses.map(c => c.trim()).filter(Boolean)));
     if (uniqueSelectedClasses.length === 0) {
-      setDateError('Vui lòng chọn ít nhất 1 lớp học để giao bài giảng E-Learning!');
+      alert('Vui lòng chọn ít nhất 1 lớp học để giao bài tập E-Learning!');
       return;
     }
-
-    const startCheck = validateStrictDateTimeInputVN(startDate);
-    if (!startCheck.valid) {
-      setDateError(startCheck.error || 'Thời điểm mở bài không hợp lệ!');
-      return;
-    }
-
-    if (!isUnlimited) {
-      const dueCheck = validateStrictDateTimeInputVN(dueDate);
-      if (!dueCheck.valid) {
-        setDateError(dueCheck.error || 'Hạn nộp bài không hợp lệ!');
-        return;
-      }
-      const rangeCheck = validateScheduleAndDeadline({
-        openTime: startDate,
-        deadlineTime: dueDate,
-        isUnlimited
-      });
-      if (!rangeCheck.valid) {
-        setDateError(rangeCheck.error || 'Hạn nộp bài phải sau thời điểm mở bài!');
-        return;
-      }
-    }
-
-    setDateError(null);
 
     try {
       isSubmittingRef.current = true;
       setIsSubmitting(true);
       const rootId = `elearn-${Date.now()}`;
-      const startISO = toISOStringUTC(startDate);
-      const dueISO = isUnlimited ? 'Vô thời hạn' : toISOStringUTC(dueDate);
 
       for (let i = 0; i < uniqueSelectedClasses.length; i++) {
         const cls = uniqueSelectedClasses[i];
@@ -275,12 +242,12 @@ export const ELearningAssignmentModal: React.FC<ELearningAssignmentModalProps> =
           grade: lesson.grade,
           targetClass: cls, // Lưu độc lập duy nhất 1 lớp cho từng bản ghi
           assignedTo: assignedMode,
-          startDate: startISO,
-          dueDate: dueISO,
+          startDate,
+          dueDate: isUnlimited ? 'Vô thời hạn' : dueDate,
           isUnlimited,
           allowRetake,
           requireInteractiveVideo,
-          assignedAt: formatDateTimeVN(new Date()),
+          assignedAt: new Date().toLocaleDateString('vi-VN'),
           assignedBy: lesson.authorName || 'Thầy/Cô Giáo',
           lessonData: lesson,
           type: 'elearning',
@@ -606,11 +573,6 @@ export const ELearningAssignmentModal: React.FC<ELearningAssignmentModalProps> =
                     />
                   </div>
                 </div>
-                {dateError && (
-                  <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold">
-                    ⚠️ {dateError}
-                  </div>
-                )}
               </div>
 
               {/* TÙY CHỌN BỔ SUNG */}

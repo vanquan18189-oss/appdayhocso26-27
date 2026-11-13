@@ -44,7 +44,6 @@ import {
 } from '../../services/assignmentStorageService';
 import { syncAssignmentQuestions } from '../../services/assignmentSyncService';
 import { formatScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime, parseScoreValue, calculateExamScore } from '../../utils/scoreUtils';
-import { parseDateTimeVN, formatDateTimeVN } from '../../utils/dateUtils';
 import { db } from '../../services/firebase';
 import { doc, getDoc, setDoc, runTransaction, onSnapshot } from 'firebase/firestore';
 
@@ -1102,10 +1101,12 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
 
                 const isExpired = (() => {
                   if (!as.dueDate) return false;
-                  const end = parseDateTimeVN(as.dueDate);
-                  if (end) {
-                    return Date.now() > end.getTime();
-                  }
+                  try {
+                    const end = new Date(as.dueDate);
+                    if (!isNaN(end.getTime())) {
+                      return new Date().getTime() > end.getTime();
+                    }
+                  } catch {}
                   return false;
                 })();
 
@@ -1155,18 +1156,10 @@ export const StudentAssignmentModule: React.FC<StudentAssignmentModuleProps> = (
                     </h3>
 
                     {/* Meta info */}
-                    <div className="pt-1.5 text-xs text-slate-600 space-y-2">
-                      <div className="bg-slate-50 p-2.5 sm:p-3 rounded-xl border border-slate-100 flex items-center justify-between gap-2 flex-wrap">
-                        <div className="flex items-center gap-2">
-                          <FileText className="w-4 h-4 text-emerald-600" />
-                          <span>Số câu: <b>{as.questions?.length || 5} câu</b></span>
-                        </div>
-                        {as.dueDate && (
-                          <div className="flex items-center gap-1.5 font-mono text-[11px] text-rose-600 font-bold">
-                            <Clock className="w-3.5 h-3.5" />
-                            <span>Hạn: {formatDateTimeVN(as.dueDate)}</span>
-                          </div>
-                        )}
+                    <div className="pt-1.5 text-xs text-slate-600">
+                      <div className="bg-slate-50 p-2.5 sm:p-3 rounded-xl border border-slate-100 flex items-center gap-2">
+                        <FileText className="w-4 h-4 text-emerald-600" />
+                        <span>Số câu: <b>{as.questions?.length || 5} câu</b></span>
                       </div>
                     </div>
 

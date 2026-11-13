@@ -49,7 +49,6 @@ import {
   syncNotificationsFromFirestore,
   AppNotification
 } from '../services/notificationService';
-import { formatDateTimeVN } from '../utils/dateUtils';
 
 // ... (in Header component)
 
@@ -522,7 +521,7 @@ export const Header: React.FC<HeaderProps> = ({
                                 {n.type === 'ai_failed' ? 'AI Chưa Chấm' : 'Dưới 5 Điểm'}
                               </span>
                               <span className="text-[10px] text-gray-400 font-normal">
-                                {formatDateTimeVN(n.createdAt, '--')}
+                                {new Date(n.createdAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
                               </span>
                             </div>
                             <p className="text-gray-800 text-[11px] leading-snug line-clamp-2">

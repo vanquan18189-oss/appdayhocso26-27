@@ -46,20 +46,7 @@ export interface FeedbackBlockConfig {
   teacherName: string;
 }
 
-export type SharePermissionLevel = 'view' | 'edit' | 'assign';
-
-export interface ContentOwnershipMetadata {
-  ownerId?: string;
-  ownerEmail?: string;
-  ownerName?: string;
-  toChuyenMon?: string;
-  sharedWithTeachers?: string[];
-  sharedWithGroups?: string[];
-  sharePermission?: SharePermissionLevel;
-  allowDeleteByShared?: boolean;
-}
-
-export interface Lesson5EPlan extends ContentOwnershipMetadata {
+export interface Lesson5EPlan {
   id: string;
   title: string;
   subject: string;
@@ -130,7 +117,7 @@ export interface ClassificationItem {
   group: string; // group name or index
 }
 
-export interface QuestionItem extends ContentOwnershipMetadata {
+export interface QuestionItem {
   id: string;
   code: string;
   subject: string;
@@ -167,7 +154,7 @@ export interface ExamMatrix {
   vanDungCao: number;
 }
 
-export interface ExamPaper extends ContentOwnershipMetadata {
+export interface ExamPaper {
   id: string;
   title: string;
   subject: string;
@@ -221,7 +208,7 @@ export interface AssignmentSubmission {
   status: 'pending' | 'graded' | 'submitted';
 }
 
-export interface HomeworkAssignment extends ContentOwnershipMetadata {
+export interface HomeworkAssignment {
   id: string;
   title: string;
   subject: string;
@@ -265,7 +252,7 @@ export interface HomeworkAssignment extends ContentOwnershipMetadata {
 
 export type GameType = 'golden_bell' | 'speed_quiz' | 'lucky_wheel' | 'flashcards';
 
-export interface GameItem extends ContentOwnershipMetadata {
+export interface GameItem {
   id: string;
   title: string;
   type: GameType;
@@ -325,7 +312,6 @@ export interface LatencyTestResult {
 
 export interface TeacherRecord {
   id: string;
-  uid?: string;
   name: string;
   email: string;
   role: string;
@@ -394,7 +380,7 @@ export interface StudentEnrollmentRecord {
   homeroomTeacherId?: string;
 }
 
-export interface QuizziGameItem extends ContentOwnershipMetadata {
+export interface QuizziGameItem {
   id: number | string;
   originalGameId?: string;
   subject: string;

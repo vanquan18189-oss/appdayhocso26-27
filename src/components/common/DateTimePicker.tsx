@@ -1,13 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, AlertCircle } from 'lucide-react';
-import {
-  parseDateTimeVN,
-  formatDateTimeVN,
-  getVNDateComponents,
-  createDateFromVNComponents,
-  validateStrictDateTimeInputVN,
-  toDateTimeLocalValue
-} from '../../utils/dateUtils';
+import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, Clock, X } from 'lucide-react';
 
 interface DateTimePickerProps {
   value: string;
@@ -16,88 +8,148 @@ interface DateTimePickerProps {
   className?: string;
   disabled?: boolean;
   format?: 'dd/mm/yyyy HH:mm' | 'MM/DD/YYYY hh:mm A';
-  onValidationChange?: (isValid: boolean, error?: string) => void;
 }
 
+const MONTH_NAMES_EN = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
+];
+
 const MONTH_NAMES_VI = [
-  'Tháng 01', 'Tháng 02', 'Tháng 03', 'Tháng 04', 'Tháng 05', 'Tháng 06',
-  'Tháng 07', 'Tháng 08', 'Tháng 09', 'Tháng 10', 'Tháng 11', 'Tháng 12'
+  'Tháng 1', 'Tháng 2', 'Tháng 3', 'Tháng 4', 'Tháng 5', 'Tháng 6',
+  'Tháng 7', 'Tháng 8', 'Tháng 9', 'Tháng 10', 'Tháng 11', 'Tháng 12'
 ];
 
 export const DateTimePicker: React.FC<DateTimePickerProps> = ({
   value,
   onChange,
-  placeholder = 'DD/MM/YYYY HH:mm (24 giờ)',
+  placeholder = 'DD/MM/YYYY HH:mm',
   className = '',
   disabled = false,
-  onValidationChange
+  format = 'dd/mm/yyyy HH:mm'
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  const nativeInputRef = useRef<HTMLInputElement>(null);
 
-  const getInitialComponents = (valStr: string) => {
-    const parsed = parseDateTimeVN(valStr);
-    const target = parsed || new Date();
-    const comp = getVNDateComponents(target);
+  // Parse initial date from string value like "09/03/2026 12:45 PM" or "23/11/2026 14:00" or ISO
+  const parseDateString = (valStr: string) => {
+    if (!valStr) {
+      const now = new Date();
+      return {
+        year: now.getFullYear(),
+        month: now.getMonth(), // 0-indexed
+        day: now.getDate(),
+        hour: ((now.getHours() % 12) || 12),
+        minute: now.getMinutes(),
+        period: now.getHours() >= 12 ? 'PM' : 'AM'
+      };
+    }
+
+    // 1. Check ISO format "YYYY-MM-DDTHH:mm"
+    const isoMatch = valStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})[T\s](\d{1,2}):(\d{1,2})/);
+    if (isoMatch) {
+      const y = parseInt(isoMatch[1], 10);
+      const m = parseInt(isoMatch[2], 10) - 1;
+      const d = parseInt(isoMatch[3], 10);
+      let h24 = parseInt(isoMatch[4], 10);
+      const min = parseInt(isoMatch[5], 10);
+      const p = h24 >= 12 ? 'PM' : 'AM';
+      let h = h24 % 12 || 12;
+      return { year: y, month: Math.max(0, Math.min(11, m)), day: d, hour: h, minute: min, period: p };
+    }
+
+    // 2. Check format "DD/MM/YYYY HH:mm" or "MM/DD/YYYY hh:mm A"
+    const match = valStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{1,2})(?:\s*(AM|PM))?)?/i);
+    if (match) {
+      const p1 = parseInt(match[1], 10);
+      const p2 = parseInt(match[2], 10);
+      const y = parseInt(match[3], 10);
+      let rawH = match[4] ? parseInt(match[4], 10) : 12;
+      const min = match[5] ? parseInt(match[5], 10) : 0;
+      const hasAmPm = Boolean(match[6]);
+      const ampm = match[6] ? match[6].toUpperCase() : null;
+
+      // Determine day and month
+      let d = p1;
+      let m = p2 - 1;
+      if (format === 'MM/DD/YYYY hh:mm A' && p1 <= 12 && p2 > 12) {
+        m = p1 - 1;
+        d = p2;
+      } else if (p1 > 12 && p2 <= 12) {
+        d = p1;
+        m = p2 - 1;
+      } else if (format === 'MM/DD/YYYY hh:mm A') {
+        m = p1 - 1;
+        d = p2;
+      }
+
+      let p: 'AM' | 'PM' = 'AM';
+      let h = rawH;
+      if (hasAmPm) {
+        p = ampm === 'PM' ? 'PM' : 'AM';
+        if (h > 12) h = h % 12 || 12;
+      } else {
+        p = rawH >= 12 ? 'PM' : 'AM';
+        h = rawH % 12 || 12;
+      }
+
+      return {
+        year: y,
+        month: Math.max(0, Math.min(11, m)),
+        day: d,
+        hour: Math.max(1, Math.min(12, h)),
+        minute: Math.max(0, Math.min(59, min)),
+        period: p
+      };
+    }
+
+    // Fallback standard Date
+    const d = new Date(valStr);
+    if (!isNaN(d.getTime())) {
+      let h = d.getHours();
+      const p = h >= 12 ? 'PM' : 'AM';
+      h = h % 12 || 12;
+      return {
+        year: d.getFullYear(),
+        month: d.getMonth(),
+        day: d.getDate(),
+        hour: h,
+        minute: d.getMinutes(),
+        period: p
+      };
+    }
+
+    const now = new Date();
     return {
-      year: comp.year,
-      month: comp.month - 1, // 0-indexed for calendar UI
-      day: comp.day,
-      hour24: comp.hour,
-      minute: comp.minute
+      year: now.getFullYear(),
+      month: now.getMonth(),
+      day: now.getDate(),
+      hour: 12,
+      minute: 0,
+      period: 'PM'
     };
   };
 
-  const initial = getInitialComponents(value);
+  const initial = parseDateString(value);
   const [selectedYear, setSelectedYear] = useState(initial.year);
   const [selectedMonth, setSelectedMonth] = useState(initial.month);
   const [selectedDay, setSelectedDay] = useState(initial.day);
-  const [selectedHour24, setSelectedHour24] = useState(initial.hour24);
+  const [selectedHour, setSelectedHour] = useState(initial.hour);
   const [selectedMinute, setSelectedMinute] = useState(initial.minute);
+  const [selectedPeriod, setSelectedPeriod] = useState<'AM' | 'PM'>(initial.period as 'AM' | 'PM');
 
-  // Text shown in the input box: always normalized to DD/MM/YYYY HH:mm (24h) when valid
-  const [inputText, setInputText] = useState<string>(() => {
-    if (!value) return '';
-    if (value.trim().toLowerCase() === 'vô thời hạn') return 'Vô thời hạn';
-    return formatDateTimeVN(value, value);
-  });
-  const [validationError, setValidationError] = useState<string | null>(null);
-
-  // Sync internal state when external value prop changes
+  // Sync internal state when external value changes
   useEffect(() => {
-    if (!value) {
-      setInputText('');
-      setValidationError(null);
-      return;
-    }
-    if (value.trim().toLowerCase() === 'vô thời hạn') {
-      setInputText('Vô thời hạn');
-      setValidationError(null);
-      return;
-    }
-
-    const parsed = parseDateTimeVN(value);
-    if (parsed) {
-      const comp = getVNDateComponents(parsed);
-      setSelectedYear(comp.year);
-      setSelectedMonth(comp.month - 1);
-      setSelectedDay(comp.day);
-      setSelectedHour24(comp.hour);
-      setSelectedMinute(comp.minute);
-      const formatted = formatDateTimeVN(parsed);
-      setInputText(formatted);
-      setValidationError(null);
-      onValidationChange?.(true);
-    } else {
-      setInputText(value);
-      const check = validateStrictDateTimeInputVN(value);
-      setValidationError(check.valid ? null : (check.error || 'Định dạng ngày giờ không hợp lệ'));
-      onValidationChange?.(check.valid, check.error);
-    }
+    const parsed = parseDateString(value);
+    setSelectedYear(parsed.year);
+    setSelectedMonth(parsed.month);
+    setSelectedDay(parsed.day);
+    setSelectedHour(parsed.hour);
+    setSelectedMinute(parsed.minute);
+    setSelectedPeriod(parsed.period as 'AM' | 'PM');
   }, [value]);
 
-  // Click outside to close popover
+  // Click outside to close
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
@@ -112,72 +164,27 @@ export const DateTimePicker: React.FC<DateTimePickerProps> = ({
     };
   }, [isOpen]);
 
-  const emitValidComponents = (y: number, m0To11: number, d: number, h24: number, min: number) => {
+  const emitChange = (y: number, m: number, d: number, h: number, min: number, p: 'AM' | 'PM') => {
+    const mm = String(m + 1).padStart(2, '0');
     const dd = String(d).padStart(2, '0');
-    const mm = String(m0To11 + 1).padStart(2, '0');
     const yyyy = String(y);
-    const hh = String(h24).padStart(2, '0');
     const minStr = String(min).padStart(2, '0');
-    const formatted = `${dd}/${mm}/${yyyy} ${hh}:${minStr}`;
-    setInputText(formatted);
-    setValidationError(null);
-    onValidationChange?.(true);
+
+    if (format === 'dd/mm/yyyy HH:mm') {
+      let h24 = h;
+      if (p === 'PM' && h < 12) h24 = h + 12;
+      if (p === 'AM' && h === 12) h24 = 0;
+      const h24Str = String(h24).padStart(2, '0');
+      onChange(`${dd}/${mm}/${yyyy} ${h24Str}:${minStr}`);
+      return;
+    }
+
+    const hh = String(h).padStart(2, '0');
+    const formatted = `${mm}/${dd}/${yyyy} ${hh}:${minStr} ${p}`;
     onChange(formatted);
   };
 
-  const handleManualInputChange = (raw: string) => {
-    setInputText(raw);
-    if (!raw.trim()) {
-      setValidationError('Vui lòng nhập ngày giờ theo định dạng DD/MM/YYYY HH:mm (24 giờ).');
-      onValidationChange?.(false, 'Vui lòng nhập ngày giờ');
-      onChange(raw);
-      return;
-    }
-
-    const check = validateStrictDateTimeInputVN(raw);
-    if (!check.valid) {
-      setValidationError(check.error || 'Định dạng không hợp lệ. Chuẩn: DD/MM/YYYY HH:mm (24 giờ).');
-      onValidationChange?.(false, check.error);
-      onChange(raw);
-      return;
-    }
-
-    setValidationError(null);
-    onValidationChange?.(true);
-    if (check.date) {
-      const comp = getVNDateComponents(check.date);
-      setSelectedYear(comp.year);
-      setSelectedMonth(comp.month - 1);
-      setSelectedDay(comp.day);
-      setSelectedHour24(comp.hour);
-      setSelectedMinute(comp.minute);
-    }
-    onChange(check.display || raw);
-  };
-
-  const handleNativeDateTimeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = e.target.value; // "YYYY-MM-DDTHH:mm"
-    if (!val) return;
-    const match = val.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
-    if (match) {
-      const y = parseInt(match[1], 10);
-      const m1To12 = parseInt(match[2], 10);
-      const d = parseInt(match[3], 10);
-      const h24 = parseInt(match[4], 10);
-      const min = parseInt(match[5], 10);
-      const dateObj = createDateFromVNComponents(y, m1To12, d, h24, min, 0);
-      if (dateObj) {
-        setSelectedYear(y);
-        setSelectedMonth(m1To12 - 1);
-        setSelectedDay(d);
-        setSelectedHour24(h24);
-        setSelectedMinute(min);
-        emitValidComponents(y, m1To12 - 1, d, h24, min);
-      }
-    }
-  };
-
-  const handleSelectDay = (d: number, mOffset = 0) => {
+  const handleSelectDay = (d: number, mOffset: number = 0) => {
     let newMonth = selectedMonth + mOffset;
     let newYear = selectedYear;
     if (newMonth < 0) {
@@ -190,17 +197,22 @@ export const DateTimePicker: React.FC<DateTimePickerProps> = ({
     setSelectedYear(newYear);
     setSelectedMonth(newMonth);
     setSelectedDay(d);
-    emitValidComponents(newYear, newMonth, d, selectedHour24, selectedMinute);
+    emitChange(newYear, newMonth, d, selectedHour, selectedMinute, selectedPeriod);
   };
 
-  const handleSelectHour24 = (h24: number) => {
-    setSelectedHour24(h24);
-    emitValidComponents(selectedYear, selectedMonth, selectedDay, h24, selectedMinute);
+  const handleSelectHour = (h: number) => {
+    setSelectedHour(h);
+    emitChange(selectedYear, selectedMonth, selectedDay, h, selectedMinute, selectedPeriod);
   };
 
   const handleSelectMinute = (min: number) => {
     setSelectedMinute(min);
-    emitValidComponents(selectedYear, selectedMonth, selectedDay, selectedHour24, min);
+    emitChange(selectedYear, selectedMonth, selectedDay, selectedHour, min, selectedPeriod);
+  };
+
+  const handleSelectPeriod = (p: 'AM' | 'PM') => {
+    setSelectedPeriod(p);
+    emitChange(selectedYear, selectedMonth, selectedDay, selectedHour, selectedMinute, p);
   };
 
   const handlePrevMonth = () => {
@@ -222,79 +234,76 @@ export const DateTimePicker: React.FC<DateTimePickerProps> = ({
   };
 
   const handleToday = () => {
-    const comp = getVNDateComponents(new Date());
-    setSelectedYear(comp.year);
-    setSelectedMonth(comp.month - 1);
-    setSelectedDay(comp.day);
-    setSelectedHour24(comp.hour);
-    setSelectedMinute(comp.minute);
-    emitValidComponents(comp.year, comp.month - 1, comp.day, comp.hour, comp.minute);
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = now.getMonth();
+    const d = now.getDate();
+    let h = now.getHours();
+    const p = h >= 12 ? 'PM' : 'AM';
+    h = h % 12 || 12;
+    const min = now.getMinutes();
+
+    setSelectedYear(y);
+    setSelectedMonth(m);
+    setSelectedDay(d);
+    setSelectedHour(h);
+    setSelectedMinute(min);
+    setSelectedPeriod(p);
+    emitChange(y, m, d, h, min, p);
   };
 
-  // Calendar Grid Calculation
-  const firstDayOfMonth = new Date(selectedYear, selectedMonth, 1).getDay();
+  const handleClear = () => {
+    onChange('');
+    setIsOpen(false);
+  };
+
+  // Calendar Calculation
+  const firstDayOfMonth = new Date(selectedYear, selectedMonth, 1).getDay(); // 0 = Sun
   const daysInCurrentMonth = new Date(selectedYear, selectedMonth + 1, 0).getDate();
   const daysInPrevMonth = new Date(selectedYear, selectedMonth, 0).getDate();
 
-  const prevMonthDays: number[] = [];
+  const prevMonthDays = [];
   for (let i = firstDayOfMonth - 1; i >= 0; i--) {
     prevMonthDays.push(daysInPrevMonth - i);
   }
 
-  const currentMonthDays: number[] = [];
+  const currentMonthDays = [];
   for (let i = 1; i <= daysInCurrentMonth; i++) {
     currentMonthDays.push(i);
   }
 
   const totalCells = prevMonthDays.length + currentMonthDays.length;
   const nextMonthDaysCount = totalCells % 7 === 0 ? 0 : 7 - (totalCells % 7);
-  const nextMonthDays: number[] = [];
+  const nextMonthDays = [];
   for (let i = 1; i <= nextMonthDaysCount; i++) {
     nextMonthDays.push(i);
   }
 
-  const hours24List = Array.from({ length: 24 }, (_, idx) => idx); // 00 .. 23
-  const minutesList = Array.from({ length: 60 }, (_, idx) => idx); // 00 .. 59
+  // Common minute steps
+  const minutesList = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 46, 47, 48, 49, 50, 51, 52, 55];
+  const hoursList = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
   return (
     <div ref={containerRef} className={`relative inline-block w-full ${className}`}>
-      {/* Controlled DD/MM/YYYY HH:mm (24h) Input + Native datetime-local trigger */}
+      {/* Input Field */}
       <div
         onClick={() => !disabled && setIsOpen(!isOpen)}
-        className={`w-full flex items-center justify-between px-3.5 py-2.5 bg-white border rounded-xl cursor-pointer transition-colors shadow-2xs ${
-          disabled ? 'opacity-50 cursor-not-allowed bg-slate-50 border-slate-300' : ''
-        } ${
-          validationError
-            ? 'border-rose-500 ring-2 ring-rose-100 bg-rose-50/20'
-            : isOpen
-            ? 'border-indigo-600 ring-2 ring-indigo-100'
-            : 'border-slate-300 hover:border-indigo-500'
-        }`}
+        className={`w-full flex items-center justify-between px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl cursor-pointer hover:border-indigo-500 transition-colors shadow-2xs ${
+          disabled ? 'opacity-50 cursor-not-allowed bg-slate-50' : ''
+        } ${isOpen ? 'border-indigo-600 ring-2 ring-indigo-100' : ''}`}
       >
         <input
           type="text"
-          value={inputText}
+          value={value}
           placeholder={placeholder}
           disabled={disabled}
-          onChange={(e) => handleManualInputChange(e.target.value)}
+          onChange={(e) => onChange(e.target.value)}
           onClick={(e) => {
             e.stopPropagation();
             if (!disabled) setIsOpen(true);
           }}
-          className="w-full bg-transparent font-semibold text-slate-800 text-sm focus:outline-none font-mono"
+          className="w-full bg-transparent font-medium text-slate-800 text-sm focus:outline-none cursor-pointer"
         />
-
-        {/* Hidden native datetime-local input for browser picker support */}
-        <input
-          ref={nativeInputRef}
-          type="datetime-local"
-          disabled={disabled}
-          value={toDateTimeLocalValue(inputText)}
-          onChange={handleNativeDateTimeChange}
-          className="sr-only"
-          tabIndex={-1}
-        />
-
         <button
           type="button"
           disabled={disabled}
@@ -302,30 +311,25 @@ export const DateTimePicker: React.FC<DateTimePickerProps> = ({
             e.stopPropagation();
             if (!disabled) setIsOpen(!isOpen);
           }}
-          title="Chọn ngày giờ (DD/MM/YYYY HH:mm - 24 giờ)"
           className="p-1 text-slate-400 hover:text-indigo-600 transition-colors cursor-pointer shrink-0"
         >
           <CalendarIcon className="w-4 h-4" />
         </button>
       </div>
 
-      {/* Inline Red Validation Error */}
-      {validationError && !disabled && (
-        <div className="mt-1.5 flex items-start gap-1.5 text-[11px] font-semibold text-rose-600">
-          <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-          <span>{validationError}</span>
-        </div>
-      )}
-
-      {/* 24-Hour Vietnamese Calendar Popover */}
-      {isOpen && !disabled && (
-        <div className="absolute left-0 top-full mt-1.5 z-50 bg-white rounded-2xl border border-slate-200 shadow-2xl p-4 flex flex-col sm:flex-row gap-4 min-w-[330px] sm:min-w-[420px] animate-in fade-in-50 zoom-in-95 duration-150">
-          {/* Left Column: Calendar (DD/MM/YYYY) */}
-          <div className="flex-1 min-w-[215px]">
+      {/* Popover DateTime Picker - Matched to Image 2 design */}
+      {isOpen && (
+        <div className="absolute left-0 top-full mt-1.5 z-50 bg-white rounded-2xl border border-slate-200 shadow-2xl p-4 flex flex-col sm:flex-row gap-4 min-w-[340px] sm:min-w-[440px] animate-in fade-in-50 zoom-in-95 duration-150">
+          {/* Left Column: Calendar */}
+          <div className="flex-1 min-w-[210px]">
+            {/* Month & Year Navigation Header */}
             <div className="flex items-center justify-between mb-3">
-              <span className="text-sm font-extrabold text-slate-800">
-                {MONTH_NAMES_VI[selectedMonth]} / {selectedYear}
-              </span>
+              <div className="flex items-center gap-1">
+                <span className="text-sm font-bold text-slate-800">
+                  {MONTH_NAMES_EN[selectedMonth]} {selectedYear}
+                </span>
+                <ChevronDown className="w-3.5 h-3.5 text-slate-400 cursor-pointer" />
+              </div>
 
               <div className="flex items-center gap-1 text-slate-500">
                 <button
@@ -349,7 +353,7 @@ export const DateTimePicker: React.FC<DateTimePickerProps> = ({
 
             {/* Weekdays Header */}
             <div className="grid grid-cols-7 gap-1 text-center mb-1">
-              {['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'].map((day) => (
+              {['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'].map((day) => (
                 <div key={day} className="text-[11px] font-bold text-slate-400 py-1">
                   {day}
                 </div>
@@ -358,6 +362,7 @@ export const DateTimePicker: React.FC<DateTimePickerProps> = ({
 
             {/* Days Grid */}
             <div className="grid grid-cols-7 gap-1 text-center">
+              {/* Previous month days */}
               {prevMonthDays.map((d) => (
                 <button
                   key={`prev-${d}`}
@@ -369,6 +374,7 @@ export const DateTimePicker: React.FC<DateTimePickerProps> = ({
                 </button>
               ))}
 
+              {/* Current month days */}
               {currentMonthDays.map((d) => {
                 const isSelected = selectedDay === d;
                 return (
@@ -378,7 +384,7 @@ export const DateTimePicker: React.FC<DateTimePickerProps> = ({
                     onClick={() => handleSelectDay(d, 0)}
                     className={`h-8 text-xs rounded-lg flex items-center justify-center transition-colors cursor-pointer font-bold ${
                       isSelected
-                        ? 'bg-indigo-600 text-white shadow-xs'
+                        ? 'bg-blue-600 text-white shadow-xs'
                         : 'text-slate-700 hover:bg-indigo-50 hover:text-indigo-600'
                     }`}
                   >
@@ -387,6 +393,7 @@ export const DateTimePicker: React.FC<DateTimePickerProps> = ({
                 );
               })}
 
+              {/* Next month days */}
               {nextMonthDays.map((d) => (
                 <button
                   key={`next-${d}`}
@@ -399,81 +406,106 @@ export const DateTimePicker: React.FC<DateTimePickerProps> = ({
               ))}
             </div>
 
+            {/* Calendar Footer Links */}
             <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-slate-100 text-xs font-semibold">
-              <span className="text-[11px] text-slate-400 font-mono">
-                Chuẩn 24h: DD/MM/YYYY
-              </span>
+              <button
+                type="button"
+                onClick={handleClear}
+                className="text-blue-600 hover:text-blue-800 transition-colors cursor-pointer"
+              >
+                Clear
+              </button>
               <button
                 type="button"
                 onClick={handleToday}
-                className="text-indigo-600 hover:text-indigo-800 transition-colors cursor-pointer font-bold"
+                className="text-blue-600 hover:text-blue-800 transition-colors cursor-pointer"
               >
-                Hôm nay (Hiện tại)
+                Today
               </button>
             </div>
           </div>
 
+          {/* Vertical Divider */}
           <div className="hidden sm:block w-px bg-slate-100 my-1" />
 
-          {/* Right Column: 24-Hour Time Picker (00..23 : 00..59) */}
-          <div className="w-full sm:w-36 flex flex-col justify-between pt-1 sm:pt-0">
-            <div>
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider text-center mb-1.5">
-                Giờ : Phút (24h)
+          {/* Right Column: Time Picker */}
+          <div className="w-full sm:w-44 flex flex-col justify-between pt-1 sm:pt-0">
+            {/* Time Header Buttons (3 blue pills) */}
+            <div className="grid grid-cols-3 gap-1 mb-2.5">
+              <div className="bg-blue-600 text-white text-xs font-black py-1.5 px-2 rounded-lg text-center shadow-2xs">
+                {String(selectedHour).padStart(2, '0')}
               </div>
-              <div className="grid grid-cols-2 gap-1.5 mb-2">
-                <div className="bg-indigo-600 text-white text-xs font-black py-1.5 px-2 rounded-lg text-center font-mono">
-                  {String(selectedHour24).padStart(2, '0')} giờ
-                </div>
-                <div className="bg-indigo-600 text-white text-xs font-black py-1.5 px-2 rounded-lg text-center font-mono">
-                  {String(selectedMinute).padStart(2, '0')} phút
-                </div>
+              <div className="bg-blue-600 text-white text-xs font-black py-1.5 px-2 rounded-lg text-center shadow-2xs">
+                {String(selectedMinute).padStart(2, '0')}
               </div>
-
-              <div className="grid grid-cols-2 gap-1.5 h-44 overflow-hidden">
-                {/* 24 Hours (00..23) */}
-                <div className="overflow-y-auto space-y-1 pr-0.5 scrollbar-thin">
-                  {hours24List.map((h) => (
-                    <button
-                      key={h}
-                      type="button"
-                      onClick={() => handleSelectHour24(h)}
-                      className={`w-full py-1 text-xs font-mono font-semibold rounded text-center transition-colors cursor-pointer ${
-                        selectedHour24 === h
-                          ? 'bg-indigo-600 text-white font-black'
-                          : 'text-slate-700 hover:bg-slate-100'
-                      }`}
-                    >
-                      {String(h).padStart(2, '0')}
-                    </button>
-                  ))}
-                </div>
-
-                {/* 60 Minutes (00..59) */}
-                <div className="overflow-y-auto space-y-1 pr-0.5 scrollbar-thin">
-                  {minutesList.map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      onClick={() => handleSelectMinute(m)}
-                      className={`w-full py-1 text-xs font-mono font-semibold rounded text-center transition-colors cursor-pointer ${
-                        selectedMinute === m
-                          ? 'bg-indigo-600 text-white font-black'
-                          : 'text-slate-700 hover:bg-slate-100'
-                      }`}
-                    >
-                      {String(m).padStart(2, '0')}
-                    </button>
-                  ))}
-                </div>
+              <div className="bg-blue-600 text-white text-xs font-black py-1.5 px-2 rounded-lg text-center shadow-2xs">
+                {selectedPeriod}
               </div>
             </div>
 
+            {/* Columns for Hours, Minutes, AM/PM */}
+            <div className="grid grid-cols-3 gap-1.5 h-44 overflow-hidden">
+              {/* Hours List */}
+              <div className="overflow-y-auto space-y-1 pr-0.5 scrollbar-thin">
+                {hoursList.map((h) => (
+                  <button
+                    key={h}
+                    type="button"
+                    onClick={() => handleSelectHour(h)}
+                    className={`w-full py-1 text-xs font-semibold rounded text-center transition-colors cursor-pointer ${
+                      selectedHour === h
+                        ? 'bg-blue-600 text-white font-black'
+                        : 'text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    {String(h).padStart(2, '0')}
+                  </button>
+                ))}
+              </div>
+
+              {/* Minutes List */}
+              <div className="overflow-y-auto space-y-1 pr-0.5 scrollbar-thin">
+                {minutesList.map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => handleSelectMinute(m)}
+                    className={`w-full py-1 text-xs font-semibold rounded text-center transition-colors cursor-pointer ${
+                      selectedMinute === m
+                        ? 'bg-blue-600 text-white font-black'
+                        : 'text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    {String(m).padStart(2, '0')}
+                  </button>
+                ))}
+              </div>
+
+              {/* AM / PM List */}
+              <div className="space-y-1">
+                {(['AM', 'PM'] as const).map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => handleSelectPeriod(p)}
+                    className={`w-full py-1.5 text-xs font-bold rounded text-center transition-colors cursor-pointer ${
+                      selectedPeriod === p
+                        ? 'bg-blue-600 text-white font-black'
+                        : 'text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Close Button */}
             <div className="mt-3 pt-2 border-t border-slate-100 flex justify-end">
               <button
                 type="button"
                 onClick={() => setIsOpen(false)}
-                className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                className="px-3 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition-colors cursor-pointer"
               >
                 Xong
               </button>

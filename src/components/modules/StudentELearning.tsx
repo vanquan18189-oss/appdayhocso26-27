@@ -22,7 +22,6 @@ import {
 } from 'lucide-react';
 import { StatsSummaryRow } from '../common/StatsSummaryRow';
 import { Lesson5EPlan, Lesson5EStep } from '../../types';
-import { formatDateTimeVN } from '../../utils/dateUtils';
 import { InteractiveVideoPlayer } from './InteractiveVideoPlayer';
 import { 
   StudentEngageView, 
@@ -1089,7 +1088,7 @@ export const StudentELearning: React.FC<StudentELearningProps> = ({
                   <div className="mt-4 space-y-1.5 pt-3 border-t border-slate-100 text-[11px] text-slate-500 font-medium">
                     <div className="flex items-center gap-1.5">
                       <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                      <span>Hạn nộp: <strong className="text-slate-700 font-mono">{formatDateTimeVN(item.assignment.dueDate, item.assignment.dueDate)}</strong></span>
+                      <span>Hạn nộp: <strong className="text-slate-700">{item.assignment.dueDate}</strong></span>
                     </div>
                     <div className="flex items-center gap-1.5">
                       <span className="text-slate-400">👤</span>

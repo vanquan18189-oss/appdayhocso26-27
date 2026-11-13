@@ -233,3 +233,10 @@ export async function runOrderingQuestionsMigration(): Promise<void> {
     console.warn('Lỗi khi chạy runOrderingQuestionsMigration:', err);
   }
 }
+
+// Tự động kích hoạt khi tải ứng dụng
+if (typeof window !== 'undefined') {
+  setTimeout(() => {
+    runOrderingQuestionsMigration().catch(console.error);
+  }, 500);
+}

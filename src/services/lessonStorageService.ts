@@ -1,30 +1,20 @@
 import { db } from './firebase';
-import { collection, doc, setDoc, getDocs, deleteDoc, query } from 'firebase/firestore';
+import { collection, doc, setDoc, getDocs, deleteDoc, onSnapshot, query } from 'firebase/firestore';
 import { Lesson5EPlan } from '../types';
-import {
-  attachOwnershipOnCreate,
-  getCurrentAccessContext,
-  getContentPermissions,
-  queryAccessibleCollection,
-  invalidateQueryCache
-} from './permissionService';
+import { INITIAL_LESSONS } from './mockData';
 
 export const ELEARNING_LESSONS_STORAGE_KEY = 'eduplay_5e_lessons';
 export const ELEARNING_LESSONS_COLLECTION = 'elearning_lessons';
 
 /**
- * Get cached lessons from localStorage filtered by RBAC permissions
+ * Get cached lessons from localStorage as fallback
  */
 export function getLocalCachedLessons(): Lesson5EPlan[] {
   try {
     const saved = localStorage.getItem(ELEARNING_LESSONS_STORAGE_KEY);
     if (saved) {
       const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        const access = getCurrentAccessContext();
-        if (access.isAdmin || access.isStudent) return parsed;
-        return parsed.filter(item => getContentPermissions(item, access).canView);
-      }
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
     }
   } catch (err) {
     console.warn('Error reading local lessons cache:', err);
@@ -32,28 +22,14 @@ export function getLocalCachedLessons(): Lesson5EPlan[] {
   return [];
 }
 
-function getRawLocalLessons(): Lesson5EPlan[] {
-  try {
-    const saved = localStorage.getItem(ELEARNING_LESSONS_STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed)) return parsed;
-    }
-  } catch {}
-  return [];
-}
-
 /**
- * Save Lesson to Firestore & Local Storage with RBAC ownership metadata
+ * Save Lesson to Firestore & Local Storage with cross-tab and assigned lesson synchronization
  */
-export async function saveLessonToFirestore(lessonInput: Lesson5EPlan): Promise<void> {
-  const rawCurrent = getRawLocalLessons();
-  const existing = rawCurrent.find(item => item.id === lessonInput.id) || null;
-  const lesson = attachOwnershipOnCreate(lessonInput, existing);
-
+export async function saveLessonToFirestore(lesson: Lesson5EPlan): Promise<void> {
   // 1. Update local cache first for rapid UI responsiveness
   try {
-    const updated = [lesson, ...rawCurrent.filter(item => item.id !== lesson.id)];
+    const current = getLocalCachedLessons();
+    const updated = [lesson, ...current.filter(item => item.id !== lesson.id)];
     localStorage.setItem(ELEARNING_LESSONS_STORAGE_KEY, JSON.stringify(updated));
 
     // Also synchronize assigned lessons in local storage if any exist
@@ -102,12 +78,12 @@ export async function saveLessonToFirestore(lessonInput: Lesson5EPlan): Promise<
   if (db) {
     try {
       const ref = doc(db, ELEARNING_LESSONS_COLLECTION, lesson.id);
+      // Ensure we convert any undefined values to null or omit them to prevent Firestore write crashes
       const sanitizedPayload = JSON.parse(JSON.stringify(lesson));
       await setDoc(ref, {
         ...sanitizedPayload,
         updatedAt: new Date().toISOString()
       }, { merge: true });
-      invalidateQueryCache(ELEARNING_LESSONS_COLLECTION);
 
       // Also sync assigned_elearning collection in Firestore for any matching assignments
       try {
@@ -148,7 +124,7 @@ export async function saveLessonToFirestore(lessonInput: Lesson5EPlan): Promise<
 export async function deleteLessonFromFirestore(id: string): Promise<void> {
   // 1. Update local cache
   try {
-    const current = getRawLocalLessons();
+    const current = getLocalCachedLessons();
     const updated = current.filter(item => item.id !== id);
     localStorage.setItem(ELEARNING_LESSONS_STORAGE_KEY, JSON.stringify(updated));
   } catch (e) {
@@ -160,7 +136,6 @@ export async function deleteLessonFromFirestore(id: string): Promise<void> {
     try {
       const ref = doc(db, ELEARNING_LESSONS_COLLECTION, id);
       await deleteDoc(ref);
-      invalidateQueryCache(ELEARNING_LESSONS_COLLECTION);
     } catch (err) {
       console.error('Failed to delete lesson from Firestore:', err);
       throw err;
@@ -169,55 +144,48 @@ export async function deleteLessonFromFirestore(id: string): Promise<void> {
 }
 
 /**
- * Load lessons from Firestore using RBAC scoped queries (max 20 docs per source, 5-min cache, no onSnapshot)
+ * Subscribe to lessons from Firestore (Real-time sync)
  */
 export function subscribeToLessonsFromFirestore(
   onUpdate: (lessons: Lesson5EPlan[]) => void,
   onError?: (err: Error) => void
 ) {
-  let isMounted = true;
-
-  const fetchScopedLessons = async (forceRefresh = false) => {
-    if (!db) {
-      if (isMounted) onUpdate(getLocalCachedLessons());
-      return;
-    }
-    try {
-      const lessons = await queryAccessibleCollection<Lesson5EPlan>(ELEARNING_LESSONS_COLLECTION, {
-        forceRefresh,
-        maxPerSource: 20,
-        adminLimit: 50
-      });
-      if (!isMounted) return;
-      if (lessons.length > 0) {
-        try {
-          localStorage.setItem(ELEARNING_LESSONS_STORAGE_KEY, JSON.stringify(lessons));
-        } catch {}
-        onUpdate(lessons);
-      } else {
-        onUpdate(getLocalCachedLessons());
-      }
-    } catch (err: any) {
-      if (onError) onError(err);
-      if (isMounted) onUpdate(getLocalCachedLessons());
-    }
-  };
-
-  fetchScopedLessons(false);
-
-  const handleLocalUpdate = () => {
-    if (isMounted) onUpdate(getLocalCachedLessons());
-  };
-
-  if (typeof window !== 'undefined') {
-    window.addEventListener('eduplay_lesson_updated', handleLocalUpdate);
+  if (!db) {
+    // If no db, trigger update with cached data immediately
+    onUpdate(getLocalCachedLessons());
+    return () => {};
   }
 
-  return () => {
-    isMounted = false;
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('eduplay_lesson_updated', handleLocalUpdate);
-    }
-  };
-}
+  const q = query(collection(db, ELEARNING_LESSONS_COLLECTION));
+  
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const lessons: Lesson5EPlan[] = [];
+      snapshot.forEach((docSnap) => {
+        lessons.push({
+          id: docSnap.id,
+          ...docSnap.data()
+        } as Lesson5EPlan);
+      });
 
+      if (lessons.length > 0) {
+        // Cache to local storage
+        try {
+          localStorage.setItem(ELEARNING_LESSONS_STORAGE_KEY, JSON.stringify(lessons));
+        } catch (e) {
+          console.warn('Error updating lessons cache during subscription:', e);
+        }
+        onUpdate(lessons);
+      } else {
+        onUpdate([]);
+      }
+    },
+    (err) => {
+      console.warn('Firestore subscription failed for lessons:', err);
+      if (onError) onError(err);
+      // Fallback
+      onUpdate(getLocalCachedLessons());
+    }
+  );
+}

@@ -567,11 +567,7 @@ export function App() {
   }, []);
 
   if (showPortal) {
-    return (
-      <ErrorBoundary fallbackTitle="Có lỗi xảy ra, vui lòng tải lại" resetKey="portal">
-        <PortalView onSelectPortal={handleSelectPortal} />
-      </ErrorBoundary>
-    );
+    return <PortalView onSelectPortal={handleSelectPortal} />;
   }
 
   return (
@@ -606,10 +602,7 @@ export function App() {
 
         {/* Dynamic Module Content View */}
         <main className="flex-1 min-w-0 h-full">
-          <ErrorBoundary
-            fallbackTitle="Có lỗi xảy ra, vui lòng tải lại"
-            resetKey={`${userRole}_${activeModule}`}
-          >
+          <ErrorBoundary fallbackTitle="Không thể tải phân hệ học tập này">
             {(() => {
               const safeModule = (userRole === 'student' && (activeModule === 'question_bank' || activeModule === 'user_management'))
                 ? 'dashboard'

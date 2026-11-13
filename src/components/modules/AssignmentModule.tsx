@@ -58,7 +58,6 @@ import { gradeSubmissionAI } from '../../services/geminiService';
 import { exportAssignmentResultsExcel } from '../../services/excelService';
 import { ManualQuestionBankModal } from './ManualQuestionBankModal';
 import { UseQuestionBankModal } from './UseQuestionBankModal';
-import { ShareContentModal } from './ShareContentModal';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { getLocalCachedQuestions, QUESTIONS_CACHE_KEY, saveQuestionsBatchToFirestore } from '../../services/questionStorageService';
 import { useScoreSort } from '../../lib/useScoreSort';
@@ -67,14 +66,6 @@ import { studentResultService } from '../../services/studentResultService';
 import { resetOrDeleteStudentAssignmentSubmission } from '../../services/studentSubmissionResetService';
 import { syncAssignmentQuestions } from '../../services/assignmentSyncService';
 import { getCurrentTeacherProfile, resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
-import {
-  getCurrentAccessContext,
-  getContentPermissions,
-  filterAccessibleItems,
-  isContentOwner,
-  isContentSharedWithTeacher,
-  canTeacherAccessClass
-} from '../../services/permissionService';
 import { getStudentsFromLocalStorage, getClassStudentCount, generateDefaultClassRoster } from '../../services/studentStorageService';
 import { auth, db } from '../../services/firebase';
 import { doc, onSnapshot, getDoc, setDoc, collection, getDocs, deleteDoc, runTransaction } from 'firebase/firestore';
@@ -83,7 +74,6 @@ import { normalizeStudentCode, formatStandardStudentCode, isSameStudent } from '
 import { checkQuestionCorrectLocal } from './StudentExamModule';
 import { useAcademicYear } from '../../contexts/AcademicYearContext';
 import { formatScore, formatTotalScore, roundTotalScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
-import { parseDateTimeVN, formatDateTimeVN, toISOStringUTC, validateStrictDateTimeInputVN, validateScheduleAndDeadline } from '../../utils/dateUtils';
 import { scanMisfiledAssignmentSubmissions, executeMisfiledAssignmentMigration, MisfiledSubmissionItem, MigrationReport } from '../../services/assignmentMigrationService';
 
 import { StudentSubmissionDetailModal } from './StudentSubmissionDetailModal';
@@ -121,22 +111,63 @@ export interface StudentSubmissionRow {
  * Chuyển bất kỳ chuỗi Ngày giao / Ngày tạo / Date / Timestamp thành milliseconds để so sánh thời gian thực.
  */
 export function parseAssignedDateToTime(rawDate?: any, rawCreatedAt?: any): number {
-  const d1 = parseDateTimeVN(rawDate);
-  if (d1) return d1.getTime();
-  const d2 = parseDateTimeVN(rawCreatedAt);
-  if (d2) return d2.getTime();
+  const tryParse = (val?: any): number | null => {
+    if (!val) return null;
+    if (typeof val === 'number' && !isNaN(val)) return val;
+    if (val instanceof Date && !isNaN(val.getTime())) return val.getTime();
+    if (typeof val !== 'string') return null;
+
+    const s = val.trim();
+    if (!s) return null;
+
+    // Định dạng dd/mm/yyyy [HH:mm[:ss]] hoặc dd-mm-yyyy [HH:mm[:ss]]
+    const ddmmyyyyMatch = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
+    if (ddmmyyyyMatch) {
+      const day = parseInt(ddmmyyyyMatch[1], 10);
+      const month = parseInt(ddmmyyyyMatch[2], 10) - 1;
+      const year = parseInt(ddmmyyyyMatch[3], 10);
+      const hour = ddmmyyyyMatch[4] ? parseInt(ddmmyyyyMatch[4], 10) : 0;
+      const minute = ddmmyyyyMatch[5] ? parseInt(ddmmyyyyMatch[5], 10) : 0;
+      const second = ddmmyyyyMatch[6] ? parseInt(ddmmyyyyMatch[6], 10) : 0;
+      const dateObj = new Date(year, month, day, hour, minute, second);
+      if (!isNaN(dateObj.getTime())) {
+        return dateObj.getTime();
+      }
+    }
+
+    // Thử Date.parse dành cho chuỗi ISO (e.g. 2026-11-08T19:05:00.000Z)
+    const parsed = Date.parse(s);
+    if (!isNaN(parsed)) {
+      return parsed;
+    }
+
+    return null;
+  };
+
+  const t1 = tryParse(rawDate);
+  if (t1 !== null) return t1;
+
+  const t2 = tryParse(rawCreatedAt);
+  if (t2 !== null) return t2;
+
   return 0;
 }
 
 /**
- * Chuẩn hóa hiển thị cột "NGÀY GIAO" theo đúng định dạng chuẩn: DD/MM/YYYY HH:mm (24h Asia/Ho_Chi_Minh)
+ * Chuẩn hóa hiển thị cột "NGÀY GIAO" theo đúng định dạng chuẩn: dd/mm/yyyy HH:mm
  */
 export function formatAssignedDateDisplay(rawDate?: any, rawCreatedAt?: any): string {
   const timeMs = parseAssignedDateToTime(rawDate, rawCreatedAt);
   if (timeMs <= 0) {
     return '18/08/2026 00:00';
   }
-  return formatDateTimeVN(timeMs, '18/08/2026 00:00');
+  const date = new Date(timeMs);
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = date.getFullYear();
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  return `${day}/${month}/${year} ${hour}:${minute}`;
 }
 
 const CLASS_3A_STUDENTS: StudentSubmissionRow[] = [
@@ -218,8 +249,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
 }) => {
   // Derive authentic teacher profile from Single Source of Truth (`teachers` / `to_chuyen_mon` collections)
   const authEmail = (typeof window !== 'undefined' ? (auth?.currentUser?.email || localStorage.getItem('eduplay_teacher_email')) : null);
-  const accessContext = useMemo(() => getCurrentAccessContext(userRole, authEmail), [userRole, authEmail]);
-  const activeTeacherProfile = accessContext.teacherProfile;
+  const activeTeacherProfile = resolveCurrentTeacherProfile(authEmail);
   const effectiveTeacherName = (currentUserName && currentUserName !== 'Lê Minh Anh' && !(currentUserName.includes('Văn Quân') && !authEmail?.includes('vanquan')))
     ? currentUserName
     : activeTeacherProfile.name;
@@ -227,11 +257,15 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     ? currentUserId
     : activeTeacherProfile.id;
 
-  const isAdmin = accessContext.isAdmin;
+  const isAdmin = userRole === 'admin' || activeTeacherProfile.userRole === 'admin' || (activeTeacherProfile.role || '').toLowerCase().includes('admin');
 
   const isAssignmentOwner = useCallback((as: HomeworkAssignment): boolean => {
-    return isContentOwner(as, accessContext);
-  }, [accessContext]);
+    if (isAdmin) return true;
+    const currentId = activeTeacherProfile.id; // e.g. 'gv-12', 'gv-06'
+    if (as.teacherId && as.teacherId === currentId) return true;
+    if (as.createdBy && as.createdBy === currentId) return true;
+    return false;
+  }, [isAdmin, activeTeacherProfile.id]);
 
   const effectiveQuestionsBank = questionsBank && questionsBank.length > 0 ? questionsBank : getLocalCachedQuestions();
   // Perspective view: 'teacher' or 'student'
@@ -941,17 +975,71 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
 
   const { classes: allRealClasses, getClassesForGrade: fetchClassesForGrade } = useClassesList();
 
-  // Helper to parse date string into timestamp via unified dateUtils
+  // Helper to parse date string into timestamp (supporting dd/mm/yyyy HH:mm, MM/DD/YYYY hh:mm A, and ISO)
   const parseCustomDateTimeToMs = (dateStr?: string): number => {
-    const d = parseDateTimeVN(dateStr);
-    return d ? d.getTime() : 0;
+    if (!dateStr) return 0;
+    const isoMatch = dateStr.match(/^(\d{4})-(\d{1,2})-(\d{1,2})[T\s](\d{1,2}):(\d{1,2})/);
+    if (isoMatch) {
+      return new Date(
+        parseInt(isoMatch[1], 10),
+        parseInt(isoMatch[2], 10) - 1,
+        parseInt(isoMatch[3], 10),
+        parseInt(isoMatch[4], 10),
+        parseInt(isoMatch[5], 10)
+      ).getTime();
+    }
+    const match = dateStr.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{1,2})(?:\s*(AM|PM))?)?/i);
+    if (match) {
+      const p1 = parseInt(match[1], 10);
+      const p2 = parseInt(match[2], 10);
+      const y = parseInt(match[3], 10);
+      let h = match[4] ? parseInt(match[4], 10) : 0;
+      const min = match[5] ? parseInt(match[5], 10) : 0;
+      const ampm = match[6] ? match[6].toUpperCase() : null;
+
+      let d = p1;
+      let m = p2 - 1;
+      if (p1 <= 12 && p2 > 12 && ampm) {
+        m = p1 - 1;
+        d = p2;
+      }
+      if (ampm === 'PM' && h < 12) h += 12;
+      if (ampm === 'AM' && h === 12) h = 0;
+      return new Date(y, m, d, h, min).getTime();
+    }
+    const d = new Date(dateStr);
+    return isNaN(d.getTime()) ? 0 : d.getTime();
   };
 
   const formatToDdMmYyyyHhMm = (dateInput?: string | Date): string => {
     if (!dateInput) {
-      return formatDateTimeVN(new Date());
+      const now = new Date();
+      const dd = String(now.getDate()).padStart(2, '0');
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const yyyy = now.getFullYear();
+      const hh = String(now.getHours()).padStart(2, '0');
+      const min = String(now.getMinutes()).padStart(2, '0');
+      return `${dd}/${mm}/${yyyy} ${hh}:${min}`;
     }
-    return formatDateTimeVN(dateInput, typeof dateInput === 'string' ? dateInput : '');
+    if (typeof dateInput === 'string') {
+      const ms = parseCustomDateTimeToMs(dateInput);
+      if (ms > 0) {
+        const d = new Date(ms);
+        const dd = String(d.getDate()).padStart(2, '0');
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const yyyy = d.getFullYear();
+        const hh = String(d.getHours()).padStart(2, '0');
+        const min = String(d.getMinutes()).padStart(2, '0');
+        return `${dd}/${mm}/${yyyy} ${hh}:${min}`;
+      }
+      return dateInput;
+    }
+    const dd = String(dateInput.getDate()).padStart(2, '0');
+    const mm = String(dateInput.getMonth() + 1).padStart(2, '0');
+    const yyyy = dateInput.getFullYear();
+    const hh = String(dateInput.getHours()).padStart(2, '0');
+    const min = String(dateInput.getMinutes()).padStart(2, '0');
+    return `${dd}/${mm}/${yyyy} ${hh}:${min}`;
   };
 
   const getHomeworkRootId = (as: HomeworkAssignment): string => {
@@ -1087,24 +1175,11 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   const handleSaveEditConfig = async () => {
     if (!editingConfigAssignment) return;
 
-    const startCheck = validateStrictDateTimeInputVN(editConfigStartDate);
-    if (!startCheck.valid) {
-      setEditConfigDateError(startCheck.error || 'Thời điểm bắt đầu không hợp lệ!');
-      return;
-    }
+    const startMs = parseCustomDateTimeToMs(editConfigStartDate);
+    const dueMs = parseCustomDateTimeToMs(editConfigDueDate);
 
-    const dueCheck = validateStrictDateTimeInputVN(editConfigDueDate);
-    if (!dueCheck.valid) {
-      setEditConfigDateError(dueCheck.error || 'Hạn làm bài không hợp lệ!');
-      return;
-    }
-
-    const rangeCheck = validateScheduleAndDeadline({
-      openTime: editConfigStartDate,
-      deadlineTime: editConfigDueDate
-    });
-    if (!rangeCheck.valid) {
-      setEditConfigDateError(rangeCheck.error || 'Thời điểm hết hạn làm bài phải sau thời điểm bắt đầu giao bài!');
+    if (startMs > 0 && dueMs > 0 && dueMs <= startMs) {
+      setEditConfigDateError('Thời điểm hết hạn làm bài phải sau thời điểm bắt đầu giao bài!');
       return;
     }
 
@@ -1112,14 +1187,10 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
       const groupList = getGroupAssignments(editingConfigAssignment, assignments);
       const targetDocs = editConfigApplyToGroup && groupList.length > 0 ? groupList : [editingConfigAssignment];
 
-      const startISO = toISOStringUTC(editConfigStartDate);
-      const dueISO = toISOStringUTC(editConfigDueDate);
-      const formattedDueVN = formatDateTimeVN(dueISO);
-
       const patch: any = {
-        startDate: startISO,
-        assignedDate: startISO,
-        dueDate: dueISO,
+        startDate: editConfigStartDate,
+        assignedDate: editConfigStartDate,
+        dueDate: editConfigDueDate,
         maxAttempts: editConfigMaxAttempts,
         allowRepeat: editConfigMaxAttempts === 'Không giới hạn số lần luyện tập' || editConfigMaxAttempts !== '1 lần',
         shuffleQuestions: editConfigShuffleQuestions,
@@ -1137,11 +1208,6 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
         if (db && targetDoc.id) {
           const docRef = doc(db, 'assignments', targetDoc.id);
           await trackedSetDoc(docRef, patch, { merge: true });
-          const verifiedSnap = await getDoc(docRef).catch(() => null);
-          if (verifiedSnap && verifiedSnap.exists()) {
-            onSaveAssignment({ id: verifiedSnap.id, ...verifiedSnap.data() } as HomeworkAssignment);
-            continue;
-          }
         }
         onSaveAssignment({
           ...targetDoc,
@@ -1149,7 +1215,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
         });
       }
 
-      showToast(`✅ Đã cập nhật cài đặt giao bài thành công cho ${targetDocs.length} lớp! Hạn làm bài mới: ${formattedDueVN}`);
+      showToast(`✅ Đã cập nhật cài đặt giao bài thành công cho ${targetDocs.length} lớp!`);
       setEditingConfigAssignment(null);
     } catch (err: any) {
       console.error('Lỗi lưu cài đặt bài tập:', err);
@@ -1166,9 +1232,6 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
 
     try {
       const rootId = assigningConfigAssignment.originalAssignmentId || assigningConfigAssignment.id.replace(/-class-.*$/, '');
-      const startISO = toISOStringUTC(assignStartDate);
-      const dueISO = toISOStringUTC(assignDueDate);
-      const formattedDueVN = formatDateTimeVN(dueISO);
 
       if (mode === 'update_existing') {
         for (const cls of classesToAssign) {
@@ -1176,9 +1239,9 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
           if (existing && existing.id) {
             const patch: any = {
               title: finalTitle,
-              startDate: startISO,
-              assignedDate: startISO,
-              dueDate: dueISO,
+              startDate: assignStartDate,
+              assignedDate: assignStartDate,
+              dueDate: assignDueDate,
               maxAttempts: assignMaxAttempts,
               allowRepeat: assignMaxAttempts === 'Không giới hạn số lần luyện tập' || assignMaxAttempts !== '1 lần',
               shuffleQuestions: assignShuffleQuestions,
@@ -1203,9 +1266,9 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
               title: finalTitle,
               targetClass: cls,
               targetClasses: [cls],
-              startDate: startISO,
-              assignedDate: startISO,
-              dueDate: dueISO,
+              startDate: assignStartDate,
+              assignedDate: assignStartDate,
+              dueDate: assignDueDate,
               maxAttempts: assignMaxAttempts,
               allowRepeat: assignMaxAttempts === 'Không giới hạn số lần luyện tập' || assignMaxAttempts !== '1 lần',
               shuffleQuestions: assignShuffleQuestions,
@@ -1221,7 +1284,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
             onSaveAssignment(newDoc);
           }
         }
-        showToast(`✅ Đã cập nhật bài giao cho (${classesToAssign.join(', ')})! Hạn làm bài mới: ${formattedDueVN}`);
+        showToast(`✅ Đã cập nhật cài đặt bài đã giao cho các lớp (${classesToAssign.join(', ')}) thành công!`);
         confetti({ particleCount: 50, spread: 60, origin: { y: 0.6 } });
         setAssigningConfigAssignment(null);
         setConflictAssignData(null);
@@ -1247,9 +1310,9 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
           title: assignTitleResolved,
           targetClass: cls,
           targetClasses: [cls],
-          startDate: startISO,
-          assignedDate: startISO,
-          dueDate: dueISO,
+          startDate: assignStartDate,
+          assignedDate: assignStartDate,
+          dueDate: assignDueDate,
           maxAttempts: assignMaxAttempts,
           allowRepeat: assignMaxAttempts === 'Không giới hạn số lần luyện tập' || assignMaxAttempts !== '1 lần',
           shuffleQuestions: assignShuffleQuestions,
@@ -1266,7 +1329,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
       }
 
       confetti({ particleCount: 60, spread: 70, origin: { y: 0.6 } });
-      showToast(`🚀 Đã giao bài tập thành công cho (${classesToAssign.join(', ')})! Hạn làm bài mới: ${formattedDueVN}`);
+      showToast(`🚀 Đã giao bài tập thành công cho các lớp (${classesToAssign.join(', ')})!`);
     } catch (err: any) {
       console.error('Lỗi khi giao bài tập:', err);
       showToast(`⚠️ Không thể lưu giao bài tập lên máy chủ: ${err?.message || String(err)}`);
@@ -1280,28 +1343,14 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     if (!assigningConfigAssignment) return;
 
     if (selectedAssignClasses.length === 0) {
-      showToast('⚠️ Vui lòng chọn ít nhất 1 lớp học để giao bài tập!');
+      alert('Vui lòng chọn ít nhất 1 lớp học để giao bài tập!');
       return;
     }
 
-    const startCheck = validateStrictDateTimeInputVN(assignStartDate);
-    if (!startCheck.valid) {
-      showToast(`⚠️ Thời điểm bắt đầu không hợp lệ: ${startCheck.error}`);
-      return;
-    }
-
-    const dueCheck = validateStrictDateTimeInputVN(assignDueDate);
-    if (!dueCheck.valid) {
-      showToast(`⚠️ Hạn làm bài không hợp lệ: ${dueCheck.error}`);
-      return;
-    }
-
-    const rangeCheck = validateScheduleAndDeadline({
-      openTime: assignStartDate,
-      deadlineTime: assignDueDate
-    });
-    if (!rangeCheck.valid) {
-      showToast(`⚠️ ${rangeCheck.error}`);
+    const startMs = parseCustomDateTimeToMs(assignStartDate);
+    const dueMs = parseCustomDateTimeToMs(assignDueDate);
+    if (startMs > 0 && dueMs > 0 && dueMs <= startMs) {
+      alert('Thời điểm hết hạn làm bài phải sau thời điểm bắt đầu giao bài!');
       return;
     }
 
@@ -1721,19 +1770,24 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     return cleanList;
   }, [assignments]);
 
-  const accessibleAssignmentsAll = useMemo(() => {
-    return filterAccessibleItems(normalizedAssignments, 'all', accessContext);
-  }, [normalizedAssignments, accessContext]);
-
   // Tab counts calculation
-  const allCount = accessibleAssignmentsAll.length;
-  const myCount = filterAccessibleItems(normalizedAssignments, 'my', accessContext).length;
-  const colleagueCount = filterAccessibleItems(normalizedAssignments, 'colleague', accessContext).length;
+  const allCount = normalizedAssignments.length;
+  const myCount = normalizedAssignments.filter((as) => as.authorType === 'my' || !as.authorType).length;
+  const colleagueCount = normalizedAssignments.filter(
+    (as) => as.authorType === 'colleague' || isAssignmentShared(as)
+  ).length;
 
   // Filter & Sort Logic (Sắp xếp theo NGÀY GIAO thực tế giảm dần/tăng dần TRƯỚC khi phân trang)
   const filteredAssignments = useMemo(() => {
-    const tabItems = filterAccessibleItems(normalizedAssignments, activeTab, accessContext);
-    const list = tabItems.filter((as) => {
+    const list = normalizedAssignments.filter((as) => {
+      const isShared = isAssignmentShared(as);
+
+      // Category tab filter
+      if (activeTab === 'my') {
+        if (as.authorType && as.authorType !== 'my') return false;
+      } else if (activeTab === 'colleague') {
+        if (as.authorType !== 'colleague' && !isShared) return false;
+      }
 
       // Grade filter
       if (selectedGrade !== 'Tất cả các khối') {
@@ -1849,8 +1903,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   };
 
   const handleOpenEdit = (as: HomeworkAssignment) => {
-    const perms = getContentPermissions(as, accessContext);
-    if (!perms.canEdit) {
+    if (!isAssignmentOwner(as)) {
       showToast('⚠️ Bạn không có quyền chỉnh sửa nội dung này!');
       setOpenActionMenuId(null);
       return;
@@ -1870,13 +1923,14 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
 
   const handleDeleteAssignment = (id: string) => {
     const target = assignments.find(a => a.id === id);
-    if (target && !getContentPermissions(target, accessContext).canDelete) {
+    if (target && !isAssignmentOwner(target)) {
       showToast('⚠️ Bạn không có quyền xóa nội dung này!');
       setOpenActionMenuId(null);
       return;
     }
-    if (target) {
-      setDeletingAssignment(target);
+    if (confirm('Bạn có chắc chắn muốn xóa bài tập này không?')) {
+      if (onDeleteAssignment) onDeleteAssignment(id);
+      showToast('Đã xóa bài tập khỏi hệ thống!');
       setOpenActionMenuId(null);
     }
   };
@@ -2301,24 +2355,13 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                   const total = (classRoster && classRoster.length > 0) ? classRoster.length : (as.targetClass?.includes('3C') ? 38 : (as.totalStudents || 38));
                   const completed = getAssignmentSubmissionCount(as);
                   const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
-                  const perms = getContentPermissions(as, accessContext);
-                  const isShared = isAssignmentShared(as) || (perms.isShared && !perms.isOwner);
+                  const isShared = isAssignmentShared(as);
                   const subjColor = getSubjectColorStyles(as.subject);
 
                   return (
                     <tr
                       key={as.id}
-                      onClick={() => {
-                        if (!perms.canView) {
-                          showToast('Bạn không có quyền xem nội dung này');
-                          return;
-                        }
-                        if (!isAdmin && as.targetClass && !canTeacherAccessClass(as.targetClass, accessContext) && !perms.isOwner) {
-                          showToast(`Bạn chỉ được xem bài nộp của các lớp mình phụ trách (không có quyền truy cập ${as.targetClass}).`);
-                          return;
-                        }
-                        setDetailAssignment(as);
-                      }}
+                      onClick={() => setDetailAssignment(as)}
                       className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
                     >
                       {/* Tiêu đề bài giao */}
@@ -2340,14 +2383,8 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                             <span className="px-2.5 py-0.5 rounded-md text-xs font-medium bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
                               <Check className="w-3.5 h-3.5 text-emerald-600" /> Đã duyệt nội dung
                             </span>
-                            {/* Badge Chia sẻ bởi */}
-                            {perms.isShared && !perms.isOwner && (
-                              <span className="px-2.5 py-0.5 rounded-md text-xs font-bold bg-purple-100 text-purple-800 border border-purple-300 flex items-center gap-1">
-                                <Share2 className="w-3.5 h-3.5 text-purple-600" /> Chia sẻ bởi {perms.ownerName}
-                              </span>
-                            )}
                             {/* Badge Đã chia sẻ */}
-                            {isShared && perms.isOwner && (
+                            {isShared && (
                               <span className="px-2.5 py-0.5 rounded-md text-xs font-medium bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
                                 <Users className="w-3.5 h-3.5 text-emerald-600" /> ĐÃ CHIA SẺ VÀO TỔ CHUYÊN MÔN
                               </span>
@@ -2365,7 +2402,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                             </div>
                             <div>
                               <span className="font-bold text-slate-800 text-xs block">
-                                {as.teacherName || perms.ownerName || activeTeacherProfile.name}
+                                {as.teacherName || activeTeacherProfile.name}
                               </span>
                               <span className="text-[10px] text-slate-500 font-medium block">
                                 Tổ {as.grade || 'Khối 3'} • Môn {as.subject || 'Công nghệ'}
@@ -2374,7 +2411,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                           </div>
                           {(activeTab === 'colleague' || isShared) && (
                             <div className="text-[10px] font-semibold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 inline-flex items-center gap-1 w-fit">
-                              Chia sẻ bởi {perms.ownerName}
+                              Được chia sẻ bởi: 👩‍🏫 {as.teacherName || activeTeacherProfile.name} (Tổ {as.grade || 'Khối 3'})
                             </div>
                           )}
                         </div>
@@ -2407,8 +2444,8 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                       {/* Thao tác */}
                       <td className="py-4 px-4 text-center whitespace-nowrap relative" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-center gap-2">
-                          {/* Quick action button for colleague/shared assignment - when canAssign */}
-                          {(activeTab === 'colleague' || isShared) && activeRoleView === 'teacher' && perms.canAssign && (
+                          {/* Quick action button for colleague/shared assignment - only for owner/admin */}
+                          {(activeTab === 'colleague' || isShared) && activeRoleView === 'teacher' && isAssignmentOwner(as) && (
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -2437,9 +2474,9 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                           {/* Popup Menu */}
                           {openActionMenuId === as.id && (
                             <div className="absolute right-4 top-12 z-30 w-56 bg-white rounded-xl shadow-xl border border-slate-200 py-1 text-left text-xs animate-fade-in divide-y divide-slate-100">
-                              <div className="py-1">
-                                {perms.canEdit && (
-                                  <>
+                              {isAssignmentOwner(as) ? (
+                                <>
+                                  <div className="py-1">
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
@@ -2464,90 +2501,86 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                                       <RefreshCw className={`w-4 h-4 text-emerald-600 ${syncingAssignmentId === as.id ? 'animate-spin' : ''}`} />
                                       <span>🔄 Cập nhật lại danh sách câu hỏi</span>
                                     </button>
-                                  </>
-                                )}
 
-                                {perms.canAssign && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleOpenAssignConfig(as);
-                                      setOpenActionMenuId(null);
-                                    }}
-                                    className="w-full px-3.5 py-2 text-left hover:bg-indigo-50 flex items-center gap-2.5 font-bold text-indigo-700 cursor-pointer"
-                                  >
-                                    <Send className="w-4 h-4 text-indigo-600" /> 🚀 Giao Bài Tập
-                                  </button>
-                                )}
-
-                                {perms.canView && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      if (!isAdmin && as.targetClass && !canTeacherAccessClass(as.targetClass, accessContext) && !perms.isOwner) {
-                                        showToast(`Bạn chỉ được xem bài nộp của các lớp mình phụ trách (không có quyền truy cập ${as.targetClass}).`);
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleOpenAssignConfig(as);
                                         setOpenActionMenuId(null);
-                                        return;
-                                      }
+                                      }}
+                                      className="w-full px-3.5 py-2 text-left hover:bg-indigo-50 flex items-center gap-2.5 font-bold text-indigo-700 cursor-pointer"
+                                    >
+                                      <Send className="w-4 h-4 text-indigo-600" /> 🚀 Giao Bài Tập
+                                    </button>
+
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setDetailAssignment(as);
+                                        setOpenActionMenuId(null);
+                                      }}
+                                      className="w-full px-3.5 py-2 text-left hover:bg-slate-50 flex items-center gap-2.5 font-semibold text-slate-700 cursor-pointer"
+                                    >
+                                      <Eye className="w-4 h-4 text-indigo-600" /> Xem chi tiết
+                                    </button>
+
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setSharingAssignment(as);
+                                        setOpenActionMenuId(null);
+                                      }}
+                                      className="w-full px-3.5 py-2 text-left hover:bg-sky-50 flex items-center gap-2.5 font-semibold text-sky-800 cursor-pointer"
+                                    >
+                                      <Users className="w-4 h-4 text-sky-600" /> Chia sẻ bài tập
+                                    </button>
+
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setVinhDanhAssignment(as);
+                                        setOpenActionMenuId(null);
+                                      }}
+                                      className="w-full px-3.5 py-2 text-left hover:bg-amber-50 flex items-center gap-2.5 font-bold text-amber-800 cursor-pointer"
+                                    >
+                                      <Trophy className="w-4 h-4 text-amber-500" /> Thống kê vinh danh
+                                    </button>
+
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleOpenEdit(as);
+                                      }}
+                                      className="w-full px-3.5 py-2 text-left hover:bg-slate-50 flex items-center gap-2.5 font-semibold text-slate-700 cursor-pointer"
+                                    >
+                                      <Edit3 className="w-4 h-4 text-amber-600" /> Sửa bài tập
+                                    </button>
+                                  </div>
+
+                                  <div className="py-1">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setDeletingAssignment(as);
+                                        setOpenActionMenuId(null);
+                                      }}
+                                      className="w-full px-3.5 py-2 text-left hover:bg-red-50 flex items-center gap-2.5 font-semibold text-red-600 cursor-pointer"
+                                    >
+                                      <Trash2 className="w-4 h-4 text-red-600" /> Xóa bài tập
+                                    </button>
+                                  </div>
+                                </>
+                              ) : (
+                                <div className="py-1">
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
                                       setDetailAssignment(as);
                                       setOpenActionMenuId(null);
                                     }}
                                     className="w-full px-3.5 py-2 text-left hover:bg-slate-50 flex items-center gap-2.5 font-semibold text-slate-700 cursor-pointer"
                                   >
                                     <Eye className="w-4 h-4 text-indigo-600" /> Xem chi tiết
-                                  </button>
-                                )}
-
-                                {perms.canShare && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setSharingAssignment(as);
-                                      setOpenActionMenuId(null);
-                                    }}
-                                    className="w-full px-3.5 py-2 text-left hover:bg-sky-50 flex items-center gap-2.5 font-semibold text-sky-800 cursor-pointer"
-                                  >
-                                    <Users className="w-4 h-4 text-sky-600" /> Chia sẻ bài tập
-                                  </button>
-                                )}
-
-                                {perms.canView && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setVinhDanhAssignment(as);
-                                      setOpenActionMenuId(null);
-                                    }}
-                                    className="w-full px-3.5 py-2 text-left hover:bg-amber-50 flex items-center gap-2.5 font-bold text-amber-800 cursor-pointer"
-                                  >
-                                    <Trophy className="w-4 h-4 text-amber-500" /> Thống kê vinh danh
-                                  </button>
-                                )}
-
-                                {perms.canEdit && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleOpenEdit(as);
-                                    }}
-                                    className="w-full px-3.5 py-2 text-left hover:bg-slate-50 flex items-center gap-2.5 font-semibold text-slate-700 cursor-pointer"
-                                  >
-                                    <Edit3 className="w-4 h-4 text-amber-600" /> Sửa bài tập
-                                  </button>
-                                )}
-                              </div>
-
-                              {perms.canDelete && (
-                                <div className="py-1">
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setDeletingAssignment(as);
-                                      setOpenActionMenuId(null);
-                                    }}
-                                    className="w-full px-3.5 py-2 text-left hover:bg-red-50 flex items-center gap-2.5 font-semibold text-red-600 cursor-pointer"
-                                  >
-                                    <Trash2 className="w-4 h-4 text-red-600" /> Xóa bài tập
                                   </button>
                                 </div>
                               )}
@@ -4393,38 +4426,101 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
       {/* ========================================== */}
       {/* MODAL 5: CHIA SẺ BÀI TẬP & HỌC LIỆU       */}
       {/* ========================================== */}
-      <ShareContentModal
-        isOpen={!!sharingAssignment}
-        onClose={() => setSharingAssignment(null)}
-        contentType="assignment"
-        content={sharingAssignment ? {
-          id: sharingAssignment.id,
-          title: sharingAssignment.title,
-          grade: sharingAssignment.grade,
-          subject: sharingAssignment.subject,
-          sharedWithTeachers: sharingAssignment.sharedWithTeachers,
-          sharedWithGroups: sharingAssignment.sharedWithGroups,
-          sharePermission: sharingAssignment.sharePermission,
-          allowDeleteByShared: sharingAssignment.allowDeleteByShared
-        } : null}
-        onConfirmShare={(payload) => {
-          if (sharingAssignment) {
-            onSaveAssignment({
-              ...sharingAssignment,
-              sharedWithTeachers: payload.sharedWithTeachers,
-              sharedWithGroups: payload.sharedWithGroups,
-              sharePermission: payload.sharePermission,
-              allowDeleteByShared: payload.allowDeleteByShared
-            });
-          }
-          showToast(
-            payload.revoked
-              ? `Đã thu hồi chia sẻ bài tập "${payload.title}"!`
-              : `Đã chia sẻ bài tập "${payload.title}" thành công!`
-          );
-          setSharingAssignment(null);
-        }}
-      />
+      {sharingAssignment && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-lg w-full shadow-2xl border border-slate-200 overflow-hidden animate-scale-up">
+            {/* Header */}
+            <div className="bg-gradient-to-r from-sky-600 to-indigo-600 text-white p-5 flex items-start justify-between">
+              <div className="space-y-1">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white/20 backdrop-blur-md text-sky-100 font-extrabold text-[10px] uppercase">
+                  <Users className="w-3 h-3 text-sky-200" /> Chia sẻ học liệu
+                </div>
+                <h3 className="text-lg font-black text-white font-heading">
+                  👥 CHIA SẺ BÀI TẬP & HỌC LIỆU CHUYÊN MÔN
+                </h3>
+                <p className="text-xs text-sky-100 font-medium truncate max-w-sm">
+                  {sharingAssignment.title}
+                </p>
+              </div>
+              <button
+                onClick={() => setSharingAssignment(null)}
+                className="p-1.5 rounded-full bg-black/20 hover:bg-black/40 text-white/90 hover:text-white transition-all cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-6 space-y-5">
+              {/* Link sharing box */}
+              <div className="space-y-2">
+                <label className="text-xs font-extrabold text-slate-700 uppercase tracking-wider block">
+                  Liên kết truy cập bài tập
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    readOnly
+                    value={`${window.location.origin}/assignment/${sharingAssignment.id}`}
+                    className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-700 focus:outline-none"
+                  />
+                  <button
+                    onClick={() => handleShareLink(sharingAssignment)}
+                    className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-xs active:scale-95 whitespace-nowrap"
+                  >
+                    <Share2 className="w-3.5 h-3.5" /> Sao chép link
+                  </button>
+                </div>
+              </div>
+
+              {/* Share target options */}
+              <div className="space-y-3">
+                <label className="text-xs font-extrabold text-slate-700 uppercase tracking-wider block">
+                  Phạm vi chia sẻ trong nhà trường
+                </label>
+
+                <div className="p-3.5 rounded-2xl border border-slate-200 bg-slate-50/60 space-y-2.5 text-xs">
+                  <label className="flex items-center gap-2.5 font-bold text-slate-800 cursor-pointer">
+                    <input type="checkbox" defaultChecked className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4" />
+                    <span>Chia sẻ cho Giáo viên Tổ chuyên môn (Khối 3 / Môn {sharingAssignment.subject})</span>
+                  </label>
+                  <label className="flex items-center gap-2.5 font-bold text-slate-800 cursor-pointer">
+                    <input type="checkbox" defaultChecked className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4" />
+                    <span>Đăng tải lên Ngân hàng học liệu dùng chung Trường Trực Khang</span>
+                  </label>
+                  <label className="flex items-center gap-2.5 font-bold text-slate-800 cursor-pointer">
+                    <input type="checkbox" defaultChecked className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4" />
+                    <span>Cho phép đồng nghiệp tải về và nhân bản cấu hình</span>
+                  </label>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs font-medium flex items-start gap-2">
+                <Sparkles className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                <span>Bài tập sau khi chia sẻ sẽ xuất hiện ở Tab <b>"Bài tập từ đồng nghiệp"</b> để các giáo viên khác tham khảo và giao cho lớp của mình.</span>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2">
+              <button
+                onClick={() => setSharingAssignment(null)}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-200 transition-all cursor-pointer"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                onClick={() => {
+                  handleConfirmShare(sharingAssignment);
+                }}
+                className="px-5 py-2 rounded-xl text-xs font-extrabold bg-sky-600 hover:bg-sky-700 text-white transition-all shadow-md cursor-pointer active:scale-95"
+              >
+                Xác nhận chia sẻ
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL: CẤU HÌNH GIAO BÀI TẬP */}
       {assigningConfigAssignment && (
@@ -5248,8 +5344,8 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                                           <span className="text-slate-400 bg-slate-100 px-2 py-0.5 rounded text-[10px]">Tắt</span>
                                         )}
                                       </td>
-                                      <td className="py-2.5 px-3 text-slate-600 font-medium font-mono text-[11px]">
-                                        {formatDateTimeVN(docItem.dueDate, '-')}
+                                      <td className="py-2.5 px-3 text-slate-600 font-medium text-[11px]">
+                                        {docItem.dueDate || '-'}
                                       </td>
                                     </tr>
                                   );
@@ -5308,8 +5404,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
         onClose={() => setDeletingAssignment(null)}
         onConfirm={() => {
           if (deletingAssignment) {
-            const perms = getContentPermissions(deletingAssignment, accessContext);
-            if (!perms.canDelete) {
+            if (!isAssignmentOwner(deletingAssignment)) {
               showToast('⚠️ Bạn không có quyền xóa nội dung này!');
               setDeletingAssignment(null);
               return;

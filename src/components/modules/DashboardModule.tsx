@@ -23,8 +23,7 @@ import {
   Star,
   Flame,
   ChevronRight,
-  BookMarked,
-  ShieldCheck
+  BookMarked
 } from 'lucide-react';
 import { ActivityLog, ActiveModule, UserRole, StudentRecord, HomeworkAssignment, ExamPaper, Lesson5EPlan, QuizziGameItem, GameItem } from '../../types';
 import { getLocalCachedAssignments, isAssignmentDeleted, subscribeToAssignmentsFromFirestore } from '../../services/assignmentStorageService';
@@ -58,12 +57,6 @@ import {
 import { collection, getDocs, query, where, orderBy, limit, setDoc, doc } from 'firebase/firestore';
 import { db } from '../../firebaseConfig';
 import { fetchAndSynthesizeActivityLogs, ActivityLog as SynthesizedActivityLog } from '../../services/activityService';
-import {
-  getCurrentAccessContext,
-  filterAccessibleItems,
-  canTeacherAccessClass
-} from '../../services/permissionService';
-import { OwnershipMigrationModal } from '../modals/OwnershipMigrationModal';
 
 export interface DashboardModuleProps {
   onNavigate?: (module: ActiveModule) => void;
@@ -113,9 +106,6 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
   const schoolYear = selectedAcademicYear || '2026-2027';
   const [fetchedLogs, setFetchedLogs] = useState<ActivityLog[]>([]);
   const [isRefreshingLogs, setIsRefreshingLogs] = useState(false);
-  const [isOwnershipModalOpen, setIsOwnershipModalOpen] = useState(false);
-
-  const accessContext = useMemo(() => getCurrentAccessContext(userRole), [userRole]);
 
   const loadActivities = async (force: boolean = false) => {
     try {
@@ -142,31 +132,14 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
     setIsRefreshingLogs(false);
   };
 
-  const rawLogs = fetchedLogs.length > 0 ? fetchedLogs : (activityLogs || logs || []);
-  const actualLogs = useMemo(() => {
-    if (accessContext.isAdmin || userRole === 'student') return rawLogs;
-    const myName = (accessContext.teacherName || '').toLowerCase().trim();
-    const myEmail = (accessContext.email || '').toLowerCase().trim();
-    return rawLogs.filter((log: any) => {
-      const logUser = String(log.user || log.actorName || '').toLowerCase().trim();
-      const logEmail = String(log.actorEmail || log.teacherEmail || '').toLowerCase().trim();
-      const logTargetClass = String(log.targetClass || log.className || '');
-      if (myEmail && logEmail && logEmail === myEmail) return true;
-      if (myName && logUser && (logUser.includes(myName) || myName.includes(logUser.replace(/^(cô|thầy|thầy\/cô)\s+/i, '').trim()))) return true;
-      if (logTargetClass && canTeacherAccessClass(logTargetClass, accessContext)) return true;
-      return false;
-    });
-  }, [rawLogs, accessContext, userRole]);
+  const actualLogs = fetchedLogs.length > 0 ? fetchedLogs : (activityLogs || logs || []);
 
   // Real-time dynamic count states
   const [realStudentCount, setRealStudentCount] = useState<number | null>(() => {
     try {
       const localDb = getAllStudentsFromLocalStorage();
       const seenIds = new Set<string>();
-      Object.entries(localDb).forEach(([clsKey, list]) => {
-        if (!accessContext.isAdmin && userRole !== 'student' && !canTeacherAccessClass(clsKey, accessContext)) {
-          return;
-        }
+      Object.values(localDb).forEach(list => {
         if (Array.isArray(list)) {
           list.forEach(st => {
             const idKey = st.sddcn || st.code || st.id || st.fullName || st.name;
@@ -195,10 +168,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
     try {
       const localDb = getAllStudentsFromLocalStorage();
       const seenIds = new Set<string>();
-      Object.entries(localDb).forEach(([clsKey, list]) => {
-        if (!accessContext.isAdmin && userRole !== 'student' && !canTeacherAccessClass(clsKey, accessContext)) {
-          return;
-        }
+      Object.values(localDb).forEach(list => {
         if (Array.isArray(list)) {
           list.forEach(st => {
             const idKey = st.sddcn || st.code || st.id || st.fullName || st.name;
@@ -206,7 +176,9 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
           });
         }
       });
-      setRealStudentCount(seenIds.size);
+      if (seenIds.size > 0) {
+        setRealStudentCount(seenIds.size);
+      }
     } catch (e) {
       console.warn('Error refreshing local student count:', e);
     }
@@ -220,30 +192,23 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
         const uniqueClasses = new Set<string>();
         classSnap.forEach(d => {
           const raw = (d.data().name || d.id || '').replace(/^lớp\s*/i, '').trim().toUpperCase();
-          if (raw) {
-            if (accessContext.isAdmin || userRole === 'student' || canTeacherAccessClass(raw, accessContext)) {
-              uniqueClasses.add(raw);
-            }
-          }
+          if (raw) uniqueClasses.add(raw);
         });
-        setRealClassCount(uniqueClasses.size);
+        setRealClassCount(uniqueClasses.size > 0 ? uniqueClasses.size : classSnap.size);
       }
 
       const rosterSnap = await getDocs(collection(db, 'class_rosters'));
       const classStudentMap = new Map<string, number>();
-      rosterSnap.forEach((docSnap) => {
-        const normKey = docSnap.id.trim().toUpperCase();
-        if (!accessContext.isAdmin && userRole !== 'student' && !canTeacherAccessClass(normKey, accessContext)) {
-          return;
-        }
-        const data = docSnap.data();
+      rosterSnap.forEach((doc) => {
+        const normKey = doc.id.trim().toUpperCase();
+        const data = doc.data();
         if (Array.isArray(data.students)) {
           classStudentMap.set(normKey, data.students.length);
         }
       });
       let total = 0;
       classStudentMap.forEach((count) => { total += count; });
-      if (isMountedRef.current) {
+      if (isMountedRef.current && total > 0) {
         setRealStudentCount(total);
       }
     } catch (e) {
@@ -304,23 +269,10 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
     };
   }, []);
 
-  const accessibleLessons = useMemo(
-    () => (userRole === 'student' ? lessons : filterAccessibleItems(lessons, accessContext, 'all')),
-    [lessons, userRole, accessContext]
-  );
-  const accessibleExams = useMemo(
-    () => (userRole === 'student' ? exams : filterAccessibleItems(exams, accessContext, 'all')),
-    [exams, userRole, accessContext]
-  );
-  const accessibleAssignments = useMemo(
-    () => (userRole === 'student' ? assignments : filterAccessibleItems(assignments, accessContext, 'all')),
-    [assignments, userRole, accessContext]
-  );
-
-  const totalStudentsCount = realStudentCount !== null ? realStudentCount : (accessContext.isAdmin ? (stats?.totalStudents || 0) : 0);
-  const totalLessonsCount = accessibleLessons.length;
-  const totalExamsCount = accessibleExams.length;
-  const totalAssignmentsCount = accessibleAssignments.length;
+  const totalStudentsCount = realStudentCount !== null ? realStudentCount : (stats?.totalStudents || 0);
+  const totalLessonsCount = lessons.length || stats?.totalLessons || 0;
+  const totalExamsCount = exams.length || stats?.totalExams || 0;
+  const totalAssignmentsCount = assignments.length || stats?.totalAssignments || 0;
 
   // Greeting by time of day
   const getGreeting = () => {
@@ -1269,7 +1221,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
   ];
 
   const teacherSubjectProgress = primarySubjectsList.map(subj => {
-    const matchingLessons = accessibleLessons.filter(l => isSubjectMatch(l.subject, subj.name));
+    const matchingLessons = lessons.filter(l => isSubjectMatch(l.subject, subj.name));
     const total = matchingLessons.length;
     const hasData = total > 0;
     return {
@@ -1488,16 +1440,6 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
                 <Sparkles className="w-5 h-5 text-amber-200 animate-pulse" />
                 <span>Tạo Câu Hỏi Với AI</span>
               </button>
-
-              {accessContext.isAdmin && (
-                <button
-                  onClick={() => setIsOwnershipModalOpen(true)}
-                  className="px-5 py-3.5 bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-sm rounded-xl transition-all shadow-lg hover:shadow-xl flex items-center justify-center gap-2 cursor-pointer transform hover:-translate-y-0.5 duration-200 shrink-0 border border-emerald-300/40"
-                >
-                  <ShieldCheck className="w-5 h-5 text-white" />
-                  <span>Phân quyền & Gán chủ dữ liệu cũ (RBAC)</span>
-                </button>
-              )}
 
               <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs text-indigo-100 font-medium pt-1 sm:pt-0">
                 <span className="text-indigo-200/80 font-normal">Khám phá nhanh:</span>
@@ -1988,13 +1930,6 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
             </div>
           </div>
         </div>
-      )}
-
-      {accessContext.isAdmin && (
-        <OwnershipMigrationModal
-          isOpen={isOwnershipModalOpen}
-          onClose={() => setIsOwnershipModalOpen(false)}
-        />
       )}
 
     </div>

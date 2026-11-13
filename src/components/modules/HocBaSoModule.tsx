@@ -108,11 +108,6 @@ import { collection, onSnapshot } from 'firebase/firestore';
 import { normalizeStudentCode, isValidStudentCode, formatStandardStudentCode } from '../../services/studentCode';
 import { getCurrentTeacherProfile } from '../../services/teacherStorageService';
 import {
-  getCurrentAccessContext,
-  canTeacherAccessClass,
-  filterAccessibleClasses
-} from '../../services/permissionService';
-import {
   generateStudentCommentAI,
   extractStudentMetricsForAI,
   validateCommentForLevel,
@@ -2516,17 +2511,7 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
   const [isCollapsed2, setIsCollapsed2] = useState<boolean>(false);
 
   const { classes, getClassesForGrade } = useClassesList();
-  const accessContext = useMemo(() => getCurrentAccessContext(userRole), [userRole]);
-
-  const gradesList = useMemo(() => {
-    if (accessContext.isAdmin || userRole === 'student') return GRADES;
-    const allowedGrades = new Set<string>();
-    accessContext.allowedClasses.forEach(cls => {
-      const m = cls.match(/([1-5])/);
-      if (m) allowedGrades.add(`Khối ${m[1]}`);
-    });
-    return allowedGrades.size > 0 ? GRADES.filter(g => allowedGrades.has(g)) : GRADES;
-  }, [accessContext, userRole]);
+  const gradesList = GRADES;
   
   // Academic Year & Semester selection from AcademicYearContext
   const {
@@ -2548,18 +2533,11 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
   };
 
   const getInitialGradeAndClass = (): { grade: string; className: string } => {
-    if (!accessContext.isAdmin && userRole !== 'student' && accessContext.allowedClasses.length > 0) {
-      const firstCls = accessContext.allowedClasses[0];
-      const stdCls = firstCls.startsWith('Lớp') ? firstCls : `Lớp ${firstCls}`;
-      const m = stdCls.match(/([1-5])/);
-      const grade = m ? `Khối ${m[1]}` : 'Khối 5';
-      return { grade, className: stdCls };
-    }
     return { grade: 'Khối 5', className: 'Lớp 5C' };
   };
 
   const userKey = useMemo(() => getCurrentUserAccountKey(), []);
-  const initialDefaults = useMemo(() => getInitialGradeAndClass(), [accessContext, userRole]);
+  const initialDefaults = useMemo(() => getInitialGradeAndClass(), []);
 
   // Section 1 Filters
   const [selectedGrade1, setSelectedGrade1] = useState<string>(initialDefaults.grade);
@@ -2600,17 +2578,15 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
   
   const classesList1 = useMemo(() => {
     if (!selectedGrade1) return [];
-    const rawList = getClassesForGrade(selectedGrade1).map(c => c.name);
-    const list = filterAccessibleClasses(Array.from(new Set(rawList)), accessContext);
-    return accessContext.isAdmin ? [...list, 'Tất cả Lớp'] : list;
-  }, [selectedGrade1, classes, accessContext]);
+    const list = getClassesForGrade(selectedGrade1).map(c => c.name);
+    return [...Array.from(new Set(list)), 'Tất cả Lớp'];
+  }, [selectedGrade1, classes]);
 
   const classesList2 = useMemo(() => {
     if (!selectedGrade2) return [];
-    const rawList = getClassesForGrade(selectedGrade2).map(c => c.name);
-    const list = filterAccessibleClasses(Array.from(new Set(rawList)), accessContext);
-    return accessContext.isAdmin ? [...list, 'Tất cả Lớp'] : list;
-  }, [selectedGrade2, classes, accessContext]);
+    const list = getClassesForGrade(selectedGrade2).map(c => c.name);
+    return [...Array.from(new Set(list)), 'Tất cả Lớp'];
+  }, [selectedGrade2, classes]);
 
   // Lưu lại lựa chọn gần nhất theo từng tài khoản
   useEffect(() => {
@@ -2633,16 +2609,16 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
       setSelectedClass1('');
       return;
     }
-    const available = filterAccessibleClasses(getClassesForGrade(selectedGrade1).map(c => c.name), accessContext);
+    const available = getClassesForGrade(selectedGrade1);
     if (available && available.length > 0) {
-      const exists = available.some(name => name === selectedClass1);
+      const exists = available.some(c => c.name === selectedClass1);
       if (!exists) {
-        setSelectedClass1(available[0]);
+        setSelectedClass1(available[0].name);
       }
     } else {
       setSelectedClass1('');
     }
-  }, [selectedGrade1, accessContext]);
+  }, [selectedGrade1]);
 
   // Tự động chọn lớp đầu tiên của khối khi đổi khối học ở Section 2
   useEffect(() => {
@@ -2650,16 +2626,16 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
       setSelectedClass2('');
       return;
     }
-    const available = filterAccessibleClasses(getClassesForGrade(selectedGrade2).map(c => c.name), accessContext);
+    const available = getClassesForGrade(selectedGrade2);
     if (available && available.length > 0) {
-      const exists = available.some(name => name === selectedClass2);
+      const exists = available.some(c => c.name === selectedClass2);
       if (!exists) {
-        setSelectedClass2(available[0]);
+        setSelectedClass2(available[0].name);
       }
     } else {
       setSelectedClass2('');
     }
-  }, [selectedGrade2, accessContext]);
+  }, [selectedGrade2]);
 
   // Tự động đồng bộ Học kỳ từ Header toàn cục xuống Sổ Nhận Xét và Sổ Tổng Kết
   useEffect(() => {
@@ -2809,16 +2785,10 @@ export const HocBaSoModule: React.FC<HocBaSoModuleProps> = memo(({
     const normSelectedExam = normalizeExamTypeKey(selectedExamType1);
 
     Object.entries(allStudentsDb).forEach(([clsName, classRoster]) => {
-      if (!accessContext.isAdmin && userRole !== 'student' && !canTeacherAccessClass(clsName, accessContext)) {
-        return;
-      }
       if (Array.isArray(classRoster)) {
         classRoster.forEach((rawSt) => {
           if (rawSt && rawSt.id) {
             const st = convertToHocBaStudent({ ...rawSt, className: rawSt.className || clsName });
-            if (!accessContext.isAdmin && userRole !== 'student' && !canTeacherAccessClass(st.className, accessContext)) {
-              return;
-            }
             if (!isValidStudentCode(st.code)) {
               st.commentDetail = {
                 correctCount: 0,

@@ -2,15 +2,7 @@ import { SUBJECTS, GRADES, CLASSES_BY_GRADE, ALL_CLASSES, EXAM_TYPES, QUESTION_T
 import { getSubjectColorStyles } from '../../utils/subjectColors';
 import { sortStudentsByName } from '../../utils/vietnameseNameSort';
 import { formatScore, formatTotalScore, roundTotalScore, isSubjectWithScore, getQualitativeLevel, getQualitativeLabel, getCurrentSubmissionTimestamp, formatSubmissionDateTime } from '../../utils/scoreUtils';
-import { formatDateTimeVN, toISOStringUTC, getCurrentDateTimeVNDisplay, validateStrictDateTimeInputVN, validateScheduleAndDeadline } from '../../utils/dateUtils';
 import { getTeachersFromLocalStorage, resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
-import {
-  getCurrentAccessContext,
-  getContentPermissions,
-  filterAccessibleItems,
-  isContentOwner,
-  canTeacherAccessClass
-} from '../../services/permissionService';
 import { getStudentsFromLocalStorage, getClassStudentCount, deleteStudentFromClass, generateDefaultClassRoster, normalizeClassKey } from '../../services/studentStorageService';
 import { formatStandardStudentCode, normalizeStudentCode, isSameStudent, extractFullStudentCode } from '../../services/studentCode';
 import { seedInitialExamsManually, deleteAllExamsFromFirestore, isValidOfficialExam } from '../../services/examStorageService';
@@ -107,8 +99,6 @@ import {
 import {
   generateRuleBasedExamComment
 } from '../../services/studentCommentAiService';
-import { DateMigrationModal } from '../modals/DateMigrationModal';
-import { ensureReportedGrade5TechExamFixed } from '../../services/dateMigrationService';
 
 export interface TrackingSubmissionStudent {
   id: string;
@@ -182,15 +172,18 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   userRole
 }) => {
   const authEmail = (typeof window !== 'undefined' ? (auth?.currentUser?.email || localStorage.getItem('eduplay_teacher_email')) : null);
-  const accessContext = useMemo(() => getCurrentAccessContext(userRole, authEmail), [userRole, authEmail]);
-  const activeTeacherProfile = accessContext.teacherProfile;
-  const isAdmin = accessContext.isAdmin;
+  const activeTeacherProfile = useMemo(() => resolveCurrentTeacherProfile(authEmail), [authEmail]);
+  const isAdmin = userRole === 'admin' || activeTeacherProfile.userRole === 'admin' || (activeTeacherProfile.role || '').toLowerCase().includes('admin');
   const hasDebug = typeof window !== 'undefined' && window.location.search.includes('debug=1');
   const showUnmatchedTab = hasDebug;
 
   const isExamOwner = useCallback((exam: ExamPaper): boolean => {
-    return isContentOwner(exam, accessContext);
-  }, [accessContext]);
+    if (isAdmin) return true;
+    const currentId = activeTeacherProfile.id; // e.g. 'gv-06', 'gv-12'
+    if (exam.teacherId && exam.teacherId === currentId) return true;
+    if (exam.createdBy && exam.createdBy === currentId) return true;
+    return false;
+  }, [isAdmin, activeTeacherProfile.id]);
 
   const [activeTab, setActiveTab] = useState<'list' | 'ai_creator' | 'matrix_builder' | 'viewer' | 'solver'>('list');
   const [selectedExam, setSelectedExam] = useState<ExamPaper | null>(null);
@@ -210,11 +203,6 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const [deletingExam, setDeletingExam] = useState<ExamPaper | null>(null);
   const [isManualExamModalOpen, setIsManualExamModalOpen] = useState(false);
   const [isBankExamModalOpen, setIsBankExamModalOpen] = useState(false);
-  const [isDateMigrationModalOpen, setIsDateMigrationModalOpen] = useState(false);
-
-  useEffect(() => {
-    ensureReportedGrade5TechExamFixed().catch(() => {});
-  }, []);
 
 
   // Bulk cleanup state
@@ -446,9 +434,22 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     return () => unsubscribe();
   }, []);
 
-  // Helper dynamically formatting current date string in 24-hour Vietnam format ("DD/MM/YYYY HH:mm")
+  // Helper dynamically formatting current date string (e.g. "10/03/2026 06:15 PM")
   const getFormattedCurrentDateDisplay = (addDays: number = 0): string => {
-    return getCurrentDateTimeVNDisplay(addDays);
+    const d = new Date();
+    if (addDays !== 0) {
+      d.setDate(d.getDate() + addDays);
+    }
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    const year = d.getFullYear();
+    let hours = d.getHours();
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    hours = hours % 12;
+    hours = hours ? hours : 12;
+    const strHours = String(hours).padStart(2, '0');
+    return `${month}/${day}/${year} ${strHours}:${minutes} ${ampm}`;
   };
 
   // Assignment Modal State
@@ -507,13 +508,13 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     setAssignmentDuration(exam.durationMinutes);
     setAssignmentTab('select_class');
 
-    // Dynamic current date & time in 24-hour DD/MM/YYYY HH:mm
+    // Dynamic current date & time
     const nowStr = getFormattedCurrentDateDisplay(0);
     const defaultDueStr = getFormattedCurrentDateDisplay(7);
 
-    setAssignmentScheduleDate(exam.startTime ? formatDateTimeVN(exam.startTime, nowStr) : nowStr);
-    setAssignmentOpenTime(exam.startTime ? formatDateTimeVN(exam.startTime, nowStr) : nowStr);
-    setAssignmentDeadlineDate(exam.endTime ? formatDateTimeVN(exam.endTime, defaultDueStr) : defaultDueStr);
+    setAssignmentScheduleDate(exam.startTime || nowStr);
+    setAssignmentOpenTime(exam.startTime || nowStr);
+    setAssignmentDeadlineDate(exam.endTime || defaultDueStr);
 
     // Filter matching classes for this exam
     const examGradeMatch = (exam.grade || '').match(/\d+/);
@@ -558,6 +559,9 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       showToast(`⚠️ Đề thi này đã được giao cho (${duplicatedClasses.join(', ')}). Hệ thống sẽ cập nhật lại thông tin bài giao.`, 'error');
     }
 
+    isSubmittingAssignmentRef.current = true;
+    const rootExamId = assignmentExam.originalExamId || assignmentExam.id.replace(/-class-.*$/, '');
+
     const startTimeVal = (assignmentSchedule && assignmentScheduleDate)
       ? assignmentScheduleDate
       : (assignmentAdvanced && assignmentOpenTime ? assignmentOpenTime : (assignmentScheduleDate || assignmentOpenTime || getFormattedCurrentDateDisplay(0)));
@@ -566,41 +570,12 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       ? assignmentDeadlineDate
       : (assignmentDeadlineDate || getFormattedCurrentDateDisplay(7));
 
-    // Kiểm tra nghiêm ngặt định dạng ngày giờ nhập vào (DD/MM/YYYY HH:mm 24 giờ)
-    const startCheck = validateStrictDateTimeInputVN(startTimeVal);
-    if (!startCheck.valid) {
-      showToast(`⚠️ Thời điểm mở đề không hợp lệ: ${startCheck.error}`, 'error');
-      return;
-    }
-
-    const endCheck = validateStrictDateTimeInputVN(endTimeVal);
-    if (!endCheck.valid) {
-      showToast(`⚠️ Hạn làm bài không hợp lệ: ${endCheck.error}`, 'error');
-      return;
-    }
-
-    const rangeCheck = validateScheduleAndDeadline({
-      scheduleTime: assignmentSchedule ? assignmentScheduleDate : undefined,
-      openTime: startTimeVal,
-      deadlineTime: endTimeVal
-    });
-    if (!rangeCheck.valid) {
-      showToast(`⚠️ ${rangeCheck.error}`, 'error');
-      return;
-    }
-
-    isSubmittingAssignmentRef.current = true;
-    const rootExamId = assignmentExam.originalExamId || assignmentExam.id.replace(/-class-.*$/, '');
-
     try {
       const firstCls = uniqueClasses[0] || 'Lớp 5A';
       const targetDigit = extractGradeDigit(firstCls) || extractGradeDigit(assignmentExam.grade) || '5';
       const normalizedGrade = `Khối ${targetDigit}`;
 
-      const startISO = toISOStringUTC(startTimeVal);
-      const endISO = toISOStringUTC(endTimeVal);
-      const formattedDeadlineVN = formatDateTimeVN(endISO);
-
+      // BẮT BUỘC CHỈ TẠO ĐÚNG 1 DOCUMENT duy nhất trên Firestore theo Yêu cầu 1
       const masterExam: ExamPaper = {
         ...assignmentExam,
         id: assignmentExam.id || rootExamId,
@@ -612,9 +587,9 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
         targetClass: uniqueClasses.join(', '),
         targetClasses: uniqueClasses,
         status: 'published',
-        assignmentDate: formatDateTimeVN(new Date()),
-        startTime: startISO,
-        endTime: endISO,
+        assignmentDate: new Date().toLocaleDateString('vi-VN'),
+        startTime: startTimeVal,
+        endTime: endTimeVal,
         submissionsCount: assignmentExam.submissionsCount || 0,
         totalStudents: uniqueClasses.length * 35,
         enableRealtimeLeaderboard: assignmentEnableRealtimeLeaderboard,
@@ -622,10 +597,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
 
       onSaveExam(masterExam);
 
-      showToast(
-        `✅ Đã lưu đề "${assignmentTitle || assignmentExam.title}" cho (${uniqueClasses.join(', ')}). Hạn làm bài mới: ${formattedDeadlineVN}`,
-        'success'
-      );
+      showToast(`🚀 Đã giao đề "${assignmentTitle || assignmentExam.title}" thành công cho các lớp (${uniqueClasses.join(', ')}) với ĐÚNG 1 document duy nhất!`, 'success');
       handleCloseAssignmentModal();
     } catch (err: any) {
       console.error('Lỗi khi giao đề thi:', err);
@@ -1711,17 +1683,6 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   };
 
   const handleOpenTracking = (exam: ExamPaper) => {
-    const perms = getContentPermissions(exam, accessContext);
-    if (!perms.canView) {
-      setToast({ message: 'Bạn không có quyền xem nội dung này', type: 'error' });
-      setOpenActionMenuId(null);
-      return;
-    }
-    if (!isAdmin && exam.targetClass && !canTeacherAccessClass(exam.targetClass, accessContext) && !perms.isOwner) {
-      setToast({ message: `Bạn chỉ được xem bài làm và điểm của các lớp mình phụ trách (không có quyền truy cập ${exam.targetClass}).`, type: 'error' });
-      setOpenActionMenuId(null);
-      return;
-    }
     setTrackingActionMenuId(null);
     setTrackingExam(exam);
     setTrackingFilter('all');
@@ -2064,8 +2025,12 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   }, [normalizedExams]);
 
   const isMyExam = useCallback((e: ExamPaper): boolean => {
-    return isContentOwner(e, accessContext);
-  }, [accessContext]);
+    if (isAdmin) return true;
+    const currentId = activeTeacherProfile.id; // e.g. 'gv-06'
+    if (e.teacherId) return e.teacherId === currentId;
+    if (e.createdBy) return e.createdBy === currentId;
+    return false;
+  }, [isAdmin, activeTeacherProfile.id]);
 
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -2091,19 +2056,17 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     return stats.validCount;
   }, [directStatsMap]);
 
-  const accessibleExamsAll = useMemo(() => {
-    return filterAccessibleItems(normalizedExams, 'all', accessContext);
-  }, [normalizedExams, accessContext]);
+  const allExamsCount = normalizedExams.length;
+  const myExamsCount = normalizedExams.filter(e => isMyExam(e)).length;
+  const colleagueExamsCount = normalizedExams.filter(e => !isMyExam(e)).length;
 
-  const allExamsCount = accessibleExamsAll.length;
-  const myExamsCount = filterAccessibleItems(normalizedExams, 'my', accessContext).length;
-  const colleagueExamsCount = filterAccessibleItems(normalizedExams, 'colleague', accessContext).length;
-
-  const tabExams = useMemo(() => {
-    return filterAccessibleItems(normalizedExams, resourceTab, accessContext);
-  }, [normalizedExams, resourceTab, accessContext]);
-
-  const filteredExams = tabExams.filter(exam => {
+  const filteredExams = normalizedExams.filter(exam => {
+    // 3 Category Resource Tab filter
+    if (resourceTab === 'my') {
+      if (!isMyExam(exam)) return false;
+    } else if (resourceTab === 'colleague') {
+      if (isMyExam(exam)) return false;
+    }
 
     if (filterGrade !== 'Tất cả các khối' && !isGradeMatching(exam.grade, filterGrade)) return false;
     if (filterSubject !== 'Tất cả các môn' && exam.subject !== filterSubject) return false;
@@ -3197,16 +3160,7 @@ return (
                 Đã đọc trực tiếp <strong className="text-emerald-700 font-bold">{directReadsCount || currentExams.slice(0, 10).length}</strong> đề trên trang này (Tối đa 10 đề/trang để kiểm soát hạn mức)
               </span>
             </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <button
-                type="button"
-                onClick={() => setIsDateMigrationModalOpen(true)}
-                className="px-2.5 py-1.5 rounded-xl text-[11px] font-bold bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
-                title="Rà soát & chuẩn hóa các trường ngày giờ sang định dạng ISO 8601 UTC (hiển thị DD/MM/YYYY HH:mm 24h)"
-              >
-                <Calendar className="w-3.5 h-3.5 text-amber-700" />
-                <span>Chuẩn hóa Ngày Giờ</span>
-              </button>
+            <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={() => setShowDebugTable(prev => !prev)}
@@ -3328,7 +3282,6 @@ return (
                 {currentExams.length > 0 ? (
                   currentExams.map((exam) => {
                     const subjColor = getSubjectColorStyles(exam.subject);
-                    const perms = getContentPermissions(exam, accessContext);
                     return (
                     <tr key={exam.id} className="hover:bg-slate-50/50 transition-colors group relative">
                       <td className="px-6 py-4">
@@ -3354,11 +3307,6 @@ return (
                           {exam.status === 'published' && (
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200/50 flex items-center gap-1">
                               <CheckCircle2 className="w-3 h-3" /> Đã duyệt nội dung
-                            </span>
-                          )}
-                          {perms.isShared && !perms.isOwner && (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-200 flex items-center gap-1">
-                              <Share2 className="w-3 h-3" /> Chia sẻ bởi {perms.ownerName}
                             </span>
                           )}
                         </div>
@@ -3392,9 +3340,9 @@ return (
                               {(exam.durationMinutes || (exam as any).duration)} phút
                             </span>
                             {exam.startTime && (
-                              <div className="flex flex-col gap-0.5 text-[10px] text-slate-500 mt-0.5 font-mono">
-                                <div className="flex items-center gap-1"><Calendar className="w-3 h-3 text-orange-500" /> Từ: {formatDateTimeVN(exam.startTime)}</div>
-                                {exam.endTime && <div className="flex items-center gap-1"><Calendar className="w-3 h-3 text-rose-500" /> Đến: {formatDateTimeVN(exam.endTime)}</div>}
+                              <div className="flex flex-col gap-0.5 text-[10px] text-slate-500 mt-0.5">
+                                <div className="flex items-center gap-1"><Calendar className="w-3 h-3 text-orange-500" /> Từ: {exam.startTime}</div>
+                                {exam.endTime && <div className="flex items-center gap-1"><Calendar className="w-3 h-3 text-rose-500" /> Đến: {exam.endTime}</div>}
                               </div>
                             )}
                           </div>
@@ -3473,34 +3421,45 @@ return (
                         {openActionMenuId === exam.id && (
                           <>
                             <div className="fixed inset-0 z-10" onClick={() => setOpenActionMenuId(null)}></div>
-                            <div className="absolute right-12 top-6 z-20 bg-white border border-slate-200 shadow-xl rounded-2xl p-2 flex flex-wrap items-center gap-2 max-w-[230px]">
-                              {userRole !== 'student' && perms.canAssign && (
-                                <button onClick={() => handleOpenAssignmentModal(exam)} title="Giao bài" className="p-2.5 rounded-xl border border-indigo-100 text-indigo-600 hover:bg-indigo-50 transition-colors cursor-pointer"><Rocket className="w-4 h-4 mx-auto" /></button>
-                              )}
-                              {userRole !== 'student' && perms.canShare && (
-                                <button onClick={() => { setSharingExam(exam); setOpenActionMenuId(null); }} title="Chia sẻ đề" className="p-2.5 rounded-xl border border-sky-100 text-sky-600 hover:bg-sky-50 transition-colors cursor-pointer"><Share2 className="w-4 h-4 mx-auto" /></button>
-                              )}
-                              {userRole !== 'student' && perms.canEdit && (
-                                <button onClick={() => handleOpenRegrading(exam)} title="Chấm lại" className="p-2.5 rounded-xl border border-purple-100 text-purple-600 hover:bg-purple-50 transition-colors cursor-pointer"><RefreshCw className="w-4 h-4 mx-auto" /></button>
-                              )}
-                              {userRole !== 'student' && perms.canView && (
-                                <button onClick={() => handleExportExcel(exam)} title="Tải xuống/Xuất file" className="p-2.5 rounded-xl border border-amber-100 text-amber-600 hover:bg-amber-50 transition-colors cursor-pointer"><Download className="w-4 h-4 mx-auto" /></button>
-                              )}
-                              {perms.canView && (
+                            {isExamOwner(exam) ? (
+                              <div className="absolute right-12 top-6 z-20 bg-white border border-slate-200 shadow-xl rounded-2xl p-2 grid grid-cols-4 gap-2 min-w-[200px]">
+                                {userRole !== 'student' && (
+                                  <>
+                                    <button onClick={() => handleOpenAssignmentModal(exam)} title="Giao bài" className="p-2.5 rounded-xl border border-indigo-100 text-indigo-600 hover:bg-indigo-50 transition-colors"><Rocket className="w-4 h-4 mx-auto" /></button>
+                                    <button onClick={() => { setSharingExam(exam); setOpenActionMenuId(null); }} title="Chia sẻ đề" className="p-2.5 rounded-xl border border-sky-100 text-sky-600 hover:bg-sky-50 transition-colors"><Share2 className="w-4 h-4 mx-auto" /></button>
+                                    <button onClick={() => handleOpenRegrading(exam)} title="Chấm lại" className="p-2.5 rounded-xl border border-purple-100 text-purple-600 hover:bg-purple-50 transition-colors"><RefreshCw className="w-4 h-4 mx-auto" /></button>
+                                    <button onClick={() => handleExportExcel(exam)} title="Tải xuống/Xuất file" className="p-2.5 rounded-xl border border-amber-100 text-amber-600 hover:bg-amber-50 transition-colors"><Download className="w-4 h-4 mx-auto" /></button>
+                                  </>
+                                )}
                                 <button 
                                   onClick={() => handleOpenTracking(exam)} 
-                                  title="Theo dõi bài kiểm tra" className="p-2.5 rounded-xl border border-blue-100 text-blue-600 hover:bg-blue-50 transition-colors cursor-pointer"><Eye className="w-4 h-4 mx-auto" /></button>
-                              )}
-                              {userRole !== 'student' && perms.canView && (
-                                <button onClick={() => { setStatsExam(exam); setStatsTab('performance'); setOpenActionMenuId(null); }} title="Thống kê" className="p-2.5 rounded-xl border border-emerald-100 text-emerald-600 hover:bg-emerald-50 transition-colors cursor-pointer"><BarChart2 className="w-4 h-4 mx-auto" /></button>
-                              )}
-                              {userRole !== 'student' && perms.canEdit && (
-                                <button onClick={() => { setEditingExam(exam); setOpenActionMenuId(null); }} title="Sửa đề thi" className="p-2.5 rounded-xl border border-green-100 text-green-600 hover:bg-green-50 transition-colors cursor-pointer"><Edit3 className="w-4 h-4 mx-auto" /></button>
-                              )}
-                              {userRole !== 'student' && perms.canDelete && (
-                                <button onClick={() => { setDeletingExam(exam); setOpenActionMenuId(null); }} title="Xóa" className="p-2.5 rounded-xl border border-rose-100 text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"><Trash2 className="w-4 h-4 mx-auto" /></button>
-                              )}
-                            </div>
+                                  title="Theo dõi bài kiểm tra" className="p-2.5 rounded-xl border border-blue-100 text-blue-600 hover:bg-blue-50 transition-colors"><Eye className="w-4 h-4 mx-auto" /></button>
+                                {userRole !== 'student' && (
+                                  <>
+                                    <button onClick={() => { setStatsExam(exam); setStatsTab('performance'); setOpenActionMenuId(null); }} title="Thống kê" className="p-2.5 rounded-xl border border-emerald-100 text-emerald-600 hover:bg-emerald-50 transition-colors"><BarChart2 className="w-4 h-4 mx-auto" /></button>
+                                    <button onClick={() => { setEditingExam(exam); setOpenActionMenuId(null); }} title="Sửa đề thi" className="p-2.5 rounded-xl border border-green-100 text-green-600 hover:bg-green-50 transition-colors cursor-pointer"><Edit3 className="w-4 h-4 mx-auto" /></button>
+                                    <button onClick={() => { setDeletingExam(exam); setOpenActionMenuId(null); }} title="Xóa" className="p-2.5 rounded-xl border border-rose-100 text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"><Trash2 className="w-4 h-4 mx-auto" /></button>
+                                  </>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="absolute right-12 top-6 z-20 bg-white border border-slate-200 shadow-xl rounded-2xl p-2 flex items-center gap-2 min-w-[100px]">
+                                <button 
+                                  onClick={() => { handleOpenTracking(exam); setOpenActionMenuId(null); }} 
+                                  title="Xem chi tiết & Theo dõi bài kiểm tra" 
+                                  className="p-2.5 rounded-xl border border-blue-100 text-blue-600 hover:bg-blue-50 transition-colors cursor-pointer"
+                                >
+                                  <Eye className="w-4 h-4 mx-auto" />
+                                </button>
+                                <button 
+                                  onClick={() => { setStatsExam(exam); setStatsTab('performance'); setOpenActionMenuId(null); }} 
+                                  title="Theo dõi kết quả / Thống kê" 
+                                  className="p-2.5 rounded-xl border border-emerald-100 text-emerald-600 hover:bg-emerald-50 transition-colors cursor-pointer"
+                                >
+                                  <BarChart2 className="w-4 h-4 mx-auto" />
+                                </button>
+                              </div>
+                            )}
                           </>
                         )}
                       </td>
@@ -3743,28 +3702,7 @@ return (
       )}
 
       {/* VIEWER: Exam Paper View & Print */}
-      {activeTab === 'viewer' && selectedExam && !getContentPermissions(selectedExam, accessContext).canView && (
-        <div className="bg-white rounded-2xl p-12 border border-rose-200 shadow-sm text-center max-w-xl mx-auto space-y-4">
-          <div className="w-12 h-12 rounded-2xl bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center mx-auto font-black text-lg">
-            !
-          </div>
-          <h3 className="text-lg font-extrabold text-slate-900">Bạn không có quyền xem nội dung này</h3>
-          <p className="text-xs text-slate-500">
-            Đề kiểm tra này thuộc sở hữu của giáo viên khác và chưa được chia sẻ cho bạn hoặc tổ chuyên môn của bạn.
-          </p>
-          <button
-            onClick={() => {
-              setSelectedExam(null);
-              setActiveTab('list');
-            }}
-            className="px-5 py-2.5 rounded-xl bg-slate-900 text-white text-xs font-bold hover:bg-slate-800 cursor-pointer"
-          >
-            Quay về danh sách
-          </button>
-        </div>
-      )}
-
-      {activeTab === 'viewer' && selectedExam && getContentPermissions(selectedExam, accessContext).canView && (
+      {activeTab === 'viewer' && selectedExam && (
         <div className="bg-white rounded-2xl p-8 border border-slate-200 shadow-md space-y-6 max-w-4xl mx-auto print:shadow-none print:p-0 print:border-none">
           <div className="flex items-center justify-between border-b border-slate-200 pb-4 print:hidden">
             <button
@@ -4542,27 +4480,9 @@ return (
           title: sharingExam.title,
           grade: sharingExam.grade,
           subject: sharingExam.subject,
-          sharedWithTeachers: sharingExam.sharedWithTeachers,
-          sharedWithGroups: sharingExam.sharedWithGroups,
-          sharePermission: sharingExam.sharePermission,
-          allowDeleteByShared: sharingExam.allowDeleteByShared
         } : null}
         onConfirmShare={(payload) => {
-          if (sharingExam) {
-            onSaveExam({
-              ...sharingExam,
-              sharedWithTeachers: payload.sharedWithTeachers,
-              sharedWithGroups: payload.sharedWithGroups,
-              sharePermission: payload.sharePermission,
-              allowDeleteByShared: payload.allowDeleteByShared
-            });
-          }
-          setToast({
-            message: payload.revoked
-              ? `Đã thu hồi chia sẻ đề kiểm tra "${payload.title}"!`
-              : `Đã chia sẻ thành công đề kiểm tra "${payload.title}"!`,
-            type: 'success'
-          });
+          alert("Đã chia sẻ thành công đề kiểm tra: " + payload.title);
           setSharingExam(null);
         }}
       />
@@ -5908,8 +5828,7 @@ return (
         onClose={() => setDeletingExam(null)}
         onConfirm={() => {
           if (deletingExam) {
-            const perms = getContentPermissions(deletingExam, accessContext);
-            if (!perms.canDelete) {
+            if (!isExamOwner(deletingExam)) {
               setToast({ message: 'Bạn không có quyền xóa nội dung này!', type: 'error' });
               setDeletingExam(null);
               return;
@@ -6419,14 +6338,6 @@ return (
         </div>
       )}
 
-
-      <DateMigrationModal
-        isOpen={isDateMigrationModalOpen}
-        onClose={() => setIsDateMigrationModalOpen(false)}
-        onComplete={() => {
-          handleManualRefresh();
-        }}
-      />
 
       {toast && (
         <div className={`fixed bottom-6 right-6 z-[100] text-white px-5 py-3.5 rounded-2xl shadow-2xl border flex items-center gap-3 animate-slide-up backdrop-blur-md bg-slate-950/95 ${toast.type === 'error' ? 'border-rose-500/50 text-rose-50' : 'border-emerald-500/50 text-emerald-50'}`}>

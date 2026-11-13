@@ -70,15 +70,25 @@ export function formatTotalScore(score: number | string | null | undefined, fall
   return String(Math.round(num)); // Displays nearest integer e.g. 6.5 -> "7", 6.4 -> "6"
 }
 
-import { formatDateTimeVN } from './dateUtils';
-
 export function getCurrentSubmissionTimestamp(): string {
   return new Date().toISOString();
 }
 
-export function formatSubmissionDateTime(dateStr?: any): string {
+export function formatSubmissionDateTime(dateStr?: string): string {
   if (!dateStr) return '';
-  return formatDateTimeVN(dateStr, typeof dateStr === 'string' ? dateStr : '');
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    return d.toLocaleString('vi-VN', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return dateStr;
+  }
 }
 
 export function isSubjectWithScore(subjectName?: string): boolean {
