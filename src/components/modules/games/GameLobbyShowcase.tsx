@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
-import { Sparkles, Loader2, Wand2, BookOpen, CheckCircle2, Rocket, BookmarkPlus, ChevronDown } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Sparkles, Loader2, Wand2, BookOpen, CheckCircle2, Rocket, BookmarkPlus, ChevronDown, Users } from 'lucide-react';
 import { GameItem, GameType, UserRole } from '../../../types';
 import { generateExamQuestionsAI } from '../../../services/geminiService';
 import { GRADES } from '../../../lib/constants';
+import { useFirestoreClassesByGrade, extractGradeDigit } from '../../../services/classStorageService';
 import {
   GoldenBellIllustration,
   FlashcardsIllustration,
@@ -77,20 +78,50 @@ const GAME_MODES: Array<{
 export const GameLobbyShowcase: React.FC<GameLobbyShowcaseProps> = ({
   userRole,
   defaultGrade = 'Khối 3',
-  defaultClassInfo = 'Lớp 3A',
+  defaultClassInfo,
   selectedMode,
   onSelectMode,
   onLaunchAiGame,
   topicInputRef,
   sectionRef,
 }) => {
+  const initialGrade = GRADES.includes(defaultGrade) ? defaultGrade : 'Khối 3';
   const [selectedSubjectId, setSelectedSubjectId] = useState<string>('toan');
-  const [grade, setGrade] = useState<string>(GRADES.includes(defaultGrade) ? defaultGrade : 'Khối 3');
+  const [grade, setGrade] = useState<string>(initialGrade);
+  const [selectedClass, setSelectedClass] = useState<string>(`Tất cả lớp ${initialGrade}`);
   const [topic, setTopic] = useState<string>('');
   const [questionCount, setQuestionCount] = useState<number>(5);
   const [saveAsRoom, setSaveAsRoom] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const { gradeClasses, loading: classesLoading } = useFirestoreClassesByGrade(grade);
+
+  // Đồng bộ lựa chọn lớp khi danh sách lớp từ Firestore thay đổi hoặc khi đổi khối
+  useEffect(() => {
+    const allGradeLabel = `Tất cả lớp ${grade}`;
+    if (gradeClasses.length === 0) {
+      setSelectedClass(allGradeLabel);
+      return;
+    }
+
+    const isStillValid =
+      selectedClass === allGradeLabel ||
+      gradeClasses.some((cls) => cls.name === selectedClass);
+
+    if (!isStillValid) {
+      // Nếu có defaultClassInfo khớp đúng khối & tồn tại trong Firestore thì ưu tiên giữ nếu phù hợp, mặc định là Tất cả lớp Khối [X]
+      if (
+        defaultClassInfo &&
+        extractGradeDigit(defaultClassInfo) === extractGradeDigit(grade) &&
+        gradeClasses.some((cls) => cls.name === defaultClassInfo)
+      ) {
+        setSelectedClass(defaultClassInfo);
+      } else {
+        setSelectedClass(allGradeLabel);
+      }
+    }
+  }, [grade, gradeClasses, selectedClass, defaultClassInfo]);
 
   const activeSubject =
     PRIMARY_SUBJECTS_CATALOG.find((item) => item.id === selectedSubjectId) ||
@@ -113,6 +144,7 @@ export const GameLobbyShowcase: React.FC<GameLobbyShowcaseProps> = ({
       setTopic('');
     }
     setGrade(newGrade);
+    setSelectedClass(`Tất cả lớp ${newGrade}`);
     setErrorMsg(null);
   };
 
@@ -188,14 +220,21 @@ export const GameLobbyShowcase: React.FC<GameLobbyShowcaseProps> = ({
           ? 'Flashcards'
           : 'Đua Thuyền';
 
+      const targetClassValue =
+        gradeClasses.length > 0 && gradeClasses.some((cls) => cls.name === selectedClass)
+          ? selectedClass
+          : `Tất cả lớp ${grade}`;
+
       const newGame: GameItem = {
         id: `ai-game-${Date.now()}`,
         title: `${modeTitlePrefix}: ${cleanTopic}`,
         type: selectedMode,
         subject: activeSubject.aiSubjectName,
         grade,
-        classInfo: defaultClassInfo,
-        description: `Bộ ${formattedQuestions.length} câu hỏi AI • Môn ${activeSubject.label} (${grade})`,
+        classInfo: targetClassValue,
+        khoi: grade,
+        lop: targetClassValue,
+        description: `Bộ ${formattedQuestions.length} câu hỏi AI • Môn ${activeSubject.label} (${grade} • ${targetClassValue})`,
         questions: formattedQuestions,
         status: 'open',
         isTimeLimited: selectedMode !== 'flashcards',
@@ -333,6 +372,43 @@ export const GameLobbyShowcase: React.FC<GameLobbyShowcaseProps> = ({
               <ChevronDown className="w-3.5 h-3.5 text-indigo-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
             </label>
 
+            {/* Ô chọn Lớp học thật từ Firestore lọc theo Khối đang chọn */}
+            {classesLoading ? (
+              <div
+                className="flex items-center gap-1.5 bg-slate-50 border-2 border-slate-200 rounded-2xl px-3.5 py-2 text-xs sm:text-sm font-bold text-slate-400 shadow-2xs"
+                aria-live="polite"
+              >
+                <Users className="w-4 h-4 text-slate-400 shrink-0" />
+                <span>Đang tải lớp...</span>
+              </div>
+            ) : gradeClasses.length === 0 ? (
+              <div
+                className="flex items-center gap-1.5 bg-slate-50 border-2 border-slate-200 rounded-2xl px-3.5 py-2 text-xs sm:text-sm font-bold text-slate-400 shadow-2xs"
+                title={`Chưa có lớp học nào thuộc ${grade} trong cơ sở dữ liệu`}
+              >
+                <Users className="w-4 h-4 text-slate-400 shrink-0" />
+                <span>Chưa có lớp</span>
+              </div>
+            ) : (
+              <label className="relative flex items-center gap-1.5 bg-white border-2 border-slate-200 hover:border-indigo-300 rounded-2xl px-3.5 py-2 text-xs sm:text-sm font-extrabold text-slate-700 shadow-2xs transition-colors cursor-pointer">
+                <Users className="w-4 h-4 text-indigo-600 shrink-0" />
+                <select
+                  value={selectedClass}
+                  onChange={(e) => setSelectedClass(e.target.value)}
+                  className="bg-transparent appearance-none pr-5 outline-none cursor-pointer font-extrabold text-indigo-700"
+                  aria-label="Chọn lớp học"
+                >
+                  <option value={`Tất cả lớp ${grade}`}>Tất cả lớp {grade}</option>
+                  {gradeClasses.map((cls) => (
+                    <option key={cls.id} value={cls.name}>
+                      {cls.name}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="w-3.5 h-3.5 text-indigo-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              </label>
+            )}
+
             <label className="relative flex items-center gap-1.5 bg-white border-2 border-slate-200 hover:border-indigo-300 rounded-2xl px-3.5 py-2 text-xs sm:text-sm font-extrabold text-slate-700 shadow-2xs transition-colors cursor-pointer">
               <span>🔢</span>
               <select
@@ -358,6 +434,12 @@ export const GameLobbyShowcase: React.FC<GameLobbyShowcaseProps> = ({
               <span>{activeSubject.label}</span>
               <span className="text-indigo-400">•</span>
               <span>{grade}</span>
+              {gradeClasses.length > 0 && (
+                <>
+                  <span className="text-indigo-400">•</span>
+                  <span>{selectedClass}</span>
+                </>
+              )}
             </span>
             <span className="text-xs font-bold text-slate-500">Gợi ý bài học nhanh:</span>
           </div>
@@ -431,7 +513,10 @@ export const GameLobbyShowcase: React.FC<GameLobbyShowcaseProps> = ({
                 className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
               />
               <BookmarkPlus className="w-3.5 h-3.5 text-indigo-600" />
-              <span>Đồng thời lưu bộ câu hỏi này vào Danh sách Phòng Thi Đấu cho lớp</span>
+              <span>
+                Đồng thời lưu bộ câu hỏi này vào Danh sách Phòng Thi Đấu cho lớp
+                {gradeClasses.length > 0 ? ` (${selectedClass})` : ` (${grade})`}
+              </span>
             </label>
           </div>
         )}

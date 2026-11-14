@@ -1,5 +1,5 @@
 import { collection, onSnapshot, getDocs } from 'firebase/firestore';
-import { db } from '../firebaseConfig';
+import { db, auth } from '../firebaseConfig';
 import { useState, useEffect, useMemo } from 'react';
 // import { safeStorage } from '../utils/safeStorage';
 
@@ -315,3 +315,164 @@ export function useClassesList() {
     getClassesForGrade
   };
 }
+
+enum FirestoreClassOperationType {
+  LIST = 'list',
+}
+
+function logFirestoreClassesError(error: unknown, operationType: FirestoreClassOperationType, path: string) {
+  const errInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth?.currentUser?.uid ?? null,
+      email: auth?.currentUser?.email ?? null,
+      emailVerified: auth?.currentUser?.emailVerified ?? null,
+      isAnonymous: auth?.currentUser?.isAnonymous ?? null,
+      tenantId: auth?.currentUser?.tenantId ?? null,
+      providerInfo:
+        auth?.currentUser?.providerData?.map((provider) => ({
+          providerId: provider.providerId,
+          email: provider.email,
+        })) || [],
+    },
+    operationType,
+    path,
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  return errInfo;
+}
+
+/**
+ * Truy vấn trực tiếp danh sách lớp học thật từ collection 'classes' trên Firestore (KHÔNG chèn dữ liệu giả fallback).
+ * Nếu collection rỗng hoặc một khối chưa có lớp nào, trả về mảng rỗng cho khối đó.
+ */
+export function subscribeFirestoreClassesStrict(
+  onData: (classes: SchoolClassItem[]) => void,
+  onError?: (errMessage: string) => void
+): () => void {
+  if (!db) {
+    onData([]);
+    return () => {};
+  }
+
+  try {
+    const unsub = onSnapshot(
+      collection(db, 'classes'),
+      (snapshot) => {
+        if (snapshot.empty) {
+          onData([]);
+          return;
+        }
+
+        const classMap = new Map<string, SchoolClassItem>();
+
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          const rawId = (docSnap.id || data.id || data.classId || '').trim();
+          const rawName = (data.name || data.className || rawId || '').trim();
+          if (!rawName) return;
+
+          const name = formatClassName(rawName);
+          const rawGrade = (data.grade || '').trim();
+          const digit = extractGradeDigit(rawGrade) || extractGradeDigit(name);
+          const grade = rawGrade || (digit ? `Khối ${digit}` : '');
+
+          const cleanSuffix = name.replace(/^(lớp|LỚP|Lớp)\s+/i, '').trim().toUpperCase();
+          const normalizedKey = cleanSuffix || rawId.toUpperCase();
+          if (!normalizedKey) return;
+
+          const item: SchoolClassItem = {
+            id: normalizedKey,
+            name: `Lớp ${normalizedKey}`,
+            grade,
+            room: data.room || '',
+            homeroomTeacher: data.homeroomTeacher || '',
+            subjects: Array.isArray(data.subjects) && data.subjects.length > 0
+              ? data.subjects
+              : (STANDARD_GRADE_SUBJECTS[grade] || STANDARD_GRADE_SUBJECTS['Khối 3']).map((s) => ({
+                  isVisible: true,
+                  subjectName: s,
+                })),
+          };
+
+          if (classMap.has(normalizedKey)) {
+            const existing = classMap.get(normalizedKey)!;
+            classMap.set(normalizedKey, {
+              ...existing,
+              grade: existing.grade || item.grade,
+              room: existing.room || item.room,
+              homeroomTeacher: existing.homeroomTeacher || item.homeroomTeacher,
+            });
+          } else {
+            classMap.set(normalizedKey, item);
+          }
+        });
+
+        const list = Array.from(classMap.values()).sort((a, b) =>
+          a.name.localeCompare(b.name, 'vi', { numeric: true })
+        );
+        onData(list);
+      },
+      (err) => {
+        logFirestoreClassesError(err, FirestoreClassOperationType.LIST, 'classes');
+        if (onError) {
+          onError(err instanceof Error ? err.message : String(err));
+        }
+        onData([]);
+      }
+    );
+    return unsub;
+  } catch (err) {
+    logFirestoreClassesError(err, FirestoreClassOperationType.LIST, 'classes');
+    if (onError) {
+      onError(err instanceof Error ? err.message : String(err));
+    }
+    onData([]);
+    return () => {};
+  }
+}
+
+/**
+ * React Hook lấy danh sách lớp học thật từ Firestore 'classes' và tự động lọc theo Khối đang chọn.
+ */
+export function useFirestoreClassesByGrade(grade: string) {
+  const [allClasses, setAllClasses] = useState<SchoolClassItem[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    const unsub = subscribeFirestoreClassesStrict(
+      (fetched) => {
+        setAllClasses(fetched);
+        setError(null);
+        setLoading(false);
+      },
+      (errMsg) => {
+        setError(errMsg);
+        setLoading(false);
+      }
+    );
+
+    return () => {
+      unsub();
+    };
+  }, []);
+
+  const gradeClasses = useMemo(() => {
+    const targetDigit = extractGradeDigit(grade);
+    if (!targetDigit) return allClasses;
+    return allClasses.filter((cls) => {
+      const clsDigit = extractGradeDigit(cls.grade) || extractGradeDigit(cls.name);
+      return clsDigit === targetDigit;
+    });
+  }, [allClasses, grade]);
+
+  return {
+    allClasses,
+    gradeClasses,
+    loading,
+    error,
+  };
+}
+

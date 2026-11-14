@@ -1,5 +1,5 @@
 import { SUBJECTS, GRADES, CLASSES_BY_GRADE, ALL_CLASSES, getCorrectOrderingSequence } from '../../lib/constants';
-import { useClassesList } from '../../services/classStorageService';
+import { useClassesList, extractGradeDigit } from '../../services/classStorageService';
 import { getStudentAvatarSource, DEFAULT_ANIMAL_AVATAR } from '../common/AnimalAvatars';
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import confetti from 'canvas-confetti';
@@ -41,7 +41,8 @@ import {
   ArrowRight,
   Share2,
   AlertCircle,
-  ExternalLink
+  ExternalLink,
+  QrCode
 } from 'lucide-react';
 import { GameItem, GameType, UserRole, QuizziGameItem } from '../../types';
 import { getStudentGameProfile, resolveAuthenticStudentId } from '../../services/studentGameStoreService';
@@ -56,6 +57,8 @@ import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { StatsSummaryRow } from '../common/StatsSummaryRow';
 import { awardArenaReward, calculateArenaReward, hasClaimedReward } from '../../config/rewardConfig';
 import { QuizziGameModal } from './QuizziGameModal';
+import { GameExportModal } from './GameExportModal';
+import { ExportableGame } from '../../utils/gameExportUtils';
 import { PaginationControl } from '../common/PaginationControl';
 import {
   getLocalCachedQuizziGames,
@@ -285,6 +288,14 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
   const [deletedCards, setDeletedCards] = useState<(number | string)[]>([]);
   const [gameToDelete, setGameToDelete] = useState<{ id: number | string; title: string } | null>(null);
   const [sharingGame, setSharingGame] = useState<(any & { _shareCollection?: 'games' | 'quizzi_games' }) | null>(null);
+  const [gameExportModalState, setGameExportModalState] = useState<{
+    isOpen: boolean;
+    games: ExportableGame[];
+    titleContext?: string;
+  }>({
+    isOpen: false,
+    games: [],
+  });
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   
   // Filter States
@@ -385,6 +396,20 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
     if ((userRole as string) === 'student') return rawQuizzi;
     return filterAccessibleItems(rawQuizzi, accessContext, resourceTab);
   }, [normalizedQuizziGames, deletedCards, userRole, accessContext, resourceTab]);
+
+  const filteredTeacherRooms = useMemo(() => {
+    return accessibleCustomRooms.filter(room => {
+      const roomGrade = room.khoi || room.grade;
+      const roomClass = room.lop || room.classInfo;
+      if (filterGrade !== 'Tất cả các khối' && filterGrade !== 'Tất cả' && roomGrade && roomGrade !== filterGrade) return false;
+      if (filterClass !== 'Tất cả các lớp' && filterClass !== 'Tất cả' && roomClass) {
+        const isAllGradeClasses = roomClass.toLowerCase().includes('tất cả') && (!roomGrade || roomGrade === filterGrade || extractGradeDigit(roomGrade) === extractGradeDigit(filterClass));
+        if (!isAllGradeClasses && roomClass !== filterClass) return false;
+      }
+      if (filterSubject !== 'Tất cả các môn' && filterSubject !== 'Tất cả' && room.subject && room.subject.toLowerCase() !== filterSubject.toLowerCase()) return false;
+      return true;
+    });
+  }, [accessibleCustomRooms, filterGrade, filterClass, filterSubject]);
 
   const filteredGames = accessibleQuizziGames.filter(g => {
     if (filterGrade !== 'Tất cả các khối' && g.grade !== filterGrade) return false;
@@ -1069,7 +1094,11 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
   const handleLaunchAiGame = (newGame: GameItem, saveAsRoom?: boolean) => {
     if (saveAsRoom && onUpdateGame) {
       onUpdateGame(newGame);
-      showToast(`Đã lưu phòng thi đấu "${newGame.title}" vào danh sách!`, 'success');
+      const classLabel = newGame.lop || newGame.classInfo || newGame.khoi || newGame.grade || '';
+      showToast(
+        `Đã lưu phòng thi đấu "${newGame.title}"${classLabel ? ` (${classLabel})` : ''} vào danh sách!`,
+        'success'
+      );
     }
     handleStartGame(newGame);
   };
@@ -1990,12 +2019,28 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                     </div>
                   </div>
                   {(userRole as string) !== 'student' && (
-                    <button 
-                      onClick={onOpenUseQuestionBankModal}
-                      className="flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-600 border border-emerald-200 rounded-xl text-xs font-bold hover:bg-emerald-100 transition-colors shrink-0 cursor-pointer"
-                    >
-                      <Sparkles className="w-3.5 h-3.5" /> Tạo trò chơi từ ngân hàng câu hỏi
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setGameExportModalState({
+                            isOpen: true,
+                            games: filteredTeacherRooms,
+                            titleContext: 'Danh sách Phòng thi đấu đang lọc',
+                          })
+                        }
+                        className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold hover:bg-indigo-100 transition-colors shrink-0 cursor-pointer"
+                      >
+                        <QrCode className="w-3.5 h-3.5" /> Xuất danh mục &amp; Mã QR
+                      </button>
+
+                      <button 
+                        onClick={onOpenUseQuestionBankModal}
+                        className="flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-600 border border-emerald-200 rounded-xl text-xs font-bold hover:bg-emerald-100 transition-colors shrink-0 cursor-pointer"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" /> + Tạo trò chơi từ ngân hàng câu hỏi
+                      </button>
+                    </div>
                   )}
                 </div>
                 
@@ -2042,12 +2087,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
               
               <div className="flex-1 overflow-auto">
                 {(() => {
-                  const filteredRooms = accessibleCustomRooms.filter(room => {
-                    if (filterGrade !== 'Tất cả các khối' && filterGrade !== 'Tất cả' && room.grade && room.grade !== filterGrade) return false;
-                    if (filterClass !== 'Tất cả các lớp' && filterClass !== 'Tất cả' && room.classInfo && room.classInfo !== filterClass) return false;
-                    if (filterSubject !== 'Tất cả các môn' && filterSubject !== 'Tất cả' && room.subject && room.subject.toLowerCase() !== filterSubject.toLowerCase()) return false;
-                    return true;
-                  });
+                  const filteredRooms = filteredTeacherRooms;
 
                   if (filteredRooms.length === 0) {
                     return (
@@ -2089,7 +2129,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
 
                           <div className="flex flex-wrap items-center gap-3 sm:gap-4 shrink-0 w-full sm:w-auto justify-between sm:justify-end">
                             <span className="px-2.5 py-1 bg-amber-100 text-amber-800 rounded-lg text-[10px] font-black uppercase tracking-wider">
-                              {room.classInfo || room.grade || 'Lớp 3A'}
+                              {room.lop || room.classInfo || room.khoi || room.grade || 'Lớp 3A'}
                             </span>
 
                             <span className="text-xs font-bold text-slate-600 max-w-[200px] truncate hidden md:inline">
@@ -2183,6 +2223,22 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                                     </button>
                                   )}
 
+                                  {/* Nút biểu tượng Mã QR / Tải phiếu của riêng phòng thi đấu */}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setGameExportModalState({
+                                        isOpen: true,
+                                        games: [room],
+                                        titleContext: `Phiếu phòng thi đấu: ${room.title}`,
+                                      });
+                                    }}
+                                    title="Mã QR / Tải phiếu"
+                                    className="w-8 h-8 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-600 flex items-center justify-center transition-colors cursor-pointer"
+                                  >
+                                    <QrCode className="w-3.5 h-3.5" />
+                                  </button>
+
                                   {/* 3. Nút chiếc cúp (🏆) - xem bảng xếp hạng vinh danh / theo dõi */}
                                   <button
                                     onClick={() => {
@@ -2219,12 +2275,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
               </div>
 
               {(() => {
-                const filteredRooms = accessibleCustomRooms.filter(room => {
-                  if (filterGrade !== 'Tất cả các khối' && filterGrade !== 'Tất cả' && room.grade && room.grade !== filterGrade) return false;
-                  if (filterClass !== 'Tất cả các lớp' && filterClass !== 'Tất cả' && room.classInfo && room.classInfo !== filterClass) return false;
-                  if (filterSubject !== 'Tất cả các môn' && filterSubject !== 'Tất cả' && room.subject && room.subject.toLowerCase() !== filterSubject.toLowerCase()) return false;
-                  return true;
-                });
+                const filteredRooms = filteredTeacherRooms;
                 if (filteredRooms.length === 0) return null;
                 return (
                   <div className="p-4 bg-white border-t border-slate-100">
@@ -2255,6 +2306,22 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    {(userRole as string) !== 'student' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const visibleQuizziGames = filteredGames.filter(game => !deletedCards.includes(game.id));
+                          setGameExportModalState({
+                            isOpen: true,
+                            games: visibleQuizziGames,
+                            titleContext: 'Danh sách Trò chơi Quizzi đang lọc',
+                          });
+                        }}
+                        className="flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-bold hover:bg-emerald-100 transition-colors shrink-0 cursor-pointer"
+                      >
+                        <QrCode className="w-3.5 h-3.5" /> Xuất danh mục &amp; Mã QR
+                      </button>
+                    )}
                     <button 
                       onClick={() => {
                         setEditingQuizziGame(null);
@@ -2344,48 +2411,62 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                     const qPerms = getContentPermissions(game, accessContext);
                     return (
                       <div key={game.id} className={`bg-white border border-${game.color}-100 rounded-xl p-4 shadow-sm hover:shadow transition-shadow relative flex flex-col h-full`}>
-                        {(qPerms.canShare || qPerms.canEdit || qPerms.canDelete) && (
-                          <div className="absolute top-3.5 right-3.5 flex items-center gap-1">
-                            {qPerms.canShare && (
-                              <button
-                                onClick={() => {
-                                  setSharingGame({
-                                    ...game,
-                                    id: String(game.id),
-                                    _shareCollection: 'quizzi_games'
-                                  });
-                                }}
-                                title="Chia sẻ trò chơi"
-                                className="p-1.5 text-blue-500 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
-                              >
-                                <Share2 className="w-4 h-4" />
-                              </button>
-                            )}
-                            {qPerms.canEdit && (
-                              <button 
-                                onClick={() => {
-                                  setEditingQuizziGame(game);
-                                  setShowCreateQuizziModal(true);
-                                }} 
-                                title="Chỉnh sửa trò chơi"
-                                className="p-1.5 text-amber-500 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition-colors cursor-pointer"
-                              >
-                                <Pencil className="w-4 h-4" />
-                              </button>
-                            )}
-                            {qPerms.canDelete && (
-                              <button 
-                                onClick={() => setGameToDelete({ id: game.id, title: game.title })} 
-                                title="Xóa trò chơi"
-                                className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            )}
-                          </div>
-                        )}
+                        <div className="absolute top-3.5 right-3.5 flex items-center gap-1">
+                          {(userRole as string) !== 'student' && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setGameExportModalState({
+                                  isOpen: true,
+                                  games: [game],
+                                  titleContext: `Phiếu trò chơi Quizzi: ${game.title}`,
+                                });
+                              }}
+                              title="Mã QR / Tải phiếu"
+                              className="p-1.5 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors cursor-pointer"
+                            >
+                              <QrCode className="w-4 h-4" />
+                            </button>
+                          )}
+                          {qPerms.canShare && (
+                            <button
+                              onClick={() => {
+                                setSharingGame({
+                                  ...game,
+                                  id: String(game.id),
+                                  _shareCollection: 'quizzi_games'
+                                });
+                              }}
+                              title="Chia sẻ trò chơi"
+                              className="p-1.5 text-blue-500 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
+                            >
+                              <Share2 className="w-4 h-4" />
+                            </button>
+                          )}
+                          {qPerms.canEdit && (
+                            <button 
+                              onClick={() => {
+                                setEditingQuizziGame(game);
+                                setShowCreateQuizziModal(true);
+                              }} 
+                              title="Chỉnh sửa trò chơi"
+                              className="p-1.5 text-amber-500 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition-colors cursor-pointer"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                          )}
+                          {qPerms.canDelete && (
+                            <button 
+                              onClick={() => setGameToDelete({ id: game.id, title: game.title })} 
+                              title="Xóa trò chơi"
+                              className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
                         
-                        <div className="flex flex-wrap items-center gap-1.5 mb-3 pr-20">
+                        <div className="flex flex-wrap items-center gap-1.5 mb-3 pr-28">
                           <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 bg-${game.color}-100 text-${game.color}-700 rounded-full text-[10px] font-black uppercase w-fit`}>
                             <IconComponent className="w-3 h-3" /> {game.subject}
                           </div>
@@ -2669,6 +2750,14 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
         }}
         onSave={handleSaveQuizziGames}
         initialData={editingQuizziGame}
+      />
+
+      {/* Game Catalog & QR Export Modal (Word .docx & QR Images) */}
+      <GameExportModal
+        isOpen={gameExportModalState.isOpen}
+        onClose={() => setGameExportModalState({ isOpen: false, games: [] })}
+        games={gameExportModalState.games}
+        titleContext={gameExportModalState.titleContext}
       />
 
 

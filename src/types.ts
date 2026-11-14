@@ -288,6 +288,8 @@ export interface GameItem extends ContentOwnershipMetadata {
   playersCount?: number;
   maxPlayers?: number;
   classInfo?: string;
+  khoi?: string;
+  lop?: string;
   status?: 'open' | 'closed';
   timePerQuestion?: string;
   isTimeLimited?: boolean;
