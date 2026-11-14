@@ -107,8 +107,6 @@ import {
 import {
   generateRuleBasedExamComment
 } from '../../services/studentCommentAiService';
-import { DateMigrationModal } from '../modals/DateMigrationModal';
-import { ensureReportedGrade5TechExamFixed } from '../../services/dateMigrationService';
 
 export interface TrackingSubmissionStudent {
   id: string;
@@ -210,11 +208,6 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const [deletingExam, setDeletingExam] = useState<ExamPaper | null>(null);
   const [isManualExamModalOpen, setIsManualExamModalOpen] = useState(false);
   const [isBankExamModalOpen, setIsBankExamModalOpen] = useState(false);
-  const [isDateMigrationModalOpen, setIsDateMigrationModalOpen] = useState(false);
-
-  useEffect(() => {
-    ensureReportedGrade5TechExamFixed().catch(() => {});
-  }, []);
 
 
   // Bulk cleanup state
@@ -3198,15 +3191,6 @@ return (
               </span>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
-              <button
-                type="button"
-                onClick={() => setIsDateMigrationModalOpen(true)}
-                className="px-2.5 py-1.5 rounded-xl text-[11px] font-bold bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
-                title="Rà soát & chuẩn hóa các trường ngày giờ sang định dạng ISO 8601 UTC (hiển thị DD/MM/YYYY HH:mm 24h)"
-              >
-                <Calendar className="w-3.5 h-3.5 text-amber-700" />
-                <span>Chuẩn hóa Ngày Giờ</span>
-              </button>
               <button
                 type="button"
                 onClick={() => setShowDebugTable(prev => !prev)}
@@ -6418,15 +6402,6 @@ return (
           </div>
         </div>
       )}
-
-
-      <DateMigrationModal
-        isOpen={isDateMigrationModalOpen}
-        onClose={() => setIsDateMigrationModalOpen(false)}
-        onComplete={() => {
-          handleManualRefresh();
-        }}
-      />
 
       {toast && (
         <div className={`fixed bottom-6 right-6 z-[100] text-white px-5 py-3.5 rounded-2xl shadow-2xl border flex items-center gap-3 animate-slide-up backdrop-blur-md bg-slate-950/95 ${toast.type === 'error' ? 'border-rose-500/50 text-rose-50' : 'border-emerald-500/50 text-emerald-50'}`}>

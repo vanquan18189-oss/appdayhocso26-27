@@ -7,7 +7,6 @@ import { waitForWriteConfirmation, updateCollectionCacheStatus } from './firesto
 import { normalizeClassKey } from './studentStorageService';
 import { logSystemActivity } from './activityService';
 import { toISOStringUTC } from '../utils/dateUtils';
-import { ensureReportedGrade5TechExamFixed } from './dateMigrationService';
 import {
   attachOwnershipOnCreate,
   getCurrentAccessContext,
@@ -17,7 +16,6 @@ import {
 } from './permissionService';
 
 const EXAMS_CACHE_KEY = 'eduplay_cached_exams';
-let hasCheckedReportedExamFix = false;
 
 /**
  * Kiểm tra xem một đề thi có phải là đề kiểm tra chính thức hợp lệ hay không.
@@ -269,11 +267,6 @@ export async function saveExamToFirestore(examInput: ExamPaper): Promise<void> {
 export async function getExamsFromFirestore(forceRefresh = false): Promise<ExamPaper[]> {
   try {
     if (!db) return getLocalCachedExams();
-
-    if (!hasCheckedReportedExamFix) {
-      hasCheckedReportedExamFix = true;
-      await ensureReportedGrade5TechExamFixed().catch(() => {});
-    }
 
     const fetched = await queryAccessibleCollection<ExamPaper>('exams', {
       forceRefresh,

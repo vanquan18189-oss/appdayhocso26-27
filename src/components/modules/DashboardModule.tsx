@@ -63,7 +63,6 @@ import {
   filterAccessibleItems,
   canTeacherAccessClass
 } from '../../services/permissionService';
-import { OwnershipMigrationModal } from '../modals/OwnershipMigrationModal';
 
 export interface DashboardModuleProps {
   onNavigate?: (module: ActiveModule) => void;
@@ -113,7 +112,6 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
   const schoolYear = selectedAcademicYear || '2026-2027';
   const [fetchedLogs, setFetchedLogs] = useState<ActivityLog[]>([]);
   const [isRefreshingLogs, setIsRefreshingLogs] = useState(false);
-  const [isOwnershipModalOpen, setIsOwnershipModalOpen] = useState(false);
 
   const accessContext = useMemo(() => getCurrentAccessContext(userRole), [userRole]);
 
@@ -1489,16 +1487,6 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
                 <span>Tạo Câu Hỏi Với AI</span>
               </button>
 
-              {accessContext.isAdmin && (
-                <button
-                  onClick={() => setIsOwnershipModalOpen(true)}
-                  className="px-5 py-3.5 bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-sm rounded-xl transition-all shadow-lg hover:shadow-xl flex items-center justify-center gap-2 cursor-pointer transform hover:-translate-y-0.5 duration-200 shrink-0 border border-emerald-300/40"
-                >
-                  <ShieldCheck className="w-5 h-5 text-white" />
-                  <span>Phân quyền & Gán chủ dữ liệu cũ (RBAC)</span>
-                </button>
-              )}
-
               <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs text-indigo-100 font-medium pt-1 sm:pt-0">
                 <span className="text-indigo-200/80 font-normal">Khám phá nhanh:</span>
                 <button
@@ -1988,13 +1976,6 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
             </div>
           </div>
         </div>
-      )}
-
-      {accessContext.isAdmin && (
-        <OwnershipMigrationModal
-          isOpen={isOwnershipModalOpen}
-          onClose={() => setIsOwnershipModalOpen(false)}
-        />
       )}
 
     </div>

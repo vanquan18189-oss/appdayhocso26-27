@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Users, X, Share2, Sparkles, Check } from 'lucide-react';
 
-export type ShareContentType = 'exam' | 'lesson' | 'question' | 'game';
+import { SharePermissionLevel } from '../../types';
+
+export type ShareContentType = 'exam' | 'lesson' | 'question' | 'game' | 'assignment';
 
 export interface ShareContentData {
   id?: string;
@@ -9,6 +11,10 @@ export interface ShareContentData {
   grade?: string;
   subject?: string;
   customUrl?: string;
+  sharedWithTeachers?: string[];
+  sharedWithGroups?: string[];
+  sharePermission?: SharePermissionLevel;
+  allowDeleteByShared?: boolean;
 }
 
 export interface ShareConfirmPayload {
@@ -19,6 +25,11 @@ export interface ShareConfirmPayload {
   shareDept: boolean;
   sharePublicBank: boolean;
   allowDuplicate: boolean;
+  sharedWithTeachers?: string[];
+  sharedWithGroups?: string[];
+  sharePermission?: SharePermissionLevel;
+  allowDeleteByShared?: boolean;
+  revoked?: boolean;
 }
 
 export interface ShareContentModalProps {
@@ -27,6 +38,7 @@ export interface ShareContentModalProps {
   contentType: ShareContentType;
   content: ShareContentData | null;
   onConfirmShare?: (payload: ShareConfirmPayload) => void;
+  collectionNameOverride?: string;
 }
 
 export const ShareContentModal: React.FC<ShareContentModalProps> = ({
@@ -90,6 +102,14 @@ export const ShareContentModal: React.FC<ShareContentModalProps> = ({
       publicBankLabel: 'Đăng tải lên Kho Trò chơi dùng chung Trường Trực Khang',
       noteText: 'Phòng trò chơi sau khi chia sẻ sẽ xuất hiện ở Kho Trò Chơi dùng chung để các giáo viên khác tham khảo.',
       successMsg: 'Đã chia sẻ thành công phòng trò chơi:'
+    },
+    assignment: {
+      modalTitle: 'CHIA SẺ BÀI TẬP CHUYÊN MÔN',
+      labelPrefix: 'Bài tập:',
+      linkLabel: 'Liên kết truy cập bài tập',
+      publicBankLabel: 'Đăng tải lên Ngân hàng Bài tập dùng chung Trường Trực Khang',
+      noteText: 'Bài tập sau khi chia sẻ sẽ xuất hiện ở Ngân Hàng Bài Tập dùng chung để các giáo viên khác tham khảo.',
+      successMsg: 'Đã chia sẻ thành công bài tập:'
     }
   }[contentType];
 
@@ -116,7 +136,14 @@ export const ShareContentModal: React.FC<ShareContentModalProps> = ({
       link: shareLink,
       shareDept,
       sharePublicBank,
-      allowDuplicate
+      allowDuplicate,
+      sharedWithTeachers: content.sharedWithTeachers || [],
+      sharedWithGroups: shareDept
+        ? Array.from(new Set([...(content.sharedWithGroups || []), 'to_chuyen_mon']))
+        : (content.sharedWithGroups || []),
+      sharePermission: content.sharePermission || (allowDuplicate ? 'assign' : 'view'),
+      allowDeleteByShared: content.allowDeleteByShared || false,
+      revoked: !shareDept && !sharePublicBank && (content.sharedWithTeachers?.length || 0) === 0
     };
 
     if (onConfirmShare) {

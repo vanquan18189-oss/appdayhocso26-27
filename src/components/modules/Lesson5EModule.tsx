@@ -28,7 +28,8 @@ import {
   LayoutGrid,
   List,
   Clock,
-  User
+  User,
+  QrCode
 } from 'lucide-react';
 import { getSubjectColorStyles } from '../../utils/subjectColors';
 import { Lesson5EPlan, UserRole } from '../../types';
@@ -46,6 +47,7 @@ import { Lesson5EModal } from './Lesson5EModal';
 import { ShareContentModal } from './ShareContentModal';
 import { ELearningAssignmentModal } from './ELearningAssignmentModal';
 import { LessonProgressStatsModal } from './LessonProgressStatsModal';
+import { ElearningExportModal } from './ElearningExportModal';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { StatCard } from '../common/StatCard';
 
@@ -83,6 +85,11 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
   const [assigningLesson, setAssigningLesson] = useState<Lesson5EPlan | null>(null);
   const [statsLesson, setStatsLesson] = useState<Lesson5EPlan | null>(null);
   const [deletingLesson, setDeletingLesson] = useState<Lesson5EPlan | null>(null);
+  const [exportModalState, setExportModalState] = useState<{
+    isOpen: boolean;
+    lessons: Lesson5EPlan[];
+    titleContext?: string;
+  }>({ isOpen: false, lessons: [] });
   const [assignedToast, setAssignedToast] = useState<string | null>(null);
   const [openDropdown, setOpenDropdown] = useState<{ lessonId: string; type: 'status' | 'approval' } | null>(null);
 
@@ -377,12 +384,33 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
             </div>
 
             {userRole !== 'student' && (
-              <button
-                onClick={handleStartCreateNew}
-                className="px-5 py-2.5 rounded-xl text-xs font-extrabold bg-blue-600 hover:bg-blue-700 text-white transition-all shadow-md shadow-blue-200 flex items-center gap-2 cursor-pointer shrink-0"
-              >
-                <Plus className="w-4 h-4" /> Thêm mới bài giảng
-              </button>
+              <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setExportModalState({
+                      isOpen: true,
+                      lessons: filteredLessons,
+                      titleContext:
+                        mainTab === 'my'
+                          ? 'Bài của tôi'
+                          : mainTab === 'colleague'
+                          ? 'Bài từ đồng nghiệp'
+                          : 'Toàn bộ bài giảng'
+                    })
+                  }
+                  className="px-4 py-2.5 rounded-xl text-xs font-extrabold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 transition-all shadow-xs flex items-center gap-2 cursor-pointer shrink-0"
+                >
+                  <QrCode className="w-4 h-4" /> Xuất danh mục &amp; Mã QR
+                </button>
+
+                <button
+                  onClick={handleStartCreateNew}
+                  className="px-5 py-2.5 rounded-xl text-xs font-extrabold bg-blue-600 hover:bg-blue-700 text-white transition-all shadow-md shadow-blue-200 flex items-center gap-2 cursor-pointer shrink-0"
+                >
+                  <Plus className="w-4 h-4" /> Thêm mới bài giảng
+                </button>
+              </div>
             )}
           </div>
           {/* FILTER ROW */}
@@ -739,6 +767,25 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
                                 Thống kê
                               </span>
                             </div>
+                          )}
+
+                          {/* Tải QR / Phiếu */}
+                          {userRole !== 'student' && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExportModalState({
+                                  isOpen: true,
+                                  lessons: [lesson],
+                                  titleContext: `Phiếu bài giảng: ${lesson.title}`
+                                })
+                              }
+                              className="px-2.5 py-1.5 rounded-xl bg-emerald-50/90 hover:bg-emerald-600 text-emerald-700 hover:text-white border border-emerald-200/80 transition-all cursor-pointer shadow-2xs hover:shadow-xs flex items-center gap-1.5 text-[11px] font-bold whitespace-nowrap"
+                              title="Tải QR / Phiếu"
+                            >
+                              <QrCode className="w-3.5 h-3.5" />
+                              <span>Tải QR / Phiếu</span>
+                            </button>
                           )}
                         </div>
 
@@ -1559,6 +1606,14 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
         title="Xác nhận xóa bài giảng 5E"
         itemType="bài giảng 5E"
         itemName={deletingLesson?.title}
+      />
+
+      {/* MODAL XUẤT DANH MỤC & MÃ QR */}
+      <ElearningExportModal
+        isOpen={exportModalState.isOpen}
+        onClose={() => setExportModalState({ isOpen: false, lessons: [] })}
+        lessons={exportModalState.lessons}
+        titleContext={exportModalState.titleContext}
       />
 
       {/* TOAST SUCCESS NOTIFICATION */}

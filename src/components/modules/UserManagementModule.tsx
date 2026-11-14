@@ -124,7 +124,6 @@ import {
   getCurrentAccessContext,
   canTeacherAccessClass
 } from '../../services/permissionService';
-import { OwnershipMigrationModal } from '../modals/OwnershipMigrationModal';
 
 import { TeacherRecord, initialTeachersList } from '../../constants/teacherDirectory';
 export type { TeacherRecord };
@@ -512,6 +511,7 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
           subject: matched.subject,
           phone: matched.phone,
           avatar: matched.avatar || '👩‍🏫',
+          nhomGvCn: matched.nhomGvCn || '',
           homeroomClasses: matched.homeroomClasses,
           teachingClasses: matched.teachingClasses
         };
@@ -522,7 +522,6 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
 
   const accessContext = useMemo(() => getCurrentAccessContext(userRole, authEmail), [userRole, authEmail]);
   const isSystemAdmin = accessContext.isAdmin || userRole === 'admin' || activeTeacherProfile.userRole === 'admin';
-  const [isOwnershipModalOpen, setIsOwnershipModalOpen] = useState(false);
 
   const [classesList, setClassesList] = useState<ClassConfig[]>(() => getClassesFromLocalStorage());
   const [editingClass, setEditingClass] = useState<ClassConfig | null>(null);
@@ -1892,16 +1891,6 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
               : 'Quản lý danh sách học sinh thuộc các lớp thầy/cô được phân công giảng dạy hoặc chủ nhiệm.'}
           </p>
         </div>
-
-        {isSystemAdmin && (
-          <button
-            onClick={() => setIsOwnershipModalOpen(true)}
-            className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white text-xs font-extrabold shadow-md flex items-center gap-2 cursor-pointer shrink-0"
-          >
-            <ShieldCheck className="w-4 h-4" />
-            <span>Quét & Gán Chủ Dữ Liệu Cũ + Firestore Rules</span>
-          </button>
-        )}
       </div>
 
       {/* ======================================================== */}
@@ -1960,13 +1949,6 @@ export const UserManagementModule: React.FC<UserManagementModuleProps> = ({
           Vai trò hiện tại: <span className="text-indigo-600 uppercase font-extrabold">{isSystemAdmin ? 'admin' : userRole}</span>
         </div>
       </div>
-
-      {isSystemAdmin && (
-        <OwnershipMigrationModal
-          isOpen={isOwnershipModalOpen}
-          onClose={() => setIsOwnershipModalOpen(false)}
-        />
-      )}
 
       {/* ======================================================== */}
       {/* TAB 1: QUẢN LÝ HỌC SINH (5 KHỐI LỚP)                     */}
