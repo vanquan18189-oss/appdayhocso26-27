@@ -23,12 +23,15 @@ import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { PublicGuestRouter } from './components/PublicGuestRouter';
 import './index.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary fallbackTitle="Có lỗi xảy ra, vui lòng tải lại">
-      <App />
+      <PublicGuestRouter>
+        <App />
+      </PublicGuestRouter>
     </ErrorBoundary>
   </StrictMode>,
 );

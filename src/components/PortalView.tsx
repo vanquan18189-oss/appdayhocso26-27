@@ -24,6 +24,8 @@ import { resolveTeacherNameByEmail, getCurrentTeacherProfile, verifyTeacherAutho
 import { useClassesList } from '../services/classStorageService';
 import { APP_NAME, APP_FULL_TITLE } from '../config/appConfig';
 import { getStudentAvatarSource } from './common/AnimalAvatars';
+import { extractPublicRouteFromPath } from '../services/publicGuestService';
+import { PublicGuestRouter } from './PublicGuestRouter';
 
 interface PortalViewProps {
   onSelectPortal: (
@@ -271,6 +273,11 @@ function generateClassRoster(className: string): StudentRecord[] {
 }
 
 export function PortalView({ onSelectPortal }: PortalViewProps) {
+  const publicRoute = extractPublicRouteFromPath();
+  if (publicRoute) {
+    return <PublicGuestRouter>{null}</PublicGuestRouter>;
+  }
+
   // Navigation Modes:
   // 'gateway' -> Gateway selection (Student vs Teacher)
   // 'student_grades' -> Step 1 & 2: Select Grade & Class

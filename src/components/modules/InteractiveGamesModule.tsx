@@ -90,6 +90,7 @@ interface InteractiveGamesModuleProps {
   currentUserId?: string;
   currentUserName?: string;
   initialTab?: 'games' | 'store';
+  initialActiveGame?: GameItem | null;
   onOpenUseQuestionBankModal?: () => void;
   onOpenEditGameRoom?: (game: GameItem) => void;
   onDeleteGame?: (id: string) => void;
@@ -103,6 +104,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
   currentUserId = 'u-4',
   currentUserName = 'Lê Minh Anh',
   initialTab = 'games',
+  initialActiveGame = null,
   onOpenUseQuestionBankModal,
   onOpenEditGameRoom,
   onDeleteGame,
@@ -962,6 +964,16 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
       console.warn('Lỗi ghi nhận tham gia đấu trường:', e);
     }
   };
+
+  const hasAutoStartedGameIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (initialActiveGame && initialActiveGame.id) {
+      if (hasAutoStartedGameIdRef.current !== initialActiveGame.id) {
+        hasAutoStartedGameIdRef.current = initialActiveGame.id;
+        handleStartGame(initialActiveGame);
+      }
+    }
+  }, [initialActiveGame?.id]);
 
   const [debugSaveResult, setDebugSaveResult] = useState<{
     status: 'idle' | 'saving' | 'success' | 'error';
