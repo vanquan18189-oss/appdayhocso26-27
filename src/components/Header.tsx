@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Sparkles,
-  Key,
+  Cpu,
   Wifi,
   WifiOff,
   User,
@@ -18,16 +18,14 @@ import {
   AlertTriangle,
   Bell,
   CheckCheck,
-  AlertCircle
+  AlertCircle,
+  Server
 } from 'lucide-react';
 import { UserRole, LatencyTestResult } from '../types';
 import { APP_NAME, APP_SUBTITLE } from '../config/appConfig';
 import { useAcademicYear } from '../contexts/AcademicYearContext';
 import {
-  getStoredApiKey,
-  setStoredApiKey,
-  getStoredGlobalApiKey,
-  setStoredGlobalApiKey,
+  DEFAULT_MODEL,
   testGeminiLatency,
   getAdminSelectedModel,
   setAdminSelectedModel,
@@ -35,7 +33,7 @@ import {
   sanitizeErrorMessage
 } from '../services/geminiService';
 import { db, auth } from '../services/firebase';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { trackedSetDoc } from '../services/firestoreWriteTracker';
 import { GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { resolveTeacherNameByEmail, verifyTeacherAuthorization } from '../services/teacherStorageService';
@@ -58,8 +56,6 @@ interface HeaderProps {
   userRole?: UserRole;
   onRoleChange?: (role: UserRole) => void;
   currentUserName?: string;
-  apiKey?: string;
-  onSaveApiKey?: (key: string) => void;
   isApiKeyModalOpen?: boolean;
   setIsApiKeyModalOpen?: (open: boolean) => void;
 }
@@ -68,8 +64,6 @@ export const Header: React.FC<HeaderProps> = ({
   currentRole,
   userRole,
   currentUserName,
-  apiKey,
-  onSaveApiKey,
   isApiKeyModalOpen: externalIsModalOpen,
   setIsApiKeyModalOpen: setExternalIsModalOpen,
 }) => {
@@ -212,8 +206,6 @@ export const Header: React.FC<HeaderProps> = ({
         )
   );
 
-  const [apiKeyInput, setApiKeyInput] = useState('');
-  const [globalApiKeyInput, setGlobalApiKeyInput] = useState('');
   const [adminModelInput, setAdminModelInput] = useState<string>(() => getAdminSelectedModel());
   const [latencyResult, setLatencyResult] = useState<LatencyTestResult | null>(null);
   const [isTestingLatency, setIsTestingLatency] = useState(false);
@@ -314,16 +306,11 @@ export const Header: React.FC<HeaderProps> = ({
 
   useEffect(() => {
     if (isKeyModalOpen) {
-      setApiKeyInput(apiKey !== undefined ? apiKey : getStoredApiKey());
       setAdminModelInput(getAdminSelectedModel());
+      setFirestoreStatus(null);
 
-      const cachedGlobal = getStoredGlobalApiKey();
-      if (cachedGlobal) {
-        setGlobalApiKeyInput(cachedGlobal);
-      }
-
-      const fetchGlobalKey = async () => {
-        if (!db) return;
+      const fetchServerModelConfig = async () => {
+        if (!db || auth?.currentUser?.isAnonymous) return;
         try {
           const docRef = doc(db, 'settings', 'ai_config');
           const fetchPromise = getDoc(docRef);
@@ -332,29 +319,29 @@ export const Header: React.FC<HeaderProps> = ({
 
           if (docSnap && 'exists' in docSnap && docSnap.exists()) {
             const data = docSnap.data() as any;
-            const fetchedKey = (data?.globalApiKey || data?.apiKey || '')?.trim();
-            if (fetchedKey) {
-              setGlobalApiKeyInput(fetchedKey);
-              setStoredGlobalApiKey(fetchedKey);
+            const fetchedModel = typeof data?.selectedModel === 'string' ? data.selectedModel.trim() : '';
+            if (fetchedModel) {
+              setAdminModelInput(fetchedModel);
+              setAdminSelectedModel(fetchedModel);
             }
           }
         } catch (e: any) {
-          console.warn('Không thể đọc Global API Key từ Firestore (chế độ ngoại tuyến / offline):', e?.message || e);
+          console.warn('Không thể đọc cấu hình mô hình AI từ Firestore:', e?.message || e);
         }
       };
-      fetchGlobalKey();
+      fetchServerModelConfig();
     }
-  }, [isKeyModalOpen, apiKey]);
+  }, [isKeyModalOpen]);
 
   const [testingProgress, setTestingProgress] = useState<string>('');
 
   const handleTestLatency = async () => {
     setIsTestingLatency(true);
     setLatencyResult(null);
-    setTestingProgress('Đang chuẩn bị kiểm tra...');
+    setTestingProgress('Đang kiểm tra kết nối máy chủ Gemini AI...');
 
     const result = await testGeminiLatency(
-      apiKeyInput || globalApiKeyInput,
+      undefined,
       (progressText) => setTestingProgress(progressText)
     );
 
@@ -363,19 +350,15 @@ export const Header: React.FC<HeaderProps> = ({
     setTestingProgress('');
   };
 
-  const handleSaveGlobalFirestore = async () => {
-    const keyToSave = globalApiKeyInput.trim();
-
-    // Store in LocalStorage fallback immediately so it takes effect instantly!
-    setStoredGlobalApiKey(keyToSave);
-
+  const handleSaveModelFirestore = async () => {
+    setAdminSelectedModel(adminModelInput);
     setIsSavingFirestore(true);
     setFirestoreStatus(null);
 
-    if (!db) {
+    if (!db || auth?.currentUser?.isAnonymous) {
       setFirestoreStatus({
         success: true,
-        message: 'Đã lưu Global API Key vào bộ nhớ đệm cục bộ! Hệ thống sẵn sàng áp dụng ngay cho tất cả các tính năng AI.'
+        message: 'Đã lưu lựa chọn mô hình AI cục bộ. Hệ thống sẵn sàng sử dụng ngay!'
       });
       setIsSavingFirestore(false);
       return;
@@ -385,7 +368,7 @@ export const Header: React.FC<HeaderProps> = ({
       const syncPromise = trackedSetDoc(
         doc(db, 'settings', 'ai_config'),
         {
-          globalApiKey: keyToSave,
+          selectedModel: adminModelInput,
           updatedAt: new Date().toISOString(),
           updatedBy: displayUserName,
         },
@@ -400,26 +383,21 @@ export const Header: React.FC<HeaderProps> = ({
 
       setFirestoreStatus({
         success: true,
-        message: 'Lưu Global API Key thành công lên Firestore & bộ nhớ đệm! Toàn bộ máy trạm, giáo viên và học sinh sẽ tự động sử dụng khóa chung này.'
+        message: 'Đã lưu cấu hình mô hình AI mặc định lên hệ thống cho toàn trường!'
       });
     } catch (e: any) {
-      console.warn('Đồng bộ Firestore bị gián đoạn hoặc quá thời gian chờ, đã lưu bộ nhớ đệm cục bộ:', e?.message || e);
+      console.warn('Đồng bộ cấu hình mô hình AI lên Firestore bị gián đoạn:', e?.message || e);
       setFirestoreStatus({
         success: true,
-        message: 'Lưu Global API Key thành công vào bộ nhớ đệm dự phòng (Fallback)! Đã sẵn sàng sử dụng ngay cho mọi tính năng AI. (Kèm cơ chế tự động đồng bộ Firestore ở nền)'
+        message: 'Đã lưu cấu hình mô hình AI thành công trên thiết bị này.'
       });
     } finally {
       setIsSavingFirestore(false);
     }
   };
 
-  const handleSaveApiKey = () => {
-    setStoredApiKey(apiKeyInput);
-    if (globalApiKeyInput) {
-      setStoredGlobalApiKey(globalApiKeyInput);
-    }
+  const handleSaveAiConfig = () => {
     setAdminSelectedModel(adminModelInput);
-    onSaveApiKey?.(apiKeyInput);
     setIsKeyModalOpen(false);
   };
 
@@ -652,15 +630,15 @@ export const Header: React.FC<HeaderProps> = ({
             )}
           </div>
 
-          {/* API Key Modal Launcher */}
+          {/* Server AI Status & Config Modal Launcher */}
           <button
             onClick={() => setIsKeyModalOpen(true)}
             id="header-api-key-button"
             className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-200 transition-all cursor-pointer shadow-xs"
-            title="Cấu hình Google Gemini API Key"
+            title="Cấu hình & Kiểm tra kết nối Gemini AI"
           >
-            <Key className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-amber-600 shrink-0" />
-            <span className="hidden md:inline font-semibold">Cấu hình API Key</span>
+            <Cpu className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-indigo-600 shrink-0" />
+            <span className="hidden md:inline font-semibold">Cấu hình AI</span>
             <span className="flex h-2 w-2 relative">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
               <span className="relative inline-flex rounded-full h-2 w-2 bg-[#16A34A]"></span>
@@ -670,13 +648,13 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      {/* API Key Modal & Latency Test */}
+      {/* AI Server Status & Latency Test Modal */}
       {isKeyModalOpen && createPortal(
         <div className="fixed inset-0 z-[9999] bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-gray-200 overflow-hidden my-auto animate-in fade-in zoom-in-95 duration-200">
             <div className="bg-[#4F46E5] px-6 py-4 text-white flex items-center justify-between">
               <div className="flex items-center gap-2 font-semibold text-base font-heading">
-                <Sliders className="w-5 h-5 text-amber-300" /> Cấu Hình Google Gemini API Key
+                <Sliders className="w-5 h-5 text-amber-300" /> Cấu Hình & Kiểm Tra Kết Nối AI
               </div>
               <button
                 onClick={() => setIsKeyModalOpen(false)}
@@ -687,48 +665,18 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
 
             <div className="p-6 space-y-4">
-              <p className="text-xs text-gray-600 leading-relaxed font-normal">
-                Hệ thống tự động sử dụng <strong>Environment Gemini Key</strong> của máy chủ AI Studio. Bạn có thể nhập <strong>Personal API Key</strong> của riêng mình dưới đây để ưu tiên xử lý cá nhân.
-              </p>
-
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">
-                  Personal Gemini API Key:
-                </label>
-                <input
-                  type="password"
-                  value={apiKeyInput}
-                  onChange={(e) => setApiKeyInput(e.target.value)}
-                  placeholder="AIzaSy..."
-                  className="w-full px-3 py-2 text-xs rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-gray-50 font-mono text-gray-900"
-                />
-                <p className="text-[11px] text-gray-400 mt-1">
-                  Khóa cá nhân được lưu bảo mật trong <code>localStorage</code> của trình duyệt (ưu tiên số 1).
-                </p>
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-xs font-medium text-gray-700 flex items-center gap-1.5">
-                    🌐 Global API Key (Khóa dùng chung toàn trường):
-                  </label>
-                  <span className="text-xs bg-[#EEF2FF] text-[#4F46E5] px-2 py-0.5 rounded-full font-medium border border-[#C7D2FE]">
-                    {activeRole === 'admin' ? 'Quyền Admin (Chỉnh sửa)' : 'Chế độ xem chung'}
-                  </span>
+              <div className="p-3.5 rounded-xl bg-indigo-50/70 border border-indigo-200/80 flex items-start gap-3">
+                <div className="w-8 h-8 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0 mt-0.5">
+                  <Server className="w-4 h-4" />
                 </div>
-                <input
-                  type="password"
-                  value={globalApiKeyInput}
-                  onChange={(e) => setGlobalApiKeyInput(e.target.value)}
-                  placeholder="AIzaSy... (Lưu trên Firestore cho toàn hệ thống)"
-                  disabled={activeRole !== 'admin'}
-                  className="w-full px-3 py-2 text-xs rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-gray-50 font-mono disabled:opacity-75 disabled:cursor-not-allowed text-gray-900"
-                />
-                <p className="text-[11px] text-gray-400 mt-1">
-                  {activeRole === 'admin'
-                    ? 'Quản trị viên có quyền cập nhật khóa chung phục vụ thi cử và trình diễn cho toàn trường.'
-                    : 'Áp dụng tự động cho mọi máy trạm/tài khoản khi chưa cấu hình Key cá nhân.'}
-                </p>
+                <div className="text-xs text-slate-700 leading-relaxed space-y-1">
+                  <p className="font-semibold text-indigo-950">
+                    Xử lý Gemini AI tập trung trên máy chủ
+                  </p>
+                  <p className="text-slate-600">
+                    Mọi yêu cầu AI (soạn giáo án 5E, tạo đề thi, chấm bài tự luận, trợ lý sư phạm, Live API và tạo trò chơi) đều được kết nối trực tiếp qua máy chủ. Giáo viên và học sinh mở ứng dụng là dùng được ngay.
+                  </p>
+                </div>
               </div>
 
               {/* Admin Model Selection */}
@@ -738,7 +686,7 @@ export const Header: React.FC<HeaderProps> = ({
                     ⚙️ Mô hình AI (Quản trị viên chọn thủ công):
                   </label>
                   <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full font-semibold border border-indigo-200">
-                    Hiện tại: {activeModelInfo.sourceLabel}
+                    Hiện tại: {activeModelInfo.sourceLabel} ({activeModelInfo.modelName})
                   </span>
                 </div>
                 <select
@@ -751,40 +699,43 @@ export const Header: React.FC<HeaderProps> = ({
                   disabled={activeRole !== 'admin'}
                   className="w-full px-3 py-2 text-xs rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-gray-50 text-gray-900 font-mono disabled:opacity-75 disabled:cursor-not-allowed"
                 >
-                  <option value="">Tự động ưu tiên (Mặc định: gemini-2.0-flash / Đã nhớ)</option>
-                  <option value="gemini-2.0-flash">gemini-2.0-flash (Mô hình chuẩn - Ổn định & Nhanh)</option>
-                  <option value="gemini-1.5-flash-latest">gemini-1.5-flash-latest (Mô hình dự phòng)</option>
-                  <option value="gemini-2.5-flash">gemini-2.5-flash (Flash thế hệ mới)</option>
-                  <option value="gemini-flash-latest">gemini-flash-latest (Alias tự động)</option>
+                  <option value="">Tự động ưu tiên (Mặc định: {DEFAULT_MODEL})</option>
+                  <option value="gemini-4-hydrogen">gemini-4-hydrogen (Mặc định - Nhanh, thông minh & ổn định)</option>
+                  <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Flash Lite siêu tốc & tiết kiệm)</option>
+                  <option value="gemini-2.5-flash">gemini-2.5-flash (Flash đa nhiệm ổn định)</option>
                 </select>
                 <p className="text-[11px] text-gray-400 mt-1">
-                  Chỉ danh sách các mô hình sinh văn bản mới nhất. Lựa chọn này áp dụng cho toàn bộ tính năng AI.
+                  {activeRole === 'admin'
+                    ? 'Chỉ danh sách các mô hình sinh văn bản được hỗ trợ. Lựa chọn này áp dụng cho toàn bộ tính năng AI.'
+                    : 'Chỉ tài khoản Quản trị viên mới có thể thay đổi mô hình mặc định.'}
                 </p>
               </div>
 
-              {/* Latency Test Action & Firestore Sync */}
+              {/* Latency Test Action & Firestore Model Sync */}
               <div className="bg-[#F9FAFB] rounded-xl p-3 border border-gray-200 space-y-3">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-semibold text-gray-700 flex items-center gap-1.5">
                     <Zap className="w-4 h-4 text-amber-500" /> Kết Nối & Đánh Giá
                   </span>
                   <div className="flex items-center gap-1.5">
-                    <button
-                      onClick={handleSaveGlobalFirestore}
-                      disabled={isSavingFirestore}
-                      className="px-3 py-1.5 bg-[#4F46E5] hover:bg-[#4338CA] text-white rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-xs"
-                      title="Lưu cấu hình và đồng bộ vĩnh viễn với Firebase Firestore"
-                    >
-                      {isSavingFirestore ? (
-                        <>
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Đang đồng bộ...
-                        </>
-                      ) : (
-                        <>
-                          🌐 Lưu Global Firestore
-                        </>
-                      )}
-                    </button>
+                    {activeRole === 'admin' && (
+                      <button
+                        onClick={handleSaveModelFirestore}
+                        disabled={isSavingFirestore}
+                        className="px-3 py-1.5 bg-slate-700 hover:bg-slate-800 text-white rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-xs"
+                        title="Đồng bộ lựa chọn mô hình lên Firestore"
+                      >
+                        {isSavingFirestore ? (
+                          <>
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Đang lưu...
+                          </>
+                        ) : (
+                          <>
+                            🌐 Lưu đồng bộ
+                          </>
+                        )}
+                      </button>
+                    )}
                     <button
                       onClick={handleTestLatency}
                       disabled={isTestingLatency}
@@ -807,7 +758,7 @@ export const Header: React.FC<HeaderProps> = ({
                 {isTestingLatency && (
                   <div className="p-3 rounded-lg text-xs bg-indigo-50 border border-indigo-200 text-indigo-700 flex items-center gap-2 animate-pulse font-medium">
                     <RefreshCw className="w-4 h-4 animate-spin text-indigo-600 shrink-0" />
-                    <span>{testingProgress || 'Đang đo kết nối Gemini API...'}</span>
+                    <span>{testingProgress || 'Đang đo kết nối Gemini API trên máy chủ...'}</span>
                   </div>
                 )}
 
@@ -823,15 +774,6 @@ export const Header: React.FC<HeaderProps> = ({
                     <CheckCircle2 className={`w-4 h-4 shrink-0 mt-0.5 ${firestoreStatus?.success ? 'text-[#16A34A]' : 'text-[#DC2626]'}`} />
                     <div className="leading-relaxed font-medium flex-1">
                       <div>{firestoreStatus?.message}</div>
-                      {!firestoreStatus?.success && (
-                        <button
-                          onClick={handleSaveGlobalFirestore}
-                          disabled={isSavingFirestore}
-                          className="mt-2 px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded text-[11px] font-semibold transition-all inline-flex items-center gap-1 cursor-pointer"
-                        >
-                          <RefreshCw className="w-3 h-3" /> Thử lại đồng bộ Firestore
-                        </button>
-                      )}
                     </div>
                   </div>
                 )}
@@ -864,7 +806,7 @@ export const Header: React.FC<HeaderProps> = ({
                           Mô hình: <code className="font-mono font-bold text-indigo-900 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200">{latencyResult?.modelName}</code>
                         </div>
                         <span className="text-[10px] bg-amber-100 text-amber-800 font-semibold px-2 py-0.5 rounded-full border border-amber-300">
-                          {latencyResult?.sourceLabel ? `📌 ${latencyResult.sourceLabel}` : (latencyResult?.isCachedModel ? '📌 đã nhớ' : '⚡ mặc định')}
+                          {latencyResult?.sourceLabel ? `📌 ${latencyResult.sourceLabel}` : '⚡ mặc định'}
                         </span>
                       </div>
 
@@ -876,7 +818,7 @@ export const Header: React.FC<HeaderProps> = ({
                             onClick={() => setShowTechDetails(!showTechDetails)}
                             className="text-[11px] font-semibold text-rose-700 hover:text-rose-900 flex items-center gap-1 cursor-pointer transition-colors"
                           >
-                            <span>Chi tiết kỹ thuật (Google API)</span>
+                            <span>Chi tiết kỹ thuật (Server AI)</span>
                             <span className="text-[10px]">{showTechDetails ? '▲ Thu gọn' : '▼ Xem chi tiết'}</span>
                           </button>
 
@@ -905,10 +847,10 @@ export const Header: React.FC<HeaderProps> = ({
                 onClick={() => setIsKeyModalOpen(false)}
                 className="px-4 py-2 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-200 transition-all cursor-pointer"
               >
-                Hủy
+                Đóng
               </button>
               <button
-                onClick={handleSaveApiKey}
+                onClick={handleSaveAiConfig}
                 className="px-4 py-2 rounded-lg text-xs font-medium bg-[#4F46E5] hover:bg-[#4338CA] text-white transition-all shadow-xs cursor-pointer"
               >
                 Lưu Cấu Hình

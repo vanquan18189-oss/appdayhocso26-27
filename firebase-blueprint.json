@@ -34,11 +34,32 @@
         "classInfo": { "type": "string", "description": "Target class name, e.g. Lớp 3A" },
         "icon": { "type": "string", "description": "Lucide icon name" },
         "color": { "type": "string", "description": "Color theme token" },
-        "type": { "type": "string", "description": "Game category or interaction type" },
+        "type": { "type": "string", "description": "Game category or interaction type (including Trò chơi tự do)" },
         "embedUrl": { "type": "string", "description": "External embedded game URL or link" },
+        "isFreeAiGame": { "type": "boolean", "description": "True if generated as a Free AI HTML5 Game" },
+        "htmlContent": { "type": "string", "description": "Self-contained HTML5 game document" },
+        "topic": { "type": "string", "description": "Lesson topic or knowledge content" },
+        "gameDescription": { "type": "string", "description": "Teacher description / game mechanics prompt" },
+        "questionCount": { "type": "number", "description": "Number of questions in the AI game (5, 8, 10, 15)" },
+        "difficulty": { "type": "string", "description": "Difficulty level (Dễ, Vừa, Khó)" },
+        "isPublicShareEnabled": { "type": "boolean", "description": "Whether anonymous public /game/[id] link sharing is enabled" },
         "createdAt": { "type": "string", "description": "Creation timestamp or date string" }
       },
       "required": ["id", "title", "subject", "grade", "classInfo"]
+    },
+    "AIGameQuota": {
+      "title": "AIGameQuota",
+      "description": "Daily per-teacher Free AI Game generation quota tracking (max 20/day)",
+      "type": "object",
+      "properties": {
+        "teacherEmail": { "type": "string", "description": "Teacher email" },
+        "teacherKey": { "type": "string", "description": "Normalized teacher key" },
+        "dateKey": { "type": "string", "description": "Local date key YYYY-MM-DD" },
+        "count": { "type": "number", "description": "Number of generations used today" },
+        "limit": { "type": "number", "description": "Daily limit (20)" },
+        "updatedAt": { "type": "string", "description": "ISO timestamp of last update" }
+      },
+      "required": ["teacherKey", "dateKey", "count"]
     },
     "QuizLiveSession": {
       "title": "QuizLiveSession",
@@ -74,7 +95,11 @@
     },
     "/quizzi_games/{quizziGameId}": {
       "schema": "QuizziGame",
-      "description": "Interactive Quizzi games collection"
+      "description": "Interactive Quizzi & Free AI HTML5 games collection"
+    },
+    "/ai_game_quotas/{quotaId}": {
+      "schema": "AIGameQuota",
+      "description": "Daily per-teacher Free AI Game generation quota counters"
     },
     "/quiz_live_sessions/{sessionId}": {
       "schema": "QuizLiveSession",

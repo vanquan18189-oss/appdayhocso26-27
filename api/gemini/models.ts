@@ -1,3 +1,5 @@
+const RECOMMENDED_MODELS = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
+
 export default function handler(req: any, res: any) {
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -7,6 +9,8 @@ export default function handler(req: any, res: any) {
   }
 
   return res.status(200).json({
-    models: ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.1-flash-lite']
+    models: RECOMMENDED_MODELS,
+    defaultModel: 'gemini-4-hydrogen',
+    liveModel: 'gemini-3.8-live',
   });
 }

@@ -125,4 +125,72 @@
   scrollbar-width: none;
 }
 
+/* ========================================================================= */
+/* INTERACTIVE GAMES: 3D FLASHCARDS, SHAKE, SPARKLE & BOAT RACE ANIMATIONS   */
+/* ========================================================================= */
+.game-perspective {
+  perspective: 1200px;
+}
 
+.game-preserve-3d {
+  transform-style: preserve-3d;
+}
+
+.game-backface-hidden {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.game-rotate-y-180 {
+  transform: rotateY(180deg);
+}
+
+@keyframes gameShake {
+  0%, 100% { transform: translateX(0); }
+  18% { transform: translateX(-8px) rotate(-0.8deg); }
+  36% { transform: translateX(8px) rotate(0.8deg); }
+  54% { transform: translateX(-6px) rotate(-0.5deg); }
+  72% { transform: translateX(6px) rotate(0.5deg); }
+  90% { transform: translateX(-3px); }
+}
+
+.animate-game-shake {
+  animation: gameShake 0.45s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+
+@keyframes gamePop {
+  0% { transform: scale(0.92); opacity: 0.5; }
+  60% { transform: scale(1.06); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.animate-game-pop {
+  animation: gamePop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes starTwinkle {
+  0%, 100% { transform: scale(1) rotate(0deg); opacity: 0.9; }
+  50% { transform: scale(1.22) rotate(12deg); opacity: 1; }
+}
+
+.animate-star-twinkle {
+  animation: starTwinkle 1.6s ease-in-out infinite;
+}
+
+@keyframes boatBob {
+  0%, 100% { transform: translateY(0px) rotate(-2deg); }
+  50% { transform: translateY(-4px) rotate(2deg); }
+}
+
+.animate-boat-bob {
+  animation: boatBob 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-game-shake,
+  .animate-game-pop,
+  .animate-star-twinkle,
+  .animate-boat-bob {
+    animation: none !important;
+  }
+}

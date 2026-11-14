@@ -1,6 +1,8 @@
 {
   "rewrites": [
     { "source": "/lesson/:path*", "destination": "/index.html" },
+    { "source": "/game/:path*", "destination": "/index.html" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }
+

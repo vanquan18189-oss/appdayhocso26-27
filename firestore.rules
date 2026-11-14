@@ -139,7 +139,18 @@ service cloud.firestore {
     }
 
     match /quizzi_games/{quizId} {
-      allow read, write: if !isAnonymousAuth();
+      allow get: if isNonAnonymousSignedIn() ||
+        resource == null ||
+        (
+          resource.data.get('isFreeAiGame', false) == true &&
+          resource.data.get('isPublicShareEnabled', true) == true
+        );
+      allow list: if isNonAnonymousSignedIn();
+      allow write: if isNonAnonymousSignedIn();
+    }
+
+    match /ai_game_quotas/{quotaId} {
+      allow read, write: if isNonAnonymousSignedIn();
     }
 
     // Live Quiz Sessions collection (interactive student join)

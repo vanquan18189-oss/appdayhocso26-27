@@ -1,8 +1,12 @@
 import { SUBJECTS, GRADES, CLASSES_BY_GRADE, ALL_CLASSES, getCorrectOrderingSequence } from '../../lib/constants';
 import { useClassesList } from '../../services/classStorageService';
 import { getStudentAvatarSource, DEFAULT_ANIMAL_AVATAR } from '../common/AnimalAvatars';
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import confetti from 'canvas-confetti';
+import { GameLobbyShowcase } from './games/GameLobbyShowcase';
+import { GamePlayStage } from './games/GamePlayStage';
+import { GameFlashcardsStage } from './games/GameFlashcardsStage';
+import { GameResultPodium } from './games/GameResultPodium';
 import {
   Gamepad2,
   Bell,
@@ -118,12 +122,15 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
   }, [accessContext, isAdmin]);
 
   const [activeGame, setActiveGame] = useState<GameItem | null>(null);
+  const [selectedLobbyMode, setSelectedLobbyMode] = useState<GameType>('golden_bell');
   const [activeTab, setActiveTab] = useState<'games' | 'store'>(initialTab);
   const [gameMode, setGameMode] = useState<'lobby' | 'countdown' | 'playing' | 'result'>('lobby');
   const [countdownStep, setCountdownStep] = useState<number | null>(null);
   const [motivationalQuote, setMotivationalQuote] = useState('');
   const [achievedRank, setAchievedRank] = useState<number | 'unranked' | null>(null);
   const [isRewardAlreadyClaimed, setIsRewardAlreadyClaimed] = useState<boolean>(false);
+  const aiGeneratorSectionRef = useRef<HTMLDivElement | null>(null);
+  const aiTopicInputRef = useRef<HTMLInputElement | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [embeddedGameUrl, setEmbeddedGameUrl] = useState<string | null>(null);
   const [embeddedGameTitle, setEmbeddedGameTitle] = useState<string>('');
@@ -381,7 +388,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
 
   const filteredGames = accessibleQuizziGames.filter(g => {
     if (filterGrade !== 'Tất cả các khối' && g.grade !== filterGrade) return false;
-    if (filterClass !== 'Tất cả các lớp' && g.classInfo !== filterClass) return false;
+    if (filterClass !== 'Tất cả các lớp' && g.classInfo !== 'Tất cả các lớp' && g.classInfo !== filterClass) return false;
     if (filterSubject !== 'Tất cả các môn' && g.subjectLabel !== filterSubject && g.subject !== filterSubject) return false;
     if (filterType !== 'Tất cả Loại' && g.type !== filterType) return false;
     return true;
@@ -796,8 +803,13 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
   // Golden Bell & Speed Quiz State
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
+  const [selectedChoiceKey, setSelectedChoiceKey] = useState<string | null>(null);
   const [score, setScore] = useState(0);
+  const [comboStreak, setComboStreak] = useState(0);
+  const [bestStreak, setBestStreak] = useState(0);
+  const [correctCount, setCorrectCount] = useState(0);
   const [timerSeconds, setTimerSeconds] = useState(15);
+  const [totalTimerSeconds, setTotalTimerSeconds] = useState(15);
   const [isTimerRunning, setIsTimerRunning] = useState(false);
   const [matchingAnswers, setMatchingAnswers] = useState<Record<number, string>>({});
   const [gameAnswers, setGameAnswers] = useState<Record<number, any>>({});
@@ -809,6 +821,8 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
 
   // Flashcard State
   const [flashcardFlipped, setFlashcardFlipped] = useState(false);
+  const [masteredCardIndices, setMasteredCardIndices] = useState<number[]>([]);
+  const [reviewCardIndices, setReviewCardIndices] = useState<number[]>([]);
 
   // Lucky Wheel State
   const [isSpinning, setIsSpinning] = useState(false);
@@ -838,14 +852,32 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
   }, [isTimerRunning, timerSeconds]);
 
   const handleStartGame = (game: GameItem) => {
+    const perQSeconds = game.type === 'speed_quiz' ? 10 : 15;
     setActiveGame(game);
     setCurrentQuestionIndex(0);
     setScore(0);
+    setComboStreak(0);
+    setBestStreak(0);
+    setCorrectCount(0);
     setSelectedOption(null);
-    const randomQuote = MOTIVATIONAL_QUOTES[Math.floor(Math.random() * MOTIVATIONAL_QUOTES.length)];
-    setMotivationalQuote(randomQuote);
-    setCountdownStep(3);
-    setGameMode('countdown');
+    setSelectedChoiceKey(null);
+    setFlashcardFlipped(false);
+    setMasteredCardIndices([]);
+    setReviewCardIndices([]);
+    setGameAnswers({});
+    setTotalTimerSeconds(perQSeconds);
+    setTimerSeconds(perQSeconds);
+
+    if (game.type === 'flashcards') {
+      setIsTimerRunning(false);
+      setCountdownStep(null);
+      setGameMode('playing');
+    } else {
+      const randomQuote = MOTIVATIONAL_QUOTES[Math.floor(Math.random() * MOTIVATIONAL_QUOTES.length)];
+      setMotivationalQuote(randomQuote);
+      setCountdownStep(3);
+      setGameMode('countdown');
+    }
 
     // Register student session in-progress for accurate real-time tracking
     const effectiveStudentCode = resolveAuthenticStudentId(currentUserId);
@@ -1034,13 +1066,25 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
     }
   };
 
+  const handleLaunchAiGame = (newGame: GameItem, saveAsRoom?: boolean) => {
+    if (saveAsRoom && onUpdateGame) {
+      onUpdateGame(newGame);
+      showToast(`Đã lưu phòng thi đấu "${newGame.title}" vào danh sách!`, 'success');
+    }
+    handleStartGame(newGame);
+  };
+
   const handleTimeUp = () => {
     // Automatically move to next question or end
     if (!activeGame) return;
+    const perQSeconds = activeGame.type === 'speed_quiz' ? 10 : 15;
+    setComboStreak(0);
+    setSelectedChoiceKey(null);
     if (currentQuestionIndex + 1 < activeGame.questions.length) {
       setCurrentQuestionIndex((prev) => prev + 1);
       setSelectedOption(null);
-      setTimerSeconds(activeGame.type === 'speed_quiz' ? 10 : 15);
+      setTotalTimerSeconds(perQSeconds);
+      setTimerSeconds(perQSeconds);
       setIsTimerRunning(true);
     } else {
       finishGameAndAward(score);
@@ -1193,16 +1237,22 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
       }
       return String(choice).trim().length > 0;
     }
+    const expectedAnswer = String(qi.correctAnswer ?? qi.answer ?? '').trim();
     const sChoice = choice as number;
     const sLetter = sChoice !== undefined && typeof sChoice === 'number' ? String.fromCharCode(65 + sChoice) : '';
-    return sLetter === qi.correctAnswer || String(choice) === String(qi.correctAnswer) || (qi.options && qi.options[sChoice] === qi.correctAnswer);
+    return (
+      sLetter === expectedAnswer ||
+      String(choice).trim().toUpperCase() === expectedAnswer.toUpperCase() ||
+      (qi.options && qi.options[sChoice] === expectedAnswer)
+    );
   };
 
-  const handleGameAnswerSubmit = (answerValue: any) => {
+  const handleGameAnswerSubmit = (answerValue: any, choiceKey?: string) => {
     if (!activeGame || selectedOption !== null) return;
     const q = activeGame.questions[currentQuestionIndex];
     const isCorrect = checkQuestionCorrectLocal(q, answerValue);
 
+    setSelectedChoiceKey(choiceKey ?? (typeof answerValue === 'string' ? answerValue : null));
     setSelectedOption(isCorrect ? 'CORRECT' : 'INCORRECT');
     setIsTimerRunning(false);
 
@@ -1210,6 +1260,19 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
     if (isCorrect) {
       currentScore += 100;
       setScore((prev) => prev + 100);
+      setCorrectCount((prev) => prev + 1);
+      setComboStreak((prev) => {
+        const nextStreak = prev + 1;
+        setBestStreak((b) => Math.max(b, nextStreak));
+        return nextStreak;
+      });
+      confetti({
+        particleCount: 45,
+        spread: 65,
+        origin: { y: 0.7 }
+      });
+    } else {
+      setComboStreak(0);
     }
 
     const effectiveStudentCode = resolveAuthenticStudentId(currentUserId);
@@ -1231,12 +1294,15 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
     } catch {}
 
     if (activeGame.isTimeLimited !== false) {
+      const perQSeconds = activeGame.type === 'speed_quiz' ? 10 : 15;
       setTimeout(() => {
         if (currentQuestionIndex + 1 < activeGame.questions.length) {
           setCurrentQuestionIndex((prev) => prev + 1);
           setSelectedOption(null);
+          setSelectedChoiceKey(null);
           setGameAnswers(prev => ({ ...prev, [currentQuestionIndex + 1]: undefined }));
-          setTimerSeconds(activeGame.type === 'speed_quiz' ? 10 : 15);
+          setTotalTimerSeconds(perQSeconds);
+          setTimerSeconds(perQSeconds);
           setIsTimerRunning(true);
         } else {
           finishGameAndAward(currentScore);
@@ -1414,10 +1480,10 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
               <span className="text-xs text-slate-400">• Đấu trí & Thưởng điểm</span>
             </div>
             <h2 className="text-xl font-extrabold text-slate-900 mt-1 font-heading">
-              Phân Hệ Trò Chơi Học Tập Tương Tác
+              Trò Chơi Học Tập AI & Đấu Trường Tri Thức
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
-              4 loại hình trò chơi: Rung chuông vàng, Trắc nghiệm tốc độ, Vòng quay may mắn & Flashcards ôn tập
+              Rung Chuông Vàng, Thẻ Ghi Nhớ Flashcards 3D & Đua Thuyền Vượt Chướng Ngại Vật
             </p>
           </div>
 
@@ -1532,6 +1598,18 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
 
         return (
           <div className="space-y-6">
+            {/* 3D Game Mode Selector & AI Quick-Play Generator */}
+            <GameLobbyShowcase
+              userRole={userRole}
+              defaultGrade={studentGrade}
+              defaultClassInfo={studentClass}
+              selectedMode={selectedLobbyMode}
+              onSelectMode={setSelectedLobbyMode}
+              onLaunchAiGame={handleLaunchAiGame}
+              topicInputRef={aiTopicInputRef}
+              sectionRef={aiGeneratorSectionRef}
+            />
+
             {/* Main Grid: Rooms List (Left 2 cols) & Leaderboard Sidebar (Right 1 col) */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               
@@ -1747,7 +1825,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                   filteredQuizzi.slice((studentQuizCurrentPage - 1) * studentQuizPageSize, (studentQuizCurrentPage - 1) * studentQuizPageSize + studentQuizPageSize).map((game) => (
                     <div key={game.id} className="bg-gradient-to-br from-slate-50 to-indigo-50/30 border border-slate-200 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all flex flex-col justify-between space-y-4">
                       <div className="space-y-2">
-                        <div className="flex items-center justify-between">
+                        <div className="flex flex-wrap items-center justify-between gap-1.5">
                           <span className="px-2.5 py-1 bg-indigo-100 text-indigo-800 rounded-lg text-[10px] font-black uppercase">
                             {game.subjectLabel || game.subject}
                           </span>
@@ -1885,6 +1963,18 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
               </button>
             </div>
           )}
+
+          {/* 3D Mode Selector & AI Quick-Play Generator for Teachers */}
+          <GameLobbyShowcase
+            userRole={userRole}
+            defaultGrade="Khối 3"
+            defaultClassInfo={filterClass !== 'Tất cả các lớp' ? filterClass : 'Lớp 3A'}
+            selectedMode={selectedLobbyMode}
+            onSelectMode={setSelectedLobbyMode}
+            onLaunchAiGame={handleLaunchAiGame}
+            topicInputRef={aiTopicInputRef}
+            sectionRef={aiGeneratorSectionRef}
+          />
 
           {/* Main Content Area */}
           <div className="flex flex-col gap-6">
@@ -2164,15 +2254,17 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                       <p className="text-xs text-slate-400 font-medium mt-0.5">Thư viện các trò chơi tương tác cá nhân của giáo viên</p>
                     </div>
                   </div>
-                  <button 
-                    onClick={() => {
-                      setEditingQuizziGame(null);
-                      setShowCreateQuizziModal(true);
-                    }} 
-                    className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 shadow-sm transition-colors shrink-0 cursor-pointer"
-                  >
-                    <Link2 className="w-3.5 h-3.5" /> Tạo trò chơi Quizzi
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button 
+                      onClick={() => {
+                        setEditingQuizziGame(null);
+                        setShowCreateQuizziModal(true);
+                      }} 
+                      className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-700 shadow-sm transition-colors shrink-0 cursor-pointer"
+                    >
+                      <Link2 className="w-3.5 h-3.5" /> Tạo trò chơi Quizzi
+                    </button>
+                  </div>
                 </div>
 
                                 {/* Filters container */}
@@ -2293,7 +2385,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                           </div>
                         )}
                         
-                        <div className="flex flex-wrap items-center gap-1.5 mb-3">
+                        <div className="flex flex-wrap items-center gap-1.5 mb-3 pr-20">
                           <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 bg-${game.color}-100 text-${game.color}-700 rounded-full text-[10px] font-black uppercase w-fit`}>
                             <IconComponent className="w-3 h-3" /> {game.subject}
                           </div>
@@ -2304,13 +2396,13 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                           )}
                         </div>
                         
-                        <h4 className="text-sm font-bold text-slate-800 mb-2 pr-20 leading-tight">{game.title}</h4>
+                        <h4 className="text-sm font-bold text-slate-800 mb-2 pr-4 leading-tight">{game.title}</h4>
                         
-                        <p className="text-xs text-slate-500 mb-4 leading-relaxed pr-8 flex-1">
+                        <p className="text-xs text-slate-500 mb-4 leading-relaxed pr-2 flex-1">
                           {game.desc}
                         </p>
                         
-                        <div className="flex items-center gap-2 mb-4">
+                        <div className="flex items-center gap-2 mb-3">
                           <span className="inline-flex items-center gap-1 px-2 py-1 bg-slate-50 border border-slate-200 text-slate-600 rounded text-[10px] font-bold">
                             <span className="text-base leading-none -mt-0.5">🏫</span> {game.grade}
                           </span>
@@ -2318,27 +2410,29 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                             <span className="text-base leading-none -mt-0.5">📕</span> Lớp: {game.classInfo === 'Tất cả các lớp' ? 'Tất cả' : game.classInfo.replace('Lớp ', '')}
                           </span>
                         </div>
-                        
-                        <button
-                          onClick={() => {
-                            const url = game.embedUrl || (game as any).gameUrl || (game as any).externalLink || (game as any).url;
-                            console.log("Quizzi teacher preview URL clicked:", game.title, url, game);
-                            if (url && typeof url === 'string' && url.trim().length > 0) {
-                              let finalUrl = url.trim();
-                              if (!finalUrl.startsWith('http://') && !finalUrl.startsWith('https://')) {
-                                finalUrl = 'https://' + finalUrl;
+
+                        <div className="space-y-2 mt-auto">
+                          <button
+                            onClick={() => {
+                              const url = game.embedUrl || (game as any).gameUrl || (game as any).externalLink || (game as any).url;
+                              console.log("Quizzi teacher preview URL clicked:", game.title, url, game);
+                              if (url && typeof url === 'string' && url.trim().length > 0) {
+                                let finalUrl = url.trim();
+                                if (!finalUrl.startsWith('http://') && !finalUrl.startsWith('https://')) {
+                                  finalUrl = 'https://' + finalUrl;
+                                }
+                                setEmbeddedGameUrl(finalUrl);
+                                setEmbeddedGameTitle(game.title);
+                              } else {
+                                setToastMessage("⚠️ Trò chơi này chưa có đường dẫn trực tuyến hợp lệ");
+                                setTimeout(() => setToastMessage(null), 3000);
                               }
-                              setEmbeddedGameUrl(finalUrl);
-                              setEmbeddedGameTitle(game.title);
-                            } else {
-                              setToastMessage("⚠️ Trò chơi này chưa có đường dẫn trực tuyến hợp lệ");
-                              setTimeout(() => setToastMessage(null), 3000);
-                            }
-                          }}
-                          className={`w-full flex items-center justify-center gap-2 py-2 bg-${game.color}-600 hover:bg-${game.color}-700 text-white rounded-lg text-xs font-bold transition-colors mt-auto cursor-pointer`}
-                        >
-                          <Play className="w-3.5 h-3.5 fill-current" /> Trải nghiệm <Gamepad2 className="w-3.5 h-3.5" />
-                        </button>
+                            }}
+                            className={`w-full flex items-center justify-center gap-2 py-2 bg-${game.color}-600 hover:bg-${game.color}-700 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer`}
+                          >
+                            <Play className="w-3.5 h-3.5 fill-current" /> Trải nghiệm <Gamepad2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     );
                   });
@@ -2416,878 +2510,153 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
         </div>
       )}
 
-      {/* PLAYING MODE */}
-      {gameMode === 'playing' && activeGame && (
-        <div className="fixed inset-0 z-50 bg-gradient-to-br from-indigo-950 via-purple-950 to-slate-950 backdrop-blur-xl flex flex-col p-4 sm:p-6 overflow-y-auto animate-in fade-in duration-300">
-          <div className="absolute -top-24 -left-24 w-96 h-96 bg-purple-500/20 rounded-full blur-3xl pointer-events-none" />
-          <div className="absolute -bottom-24 -right-24 w-96 h-96 bg-amber-500/20 rounded-full blur-3xl pointer-events-none" />
+      {/* PLAYING MODE: FLASHCARDS */}
+      {gameMode === 'playing' && activeGame && activeGame.type === 'flashcards' && (
+        <GameFlashcardsStage
+          activeGame={activeGame}
+          currentIndex={currentQuestionIndex}
+          isFlipped={flashcardFlipped}
+          masteredIndices={masteredCardIndices}
+          reviewIndices={reviewCardIndices}
+          onToggleFlip={() => setFlashcardFlipped((prev) => !prev)}
+          onMarkMastered={() => {
+            const nextMastered = masteredCardIndices.includes(currentQuestionIndex)
+              ? masteredCardIndices
+              : [...masteredCardIndices, currentQuestionIndex];
+            const nextReview = reviewCardIndices.filter((i) => i !== currentQuestionIndex);
+            setMasteredCardIndices(nextMastered);
+            setReviewCardIndices(nextReview);
+            const nextCorrectCount = nextMastered.length;
+            const nextScore = nextCorrectCount * 100;
+            setCorrectCount(nextCorrectCount);
+            setScore(nextScore);
+            setBestStreak((b) => Math.max(b, nextCorrectCount));
+            confetti({ particleCount: 35, spread: 55, origin: { y: 0.7 } });
+            setFlashcardFlipped(false);
+            if (currentQuestionIndex + 1 < activeGame.questions.length) {
+              setCurrentQuestionIndex((prev) => prev + 1);
+            } else {
+              finishGameAndAward(nextScore);
+            }
+          }}
+          onMarkNeedsReview={() => {
+            const nextReview = reviewCardIndices.includes(currentQuestionIndex)
+              ? reviewCardIndices
+              : [...reviewCardIndices, currentQuestionIndex];
+            const nextMastered = masteredCardIndices.filter((i) => i !== currentQuestionIndex);
+            setReviewCardIndices(nextReview);
+            setMasteredCardIndices(nextMastered);
+            const nextCorrectCount = nextMastered.length;
+            setCorrectCount(nextCorrectCount);
+            setScore(nextCorrectCount * 100);
+            setFlashcardFlipped(false);
+            if (currentQuestionIndex + 1 < activeGame.questions.length) {
+              setCurrentQuestionIndex((prev) => prev + 1);
+            } else {
+              finishGameAndAward(nextCorrectCount * 100);
+            }
+          }}
+          onPrevCard={() => {
+            setFlashcardFlipped(false);
+            setCurrentQuestionIndex((prev) => Math.max(0, prev - 1));
+          }}
+          onJumpToNextReview={() => {
+            if (reviewCardIndices.length > 0) {
+              setFlashcardFlipped(false);
+              setCurrentQuestionIndex(reviewCardIndices[0]);
+            }
+          }}
+          onFinishDeck={() => {
+            const finalCorrect = masteredCardIndices.length;
+            setCorrectCount(finalCorrect);
+            finishGameAndAward(finalCorrect * 100);
+          }}
+          onExit={() => {
+            setGameMode('lobby');
+            setActiveGame(null);
+          }}
+        />
+      )}
 
-          <div className="w-full mx-auto flex flex-col flex-1 justify-between space-y-6 relative z-10">
-            {/* Top Bar with Badge & Close / Exit */}
-            <div className="flex items-center justify-between pb-4 border-b border-white/15">
-              <span className="text-xs sm:text-sm font-black uppercase tracking-widest text-amber-300 bg-amber-400/20 px-4 py-1.5 rounded-full border border-amber-300/30">
-                🚀 ĐẤU TRƯỜNG TRỰC TUYẾN
-              </span>
-              <button
-                onClick={() => {
-                  setGameMode('lobby');
-                  setActiveGame(null);
-                }}
-                className="w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white text-sm font-bold transition-colors cursor-pointer border border-white/20"
-                title="Thoát đấu trường"
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Main Content Grid: Question Area (75%) + Live Leaderboard (25%) */}
-            <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 items-start flex-1">
-              
-              {/* Left Column: Question & Answers */}
-              <div className="lg:col-span-3 space-y-6 flex flex-col justify-center">
-
-          {/* GAME TYPE: Golden Bell & Speed Quiz */}
-          {(activeGame.type === 'golden_bell' || activeGame.type === 'speed_quiz') && (
-            <div className="space-y-6 flex-1 flex flex-col justify-center">
-              
-              {/* Progress & Score Bar */}
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <span className="px-4 py-1.5 bg-white/10 text-indigo-200 font-bold text-sm sm:text-base rounded-full border border-white/20 shadow-sm">
-                    Câu hỏi {currentQuestionIndex + 1} / {activeGame.questions.length}
-                  </span>
-                  <span className="px-4 py-1.5 bg-amber-400/20 text-amber-300 font-bold text-sm sm:text-base rounded-full border border-amber-300/30 flex items-center gap-1.5 shadow-sm">
-                    <Trophy className="w-4 h-4 text-amber-300" /> Điểm: {score}
-                  </span>
-                </div>
-
-                {/* Live Timer (Only if time-limited) */}
-                {activeGame.isTimeLimited !== false && (
-                  <div
-                    className={`px-5 py-2 rounded-full font-extrabold text-base sm:text-lg flex items-center gap-2 border shadow-md ${
-                      timerSeconds <= 3
-                        ? 'bg-rose-600 text-white border-rose-400 animate-bounce'
-                        : 'bg-white/10 text-amber-200 border-white/20'
-                    }`}
-                  >
-                    <Clock className="w-5 h-5" /> 00:{timerSeconds < 10 ? `0${timerSeconds}` : timerSeconds}
-                  </div>
-                )}
-              </div>
-
-              {/* Central Glowing Icon / Badge Circle */}
-              <div className="flex justify-center py-1">
-                <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full bg-amber-400/20 border-4 border-amber-400/60 shadow-[0_0_35px_rgba(245,158,11,0.5)] flex items-center justify-center animate-pulse">
-                  <Zap className="w-10 h-10 sm:w-12 sm:h-12 text-amber-300 fill-amber-300" />
-                </div>
-              </div>
-
-              {/* Question Box */}
-              <div className="bg-white/10 backdrop-blur-xl p-8 sm:p-10 rounded-3xl border-2 border-white/20 text-center space-y-4 shadow-2xl">
-                <span className="text-xs sm:text-sm font-extrabold uppercase tracking-widest text-amber-300 bg-amber-400/20 px-4 py-1 rounded-full border border-amber-300/30">
-                  {activeGame.type === 'golden_bell' ? '🔔 RUNG CHUÔNG VÀNG' : '⚡ TRẮC NGHIỆM TỐC ĐỘ'}
-                </span>
-                <h3 className="text-xl sm:text-2xl md:text-3xl font-extrabold text-white font-heading leading-relaxed max-w-4xl mx-auto">
-                  {activeGame.questions[currentQuestionIndex].question || activeGame.questions[currentQuestionIndex].content}
-                </h3>
-              </div>
-
-               {/* Question Render Block based on Type */}
-              {(() => {
-                const q = activeGame.questions[currentQuestionIndex];
-                console.log('🔍 QUESTION TEST 1:', { id: q.id, type: q.type, content: q.content, question: q.question, statements: q.statements, full: q });
-                const qType = (q.type || '').toLowerCase();
-
-                const isMatching = isMatchingQuestion(q);
-                const isTrueFalse = isTrueFalseQuestion(q);
-                const isMultipleResponse = isMultipleResponseQuestion(q);
-                const isOrdering = isOrderingQuestion(q);
-                const isClassification = isClassificationQuestion(q);
-                const isMultipleChoice = isMultipleChoiceQuestion(q);
-
-                if (isMatching) {
-                  return (
-                    <div className="space-y-4">
-                      <div className="bg-indigo-950/60 p-4 rounded-2xl border border-amber-400/30 text-amber-200 text-xs sm:text-sm font-bold text-center flex items-center justify-center gap-2">
-                        <span>🔗</span>
-                        <span>Hãy chọn ghép nối tương ứng cho mỗi khái niệm dưới đây:</span>
-                      </div>
-                      <div className="space-y-3">
-                        {(q.matchingPairs || []).map((pair, pIdx) => {
-                          const currentAnswers = gameAnswers[currentQuestionIndex] || {};
-                          const selectedRightVal = currentAnswers[pIdx] || '';
-                          return (
-                            <div key={pIdx} className="p-4 bg-white/10 backdrop-blur-md border-2 border-white/20 rounded-2xl flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
-                              <div className="flex-1 flex items-start gap-3">
-                                <div className="w-6 h-6 rounded-lg bg-amber-400/20 text-amber-300 flex items-center justify-center font-black text-xs shrink-0 mt-0.5">
-                                  {pIdx + 1}
-                                </div>
-                                <span className="text-xs sm:text-sm font-bold text-white">{pair.left}</span>
-                              </div>
-                              <div className="text-amber-300 hidden md:block">➔</div>
-                              <div className="flex-1">
-                                <select
-                                  value={selectedRightVal}
-                                  disabled={selectedOption !== null}
-                                  onChange={(e) => {
-                                    const val = e.target.value;
-                                    setGameAnswers(prev => ({
-                                      ...prev,
-                                      [currentQuestionIndex]: {
-                                        ...(prev[currentQuestionIndex] || {}),
-                                        [pIdx]: val
-                                      }
-                                    }));
-                                  }}
-                                  className="w-full px-3 py-2.5 bg-indigo-950/80 hover:bg-indigo-900 border-2 border-white/20 focus:border-amber-400 rounded-xl text-white text-xs sm:text-sm font-semibold focus:outline-none transition-all cursor-pointer"
-                                >
-                                  <option value="" className="font-bold text-slate-400 bg-indigo-950">-- Chọn đáp án ghép nối --</option>
-                                  {(q.matchingPairs || []).map((p, optIdx) => (
-                                    <option key={optIdx} value={p.right} className="font-semibold text-slate-800 bg-white">
-                                      {p.right}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      {selectedOption === null ? (
-                        <div className="pt-2 flex justify-center">
-                          <button
-                            onClick={() => handleGameAnswerSubmit(gameAnswers[currentQuestionIndex] || {})}
-                            className="px-6 py-3 bg-amber-400 hover:bg-amber-300 text-indigo-950 font-extrabold rounded-xl shadow-lg transition-all cursor-pointer"
-                          >
-                            Xác nhận hoàn thành ghép nối ✓
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="p-4 bg-emerald-600/90 text-white rounded-xl text-center font-bold text-sm border border-emerald-400">
-                          ✨ Đã ghi nhận kết quả ghép nối!
-                        </div>
-                      )}
-                    </div>
-                  );
-                }
-
-                if (isMultipleResponse && q.options && q.options.length > 0) {
-                  return (
-                    <div className="space-y-3">
-                      <div className="bg-indigo-950/60 p-3 rounded-xl border border-amber-400/30 text-amber-200 text-xs font-bold text-center flex items-center justify-center gap-2">
-                        <span>☑️</span>
-                        <span>Chọn tất cả các đáp án đúng (Có thể chọn nhiều):</span>
-                      </div>
-                      {q.options.map((opt: string, optIdx: number) => {
-                        const optionLetter = String.fromCharCode(65 + optIdx);
-                        const currentArr: number[] = Array.isArray(gameAnswers[currentQuestionIndex]) ? gameAnswers[currentQuestionIndex] : [];
-                        const isSelected = currentArr.includes(optIdx);
-
-                        return (
-                          <button
-                            key={optIdx}
-                            type="button"
-                            disabled={selectedOption !== null}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (selectedOption !== null) return;
-                              const prevArr: number[] = Array.isArray(gameAnswers[currentQuestionIndex]) ? gameAnswers[currentQuestionIndex] : [];
-                              let newArr: number[];
-                              if (prevArr.includes(optIdx)) {
-                                newArr = prevArr.filter((i: number) => i !== optIdx);
-                              } else {
-                                newArr = [...prevArr, optIdx].sort((a, b) => a - b);
-                              }
-                              setGameAnswers(prev => ({ ...prev, [currentQuestionIndex]: newArr }));
-                            }}
-                            className={`w-full text-left p-3.5 rounded-2xl border-2 transition-all flex items-center gap-3.5 cursor-pointer ${
-                              isSelected
-                                ? 'bg-amber-400/20 border-amber-400 text-white shadow-sm'
-                                : 'bg-white/10 border-white/20 hover:border-white/40 text-white'
-                            }`}
-                          >
-                            <div className={`w-7.5 h-7.5 rounded-md border flex items-center justify-center font-black text-[11px] shrink-0 transition-all ${
-                              isSelected
-                                ? 'bg-amber-400 border-amber-400 text-indigo-950'
-                                : 'bg-white/10 text-white border-white/20'
-                            }`}>
-                              {isSelected ? <Check className="w-4 h-4" /> : optionLetter}
-                            </div>
-                            <span className="text-xs sm:text-sm font-semibold flex-1">{opt}</span>
-                          </button>
-                        );
-                      })}
-                      {selectedOption === null && (
-                        <div className="pt-2 flex justify-end">
-                          <button
-                            onClick={() => handleGameAnswerSubmit(gameAnswers[currentQuestionIndex] || [])}
-                            className="px-6 py-3 bg-amber-400 hover:bg-amber-300 text-indigo-950 font-extrabold rounded-xl shadow-lg transition-all cursor-pointer"
-                          >
-                            Nộp câu trả lời ✓
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                }
-
-                if (isOrdering) {
-                  const currentOrder: string[] = Array.isArray(gameAnswers[currentQuestionIndex])
-                    ? gameAnswers[currentQuestionIndex]
-                    : (q.options || []);
-
-                  if (!Array.isArray(gameAnswers[currentQuestionIndex]) && q.options && q.options.length > 0) {
-                    setTimeout(() => {
-                      setGameAnswers(prev => ({ ...prev, [currentQuestionIndex]: [...q.options] }));
-                    }, 0);
-                  }
-
-                  return (
-                    <div className="space-y-3">
-                      <div className="bg-indigo-950/60 p-3 rounded-xl border border-amber-400/30 text-amber-200 text-xs font-bold text-center flex items-center justify-center gap-2">
-                        <span>↕️</span>
-                        <span>Hãy sắp xếp các thao tác / bước theo đúng thứ tự (dùng nút ▲ / ▼):</span>
-                      </div>
-                      <div className="space-y-2.5">
-                        {currentOrder.map((item, oIdx) => (
-                          <div key={oIdx} className="p-3.5 bg-white/10 border border-white/20 rounded-2xl flex items-center justify-between gap-3 backdrop-blur-md">
-                            <div className="flex items-center gap-3">
-                              <span className="w-7 h-7 rounded-xl bg-amber-400 text-indigo-950 flex items-center justify-center text-xs font-black shrink-0">
-                                {oIdx + 1}
-                              </span>
-                              <span className="text-xs sm:text-sm font-semibold text-white">{item}</span>
-                            </div>
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <button
-                                type="button"
-                                disabled={oIdx === 0 || selectedOption !== null}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  const newOrder = [...currentOrder];
-                                  const temp = newOrder[oIdx];
-                                  newOrder[oIdx] = newOrder[oIdx - 1];
-                                  newOrder[oIdx - 1] = temp;
-                                  setGameAnswers(prev => ({ ...prev, [currentQuestionIndex]: newOrder }));
-                                }}
-                                className="w-8 h-8 rounded-xl bg-white/10 hover:bg-white/20 text-white disabled:opacity-30 cursor-pointer font-extrabold text-xs flex items-center justify-center transition-all"
-                              >
-                                ▲
-                              </button>
-                              <button
-                                type="button"
-                                disabled={oIdx === currentOrder.length - 1 || selectedOption !== null}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  const newOrder = [...currentOrder];
-                                  const temp = newOrder[oIdx];
-                                  newOrder[oIdx] = newOrder[oIdx + 1];
-                                  newOrder[oIdx + 1] = temp;
-                                  setGameAnswers(prev => ({ ...prev, [currentQuestionIndex]: newOrder }));
-                                }}
-                                className="w-8 h-8 rounded-xl bg-white/10 hover:bg-white/20 text-white disabled:opacity-30 cursor-pointer font-extrabold text-xs flex items-center justify-center transition-all"
-                              >
-                                ▼
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                      {selectedOption === null ? (
-                        <div className="pt-2 flex justify-end">
-                          <button
-                            onClick={() => handleGameAnswerSubmit(currentOrder)}
-                            className="px-6 py-3 bg-amber-400 hover:bg-amber-300 text-indigo-950 font-extrabold rounded-xl shadow-lg transition-all cursor-pointer"
-                          >
-                            Xác nhận sắp xếp ✓
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="p-4 bg-emerald-600/90 text-white rounded-xl text-center font-bold text-sm border border-emerald-400">
-                          ✨ Đã hoàn thành sắp xếp!
-                        </div>
-                      )}
-                    </div>
-                  );
-                }
-
-                if (isClassification) {
-                  return (
-                    <div className="space-y-4">
-                      <div className="bg-indigo-950/60 p-4 rounded-2xl border border-amber-400/30 text-amber-200 text-xs sm:text-sm font-bold text-center flex items-center justify-center gap-2">
-                        <span>📂</span>
-                        <span>Hãy xếp các vật phẩm vào đúng nhóm thích hợp:</span>
-                      </div>
-                      <div className="space-y-3">
-                        {(q.classificationItems || []).map((item, iIdx) => {
-                          const currentAnswers = gameAnswers[currentQuestionIndex] || {};
-                          const selectedGroup = currentAnswers[iIdx] || '';
-                          return (
-                            <div key={iIdx} className="p-4 bg-white/10 backdrop-blur-md border border-white/20 rounded-2xl flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-                              <span className="text-white font-bold text-sm">{iIdx + 1}. {item.name}</span>
-                              <select
-                                value={selectedGroup}
-                                disabled={selectedOption !== null}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  setGameAnswers(prev => ({
-                                    ...prev,
-                                    [currentQuestionIndex]: {
-                                      ...(prev[currentQuestionIndex] || {}),
-                                      [iIdx]: val
-                                    }
-                                  }));
-                                }}
-                                className="px-3 py-2 bg-indigo-950/80 border border-white/20 rounded-xl text-white text-xs font-semibold focus:outline-none focus:border-amber-400 cursor-pointer"
-                              >
-                                <option value="" className="bg-indigo-950 text-slate-400">-- Chọn nhóm --</option>
-                                {(q.classificationGroups || ['Nhóm 1', 'Nhóm 2']).map((gName, gIdx) => (
-                                  <option key={gIdx} value={gName} className="bg-white text-slate-900 font-semibold">{gName}</option>
-                                ))}
-                              </select>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      {selectedOption === null ? (
-                        <div className="pt-2 flex justify-center">
-                          <button
-                            onClick={() => handleGameAnswerSubmit(gameAnswers[currentQuestionIndex] || {})}
-                            className="px-6 py-3 bg-amber-400 hover:bg-amber-300 text-indigo-950 font-extrabold rounded-xl shadow-lg transition-all cursor-pointer"
-                          >
-                            Xác nhận phân loại ✓
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="p-4 bg-emerald-600/90 text-white rounded-xl text-center font-bold text-sm">
-                          ✨ Đã hoàn thành phân loại!
-                        </div>
-                      )}
-                    </div>
-                  );
-                }
-
-                if (isTrueFalse) {
-                  const qa = q as any;
-                  const statementsToUse = (q.statements && q.statements.length > 0)
-                    ? q.statements
-                    : [{ statement: q.question || q.content || 'Đánh giá phát biểu sau:', isCorrect: qa.correctAnswer === 'A' || String(qa.correctAnswer).toLowerCase().includes('đúng') || qa.correctAnswer === true }];
-
-                  return (
-                    <div className="space-y-3">
-                      <div className="bg-indigo-950/60 p-3 rounded-xl border border-amber-400/30 text-amber-200 text-xs font-bold text-center">
-                        📋 Đánh giá các nhận định sau đây là Đúng hay Sai:
-                      </div>
-                      {statementsToUse.map((st: any, idx: number) => {
-                        const currentAnswers = gameAnswers[currentQuestionIndex] || {};
-                        const val = currentAnswers[idx]; // true, false, or undefined
-                        return (
-                          <div key={idx} className="p-4 bg-white/10 rounded-2xl border border-white/20 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 backdrop-blur-md">
-                            <span className="text-white font-bold text-sm sm:text-base">{statementsToUse.length > 1 ? `${idx + 1}. ` : ''}{st.statement}</span>
-                            <div className="flex items-center gap-2 shrink-0">
-                              <button
-                                type="button"
-                                disabled={selectedOption !== null}
-                                onClick={() => {
-                                  if (selectedOption !== null) return;
-                                  setGameAnswers(prev => ({
-                                    ...prev,
-                                    [currentQuestionIndex]: {
-                                      ...(prev[currentQuestionIndex] || {}),
-                                      [idx]: true
-                                    }
-                                  }));
-                                }}
-                                className={`px-4 py-2 rounded-xl font-extrabold text-xs transition-all cursor-pointer ${
-                                  val === true
-                                    ? 'bg-emerald-600 text-white shadow-md'
-                                    : 'bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 border border-emerald-400/40'
-                                }`}
-                              >
-                                Đúng
-                              </button>
-                              <button
-                                type="button"
-                                disabled={selectedOption !== null}
-                                onClick={() => {
-                                  if (selectedOption !== null) return;
-                                  setGameAnswers(prev => ({
-                                    ...prev,
-                                    [currentQuestionIndex]: {
-                                      ...(prev[currentQuestionIndex] || {}),
-                                      [idx]: false
-                                    }
-                                  }));
-                                }}
-                                className={`px-4 py-2 rounded-xl font-extrabold text-xs transition-all cursor-pointer ${
-                                  val === false
-                                    ? 'bg-rose-600 text-white shadow-md'
-                                    : 'bg-rose-500/20 hover:bg-rose-500/40 text-rose-300 border border-rose-400/40'
-                                }`}
-                              >
-                                Sai
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                      {selectedOption === null ? (
-                        <div className="pt-2 flex justify-end">
-                          <button
-                            onClick={() => handleGameAnswerSubmit(gameAnswers[currentQuestionIndex] || {})}
-                            className="px-6 py-3 bg-amber-400 hover:bg-amber-300 text-indigo-950 font-extrabold rounded-xl shadow-lg transition-all cursor-pointer"
-                          >
-                            Nộp đáp án Đúng/Sai ✓
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="p-4 bg-emerald-600/90 text-white rounded-xl text-center font-bold text-sm">
-                          ✨ Đã nộp đáp án!
-                        </div>
-                      )}
-                    </div>
-                  );
-                }
-
-                if (isMultipleChoice) {
-                  return (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      {(q.options || []).map((opt, idx) => {
-                        const optionLetter = String.fromCharCode(65 + idx);
-                        const isSelected = selectedOption === optionLetter;
-                        const isCorrect = optionLetter === q.answer;
-
-                        return (
-                          <button
-                            key={idx}
-                            onClick={() => handleGameAnswerSubmit(optionLetter)}
-                            disabled={selectedOption !== null}
-                            className={`p-5 sm:p-6 rounded-2xl border-2 text-left font-extrabold text-sm sm:text-base transition-all cursor-pointer flex items-center justify-between shadow-lg ${
-                              selectedOption !== null
-                                ? isCorrect
-                                  ? 'bg-emerald-600 text-white border-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.4)]'
-                                  : isSelected
-                                  ? 'bg-rose-600 text-white border-rose-400 shadow-[0_0_20px_rgba(225,29,72,0.4)]'
-                                  : 'bg-white/5 text-white/30 border-white/10 opacity-40'
-                                : 'bg-white/10 hover:bg-white/20 text-white border-white/20 hover:border-amber-400/60 backdrop-blur-md hover:scale-[1.01]'
-                            }`}
-                          >
-                            <span className="leading-relaxed">{opt}</span>
-                            {selectedOption !== null && isCorrect && (
-                              <CheckCircle2 className="w-6 h-6 text-emerald-200 shrink-0 ml-3" />
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  );
-                }
-
-                // Fallback for essay / fill blank / generic
-                const rawAns = gameAnswers[currentQuestionIndex];
-                const essayVal = (typeof rawAns === 'string' || typeof rawAns === 'number') ? String(rawAns) : '';
-                return (
-                  <div className="space-y-4">
-                    <textarea
-                      placeholder="Nhập câu trả lời của em tại đây..."
-                      disabled={selectedOption !== null}
-                      value={essayVal}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setGameAnswers(prev => ({ ...prev, [currentQuestionIndex]: val }));
-                      }}
-                      className="w-full p-4 bg-white/10 border border-white/20 rounded-2xl text-white placeholder-white/40 focus:outline-none focus:border-amber-400 text-sm sm:text-base backdrop-blur-md"
-                      rows={3}
-                    />
-                    {selectedOption === null ? (
-                      <div className="flex justify-end">
-                        <button
-                          onClick={() => handleGameAnswerSubmit(essayVal)}
-                          className="px-6 py-3 bg-amber-400 hover:bg-amber-300 text-indigo-950 font-extrabold rounded-xl shadow-lg transition-all cursor-pointer"
-                        >
-                          Nộp bài trả lời ✓
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="p-4 bg-emerald-600/90 text-white rounded-xl text-center font-bold text-sm">
-                        ✨ Đã gửi câu trả lời thành công!
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
-
-              {/* Explanation note */}
-              {selectedOption !== null && activeGame.questions[currentQuestionIndex].explanation && (
-                <div className="p-5 bg-indigo-950/90 rounded-2xl text-sm text-amber-200 border-2 border-amber-400/40 animate-in fade-in backdrop-blur-md shadow-xl">
-                  💡 <strong>Giải thích:</strong> {activeGame.questions[currentQuestionIndex].explanation}
-                </div>
-              )}
-
-              {/* Manual Next Question Button in Self-Paced Mode */}
-              {activeGame.isTimeLimited === false && selectedOption !== null && (
-                <div className="flex justify-end pt-3">
-                  <button
-                    onClick={() => {
-                      if (currentQuestionIndex + 1 < activeGame.questions.length) {
-                        setCurrentQuestionIndex((prev) => prev + 1);
-                        setSelectedOption(null);
-                      } else {
-                        finishGameAndAward(score);
-                      }
-                    }}
-                    className="px-8 py-3.5 bg-gradient-to-r from-amber-400 to-orange-500 hover:from-amber-300 hover:to-orange-400 text-indigo-950 font-extrabold text-sm sm:text-base rounded-2xl shadow-xl transition-all flex items-center gap-3 cursor-pointer animate-in fade-in mx-auto sm:mx-0"
-                  >
-                    <span>Câu tiếp theo</span>
-                    <ArrowRight className="w-5 h-5" />
-                  </button>
-                </div>
-              )}
-
-            </div>
-          )}
-
-          {/* GAME TYPE: Lucky Wheel */}
-          {activeGame.type === 'lucky_wheel' && (
-            <div className="text-center space-y-6 relative z-10">
-              <h3 className="text-xl font-extrabold text-white font-heading flex items-center justify-center gap-2">
-                <Disc className="w-6 h-6 text-amber-300 animate-spin-slow" /> Vòng Quay Chọn Học Sinh May Mắn
-              </h3>
-
-              <div className="w-64 h-64 mx-auto rounded-full bg-gradient-to-tr from-amber-400 via-purple-500 to-indigo-500 p-3 shadow-2xl flex items-center justify-center relative animate-pulse">
-                <div className="w-full h-full rounded-full bg-slate-900 flex flex-col items-center justify-center p-4 text-center border-4 border-amber-300 shadow-inner">
-                  <span className="text-xs font-bold text-amber-300/80 uppercase">HỌC SINH ĐƯỢC CHỌN</span>
-                  <div className="text-xl font-extrabold text-white font-heading mt-2">
-                    {wheelWinner || 'Bấm Quay Ngay!'}
-                  </div>
-                </div>
-              </div>
-
-              <div className="pt-2">
-                <button
-                  onClick={handleSpinLuckyWheel}
-                  disabled={isSpinning}
-                  className="px-8 py-3 bg-gradient-to-r from-amber-400 to-orange-500 hover:from-amber-300 hover:to-orange-400 text-indigo-950 font-extrabold text-sm rounded-full shadow-2xl transition-all flex items-center gap-2 mx-auto cursor-pointer disabled:opacity-50"
-                >
-                  <RotateCw className={`w-5 h-5 ${isSpinning ? 'animate-spin' : ''}`} />
-                  {isSpinning ? 'Đang quay...' : 'QUAY NGAY BÂY GIỜ'}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* GAME TYPE: Flashcards */}
-          {activeGame.type === 'flashcards' && (
-            <div className="space-y-6 text-center relative z-10">
-              <div className="flex items-center justify-between text-xs font-bold text-amber-200">
-                <span>Thẻ {currentQuestionIndex + 1} / {activeGame.questions.length}</span>
-                <span>Bấm vào thẻ để lật xem đáp án</span>
-              </div>
-
-              {/* 3D Flip Card */}
-              <div
-                onClick={() => setFlashcardFlipped(!flashcardFlipped)}
-                className="w-full h-64 bg-gradient-to-tr from-indigo-900 via-purple-900 to-slate-900 rounded-3xl p-6 text-white shadow-2xl border-2 border-amber-400/50 flex flex-col items-center justify-center cursor-pointer transition-transform duration-300 hover:scale-[1.02]"
-              >
-                {!flashcardFlipped ? (
-                  <div className="space-y-2">
-                    <span className="text-xs font-bold text-amber-300 uppercase tracking-widest">
-                      THUẬT NGỮ / CÂU HỎI
-                    </span>
-                    <h3 className="text-2xl font-extrabold font-heading text-white">
-                      {activeGame.questions[currentQuestionIndex].question || activeGame.questions[currentQuestionIndex].content}
-                    </h3>
-                  </div>
-                ) : (
-                  <div className="space-y-2 animate-in fade-in">
-                    <span className="text-xs font-bold text-amber-300 uppercase tracking-widest">
-                      ĐÁP ÁN & ĐỊNH NGHĨA
-                    </span>
-                    <p className="text-sm font-semibold leading-relaxed text-amber-100">
-                      {activeGame.questions[currentQuestionIndex].answer}
-                    </p>
-                  </div>
-                )}
-              </div>
-
-              <div className="flex justify-between items-center pt-2">
-                <button
-                  onClick={() => {
-                    setFlashcardFlipped(false);
-                    setCurrentQuestionIndex((prev) => Math.max(0, prev - 1));
-                  }}
-                  disabled={currentQuestionIndex === 0}
-                  className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white text-xs font-bold rounded-xl transition-all disabled:opacity-50 border border-white/20 cursor-pointer"
-                >
-                  Thẻ Trước
-                </button>
-
-                <button
-                  onClick={() => {
-                    setFlashcardFlipped(false);
-                    if (currentQuestionIndex + 1 < activeGame.questions.length) {
-                      setCurrentQuestionIndex((prev) => prev + 1);
-                    } else {
-                      finishGameAndAward(100);
-                    }
-                  }}
-                  className="px-6 py-2 bg-gradient-to-r from-amber-400 to-orange-500 hover:from-amber-300 hover:to-orange-400 text-indigo-950 text-xs font-extrabold rounded-xl transition-all shadow-lg cursor-pointer"
-                >
-                  Thẻ Tiếp Theo
-                </button>
-              </div>
-            </div>
-          )}
-
-              </div>
-
-              {/* Right Column: Live Leaderboard (25% on lg) */}
-              <div className="lg:col-span-1 bg-white/10 backdrop-blur-xl rounded-3xl p-5 border-2 border-amber-400/40 shadow-2xl space-y-4 relative overflow-hidden">
-                <div className="absolute -top-10 -right-10 w-32 h-32 bg-amber-500/10 rounded-full blur-2xl pointer-events-none" />
-
-                <div className="text-center pb-3 border-b border-white/15 relative z-10">
-                  <span className="text-xs font-black uppercase tracking-widest text-amber-300 bg-amber-400/20 px-3 py-1 rounded-full border border-amber-300/30 inline-block">
-                    🏆 THỨ HẠNG TRỰC TIẾP
-                  </span>
-                </div>
-
-                <div className="space-y-2.5 relative z-10 max-h-[400px] overflow-y-auto pr-1">
-                  {[
-                    { rank: 1, name: 'Lê Minh Anh', score: score + 300, avatar: '🦊', isMe: false },
-                    { rank: 2, name: currentUserName || 'Hoàng Bảo An', score: score, avatar: '🐰', isMe: true },
-                    { rank: 3, name: 'Nguyễn Văn Nam', score: Math.max(0, score - 50), avatar: '🐱', isMe: false },
-                    { rank: 4, name: 'Trần Thảo Vy', score: Math.max(0, score - 120), avatar: '🐼', isMe: false },
-                    { rank: 5, name: 'Phạm Minh Quân', score: Math.max(0, score - 200), avatar: '🐨', isMe: false },
-                  ].sort((a, b) => b.score - a.score).map((player, idx) => {
-                    const actualRank = idx + 1;
-                    return (
-                      <div
-                        key={idx}
-                        className={`p-3 rounded-2xl flex items-center justify-between border transition-all ${
-                          player.isMe
-                            ? 'bg-amber-400/20 border-amber-400/60 shadow-[0_0_15px_rgba(245,158,11,0.3)]'
-                            : 'bg-white/5 border-white/10 hover:bg-white/10'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-black shrink-0 ${
-                            actualRank === 1 ? 'bg-amber-400 text-indigo-950 shadow-md' :
-                            actualRank === 2 ? 'bg-slate-300 text-indigo-950' :
-                            actualRank === 3 ? 'bg-amber-600 text-white' : 'bg-white/10 text-amber-200'
-                          }`}>
-                            {actualRank === 1 ? '🥇' : actualRank === 2 ? '🥈' : actualRank === 3 ? '🥉' : actualRank}
-                          </span>
-                          <span className="text-base shrink-0">{player.avatar}</span>
-                          <span className={`text-xs font-bold truncate ${player.isMe ? 'text-amber-300 underline font-black' : 'text-white'}`}>
-                            {player.name} {player.isMe && '(Em)'}
-                          </span>
-                        </div>
-                        <span className="text-xs font-black text-amber-300 shrink-0 ml-2">
-                          {player.score} đ
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <div className="pt-2 text-center text-[10px] text-amber-200/60 italic">
-                  ✨ Điểm số cập nhật liên tục real-time theo từng câu trả lời.
-                </div>
-              </div>
-
-            </div>
-
-            {/* Indicator Dots at the bottom */}
-            <div className="flex items-center justify-center gap-2 pt-2 relative z-10">
-              <div className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse" />
-              <div className="w-2.5 h-2.5 rounded-full bg-cyan-400" />
-              <div className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
-              <div className="w-2.5 h-2.5 rounded-full bg-yellow-400" />
-            </div>
-
-          </div>
-        </div>
+      {/* PLAYING MODE: GOLDEN BELL / BOAT RACE / LUCKY WHEEL */}
+      {gameMode === 'playing' && activeGame && activeGame.type !== 'flashcards' && (
+        <GamePlayStage
+          activeGame={activeGame}
+          currentQuestionIndex={currentQuestionIndex}
+          selectedOption={selectedOption}
+          selectedChoiceKey={selectedChoiceKey}
+          score={score}
+          comboStreak={comboStreak}
+          correctCount={correctCount}
+          timerSeconds={timerSeconds}
+          totalTimerSeconds={totalTimerSeconds}
+          currentUserName={currentUserName}
+          gameAnswers={gameAnswers}
+          setGameAnswers={setGameAnswers}
+          onExit={() => {
+            setIsTimerRunning(false);
+            setGameMode('lobby');
+            setActiveGame(null);
+          }}
+          onSubmitAnswer={handleGameAnswerSubmit}
+          onNextManualQuestion={() => {
+            const perQSeconds = activeGame.type === 'speed_quiz' ? 10 : 15;
+            if (currentQuestionIndex + 1 < activeGame.questions.length) {
+              setCurrentQuestionIndex((prev) => prev + 1);
+              setSelectedOption(null);
+              setSelectedChoiceKey(null);
+              setTotalTimerSeconds(perQSeconds);
+              setTimerSeconds(perQSeconds);
+            } else {
+              finishGameAndAward(score);
+            }
+          }}
+          isSpinning={isSpinning}
+          wheelWinner={wheelWinner}
+          onSpinLuckyWheel={handleSpinLuckyWheel}
+          isMatchingQuestion={isMatchingQuestion}
+          isTrueFalseQuestion={isTrueFalseQuestion}
+          isMultipleResponseQuestion={isMultipleResponseQuestion}
+          isOrderingQuestion={isOrderingQuestion}
+          isClassificationQuestion={isClassificationQuestion}
+          isMultipleChoiceQuestion={isMultipleChoiceQuestion}
+        />
       )}
 
       {/* RESULT MODE */}
       {gameMode === 'result' && activeGame && (
-        <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-300">
-          <div className="bg-gradient-to-br from-indigo-950 via-purple-950 to-slate-950 rounded-3xl p-8 sm:p-10 w-full max-w-lg text-white shadow-2xl border-2 border-amber-400/50 shadow-[0_0_50px_rgba(245,158,11,0.3)] relative overflow-hidden text-center space-y-6">
-            <div className="absolute -top-16 -left-16 w-56 h-56 bg-purple-500/20 rounded-full blur-3xl pointer-events-none" />
-            <div className="absolute -bottom-16 -right-16 w-56 h-56 bg-amber-500/20 rounded-full blur-3xl pointer-events-none" />
-
-            <div className="relative z-10 space-y-2">
-              <span className="text-xs font-black uppercase tracking-widest text-amber-300 bg-amber-400/20 px-3 py-1 rounded-full border border-amber-300/30">
-                🏆 KẾT QUẢ ĐẤU TRƯỜNG
-              </span>
-            </div>
-
-            {(() => {
-              const totalPossible = (activeGame?.questions?.length || 1) * 100;
-              const ratio = totalPossible > 0 ? score / totalPossible : 0;
-
-              let tier = {
-                title: 'HOÀN THÀNH XUẤT SẮC!',
-                subtitle: `Chúc mừng <strong>${currentUserName || 'Học sinh'}</strong> đã chiến thắng thử thách xuất sắc!`,
-                isZero: false,
-                iconColor: 'text-amber-300 fill-amber-300',
-                iconBg: 'bg-amber-400/20 border-amber-400/60 shadow-[0_0_30px_rgba(245,158,11,0.5)]'
-              };
-
-              if (score === 0 || ratio === 0) {
-                tier = {
-                  title: 'HẾT GIỜ / CHƯA TRẢ LỜI',
-                  subtitle: `Em chưa trả lời đúng câu hỏi nào hoặc đã hết thời gian. Đừng nản lòng, hãy bấm Chơi Lại để thử sức nhé!`,
-                  isZero: true,
-                  iconColor: 'text-slate-300 fill-slate-300',
-                  iconBg: 'bg-slate-800/60 border-slate-600 shadow-[0_0_20px_rgba(100,116,139,0.3)]'
-                };
-              } else if (ratio < 0.5) {
-                tier = {
-                  title: 'ĐÃ HOÀN THÀNH!',
-                  subtitle: `Cùng luyện tập thêm để đạt kết quả tốt hơn nhé, <strong>${currentUserName || 'Học sinh'}</strong>!`,
-                  isZero: false,
-                  iconColor: 'text-amber-300 fill-amber-300',
-                  iconBg: 'bg-amber-400/20 border-amber-400/40 shadow-[0_0_20px_rgba(245,158,11,0.3)]'
-                };
-              } else if (ratio < 0.8) {
-                tier = {
-                  title: 'HOÀN THÀNH TỐT!',
-                  subtitle: `Em đã cố gắng rất nhiều, <strong>${currentUserName || 'Học sinh'}</strong>! Kết quả rất khả quan.`,
-                  isZero: false,
-                  iconColor: 'text-blue-300 fill-blue-300',
-                  iconBg: 'bg-blue-500/20 border-blue-400/50 shadow-[0_0_25px_rgba(59,130,246,0.3)]'
-                };
-              }
-
-              return (
-                <>
-                  <div className={`w-24 h-24 rounded-full border-4 flex items-center justify-center mx-auto relative z-10 ${tier.iconBg}`}>
-                    {tier.isZero ? (
-                      <Clock className={`w-12 h-12 ${tier.iconColor}`} />
-                    ) : (
-                      <Trophy className={`w-12 h-12 ${tier.iconColor} animate-bounce`} />
-                    )}
-                  </div>
-
-                  <div className="space-y-1 relative z-10">
-                    <h3 className="text-2xl font-extrabold text-white font-heading">
-                      {tier.title}
-                    </h3>
-                    <p className="text-xs text-amber-200" dangerouslySetInnerHTML={{ __html: tier.subtitle }} />
-                  </div>
-                </>
-              );
-            })()}
-
-            <div className="p-5 bg-white/10 backdrop-blur-md rounded-2xl border border-white/20 text-center space-y-3 relative z-10">
-              <span className="text-xs font-bold text-amber-300 uppercase tracking-wider">TỔNG ĐIỂM ĐẠT ĐƯỢC</span>
-              <div className="text-4xl font-extrabold text-amber-300 font-heading drop-shadow-md">
-                {score} PTS
-              </div>
-
-              {/* EXP & Coin Rewards Box */}
-              {(() => {
-                const reward = calculateArenaReward(achievedRank || 'unranked');
-                return (
-                  <div className="pt-3 border-t border-white/15 space-y-2.5">
-                    <div className="flex items-center justify-center gap-2">
-                      <span className="text-xs font-black text-amber-900 uppercase bg-amber-300 px-3 py-1 rounded-full shadow-sm">
-                        {achievedRank === 1 ? '🥇 Hạng 1 Xuất Sắc' : achievedRank === 2 ? '🥈 Hạng 2 Ấn Tượng' : achievedRank === 3 ? '🥉 Hạng 3 Tài Năng' : '🎖️ Tham Gia Tích Cực'}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center justify-center gap-3 text-xs font-bold">
-                      <span className={`px-3.5 py-1.5 rounded-full flex items-center gap-1.5 border ${
-                        isRewardAlreadyClaimed ? 'bg-slate-800 text-slate-400 border-slate-700 line-through' : 'bg-amber-400/20 text-amber-200 border-amber-400/30'
-                      }`}>
-                        🪙 +{reward.coins} Xu
-                      </span>
-                      <span className={`px-3.5 py-1.5 rounded-full flex items-center gap-1.5 border ${
-                        isRewardAlreadyClaimed ? 'bg-slate-800 text-slate-400 border-slate-700 line-through' : 'bg-amber-400/20 text-amber-200 border-amber-400/30'
-                      }`}>
-                        ⭐ +{reward.exp} EXP
-                      </span>
-                    </div>
-
-                    {isRewardAlreadyClaimed && (
-                      <p className="text-[11px] text-amber-200/80 font-medium italic">
-                        ✨ Phòng này đã nhận thưởng trước đó. Luyện tập thêm giúp em nhớ bài lâu hơn!
-                      </p>
-                    )}
-                  </div>
-                );
-              })()}
-            </div>
-
-            {/* Student Debug Panel if ?debug=1 */}
-            {typeof window !== 'undefined' && window.location.search.includes('debug=1') && (
-              <div className="p-4 bg-slate-900/90 border border-amber-400/40 rounded-2xl text-left text-xs space-y-2 relative z-10 font-mono">
-                <div className="flex items-center justify-between text-amber-300 font-bold border-b border-slate-700 pb-1">
-                  <span>[DEBUG STUDENT RESULT]</span>
-                  <span className={debugSaveResult.status === 'success' ? 'text-emerald-400' : debugSaveResult.status === 'error' ? 'text-rose-400' : 'text-amber-400'}>
-                    {debugSaveResult.status === 'success' ? 'Đã lưu kết quả (Verified)' : debugSaveResult.status === 'error' ? 'Lỗi lưu kết quả' : 'Đang lưu...'}
-                  </span>
-                </div>
-                <div><strong>Đường dẫn:</strong> {debugSaveResult.path || 'Chưa ghi'}</div>
-                <div><strong>Mã HS:</strong> {debugSaveResult.studentCode} | <strong>Room ID:</strong> {debugSaveResult.roomId}</div>
-                {debugSaveResult.status === 'success' && (
-                  <div className="text-emerald-300">
-                    <strong>Đọc lại từ server:</strong> Thành công! Điểm: {debugSaveResult.serverData?.score}
-                  </div>
-                )}
-                {debugSaveResult.status === 'error' && (
-                  <div className="space-y-2">
-                    <div className="text-rose-300"><strong>Lỗi:</strong> {debugSaveResult.errorMsg}</div>
-                    <button
-                      onClick={() => finishGameAndAward(score)}
-                      className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg cursor-pointer"
-                    >
-                      Thử lại (Retry)
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-
-            <div className="flex flex-col sm:flex-row justify-center gap-2.5 relative z-10 pt-2">
-              <button
-                onClick={() => handleStartGame(activeGame)}
-                className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl shadow-lg cursor-pointer flex items-center justify-center gap-2 border border-rose-400/40"
-              >
-                <RefreshCw className="w-4 h-4" /> Chơi Lại Game
-              </button>
-              <button
-                onClick={() => {
-                  setGameMode('lobby');
-                  setActiveTab('store');
-                  setActiveGame(null);
-                }}
-                className="px-4 py-2.5 bg-gradient-to-r from-amber-400 to-orange-500 hover:from-amber-300 hover:to-orange-400 text-indigo-950 font-extrabold text-xs rounded-xl shadow-lg cursor-pointer flex items-center justify-center gap-2"
-              >
-                <span>🎁 Đến Cửa Hàng Đổi Quà</span>
-              </button>
-              <button
-                onClick={() => {
-                  setGameMode('lobby');
-                  setActiveTab('games');
-                  setActiveGame(null);
-                }}
-                className="px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white font-bold text-xs rounded-xl cursor-pointer border border-white/20"
-              >
-                Về Đấu Trường
-              </button>
-            </div>
-
-            {/* Indicator Dots at the bottom */}
-            <div className="flex items-center justify-center gap-2 pt-2 relative z-10">
-              <div className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse" />
-              <div className="w-2.5 h-2.5 rounded-full bg-cyan-400" />
-              <div className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
-              <div className="w-2.5 h-2.5 rounded-full bg-yellow-400" />
-            </div>
-
-          </div>
-        </div>
+        <GameResultPodium
+          activeGame={activeGame}
+          userRole={userRole}
+          currentUserName={currentUserName}
+          score={score}
+          correctCount={correctCount}
+          bestStreak={bestStreak}
+          achievedRank={achievedRank}
+          isRewardAlreadyClaimed={isRewardAlreadyClaimed}
+          debugSaveResult={debugSaveResult}
+          onRetryDebugSave={() => finishGameAndAward(score)}
+          onReplay={() => handleStartGame(activeGame)}
+          onCreateNewAiDeck={() => {
+            setGameMode('lobby');
+            setActiveTab('games');
+            setActiveGame(null);
+            setTimeout(() => {
+              aiGeneratorSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              aiTopicInputRef.current?.focus();
+            }, 120);
+          }}
+          onOpenStore={() => {
+            setGameMode('lobby');
+            setActiveTab('store');
+            setActiveGame(null);
+          }}
+          onBackToLobby={() => {
+            setGameMode('lobby');
+            setActiveTab('games');
+            setActiveGame(null);
+          }}
+        />
       )}
 
 
@@ -3301,6 +2670,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
         onSave={handleSaveQuizziGames}
         initialData={editingQuizziGame}
       />
+
 
 
 

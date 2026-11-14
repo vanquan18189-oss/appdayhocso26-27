@@ -407,6 +407,13 @@ export interface QuizziGameItem extends ContentOwnershipMetadata {
   color?: string;
   type?: string;
   embedUrl?: string;
+  isFreeAiGame?: boolean;
+  htmlContent?: string;
+  topic?: string;
+  gameDescription?: string;
+  questionCount?: number;
+  difficulty?: 'Dễ' | 'Vừa' | 'Khó';
+  isPublicShareEnabled?: boolean;
   teacherId?: string;
   teacherName?: string;
   teacherEmail?: string;
@@ -416,4 +423,5 @@ export interface QuizziGameItem extends ContentOwnershipMetadata {
   createdAt?: string;
   updatedAt?: string;
 }
+
 

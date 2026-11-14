@@ -482,7 +482,7 @@ export const FirestoreDebugOverlay: React.FC = () => {
                 <button
                   onClick={() => {
                     const keysToRemove = Object.keys(localStorage).filter(key => 
-                      !['eduplay_teacher_email', 'eduplay_teacher_name', 'eduplay_student_session', 'eduplay_gemini_api_key', 'eduplay_selected_academic_year', 'eduplay_selected_semester', 'eduplay_firebase_current_project', 'eduplay_firestore_quota_v2_exceeded', 'eduplay_firestore_quota_v2_timestamp', 'eduplay_storage_v2_initialized'].includes(key)
+                      !['eduplay_teacher_email', 'eduplay_teacher_name', 'eduplay_student_session', 'eduplay_selected_academic_year', 'eduplay_selected_semester', 'eduplay_firebase_current_project', 'eduplay_firestore_quota_v2_exceeded', 'eduplay_firestore_quota_v2_timestamp', 'eduplay_storage_v2_initialized'].includes(key)
                     );
                     keysToRemove.forEach(key => localStorage.removeItem(key));
                     alert('Đã dọn cache an toàn.');

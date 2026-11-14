@@ -1,48 +1,35 @@
-import { db } from './firebase';
-import { doc, getDoc } from 'firebase/firestore';
-import mammoth from 'mammoth';
 import { LatencyTestResult, Lesson5EPlan, QuestionItem } from '../types';
 import { extractCanonicalOrdering } from './questionStorageService';
 import { cleanQuestionMath } from '../utils/mathFormatter';
 import { TECHNOLOGY_GRADE3_FINAL_EXAM_BLUEPRINT, ExamBlueprint } from '../config/examBlueprints';
 import { isMeaninglessAnswer } from '../utils/essayGuard';
 
-const STORAGE_KEYS = [
-  'eduplay_gemini_api_key',
-  'custom_gemini_api_key',
-  'gemini_api_key'
-];
-
-export const DEFAULT_MODEL = 'gemini-3.8-flash';
+export const DEFAULT_MODEL = 'gemini-4-hydrogen';
 export const FALLBACK_MODEL = 'gemini-3.1-flash-lite';
 export const GEMINI_MODEL = DEFAULT_MODEL;
+export const LIVE_GEMINI_MODEL = 'gemini-3.8-live';
 export const FALLBACK_GEMINI_MODELS = [
-  'gemini-3.8-flash',
-  'gemini-2.5-flash',
-  'gemini-3.1-flash-lite'
+  'gemini-4-hydrogen',
+  'gemini-3.1-flash-lite',
+  'gemini-2.5-flash'
 ];
 
-export const CACHED_WORKING_MODEL_KEY = 'eduplay_cached_working_model_v4';
-export const ADMIN_SELECTED_MODEL_KEY = 'eduplay_admin_selected_model_v4';
+export const CACHED_WORKING_MODEL_KEY = 'eduplay_cached_working_model_v5';
+export const ADMIN_SELECTED_MODEL_KEY = 'eduplay_admin_selected_model_v5';
 
 /**
- * Utility to redact Google API key strings from any raw error string before displaying
+ * Utility to redact any accidental key strings from error messages before displaying
  */
 export function sanitizeErrorMessage(msg: string): string {
   if (!msg) return '';
   let sanitized = String(msg);
-  // Redact AIzaSy... or AIza... key patterns
-  sanitized = sanitized.replace(/AIza[a-zA-Z0-9_-]{30,40}/g, (match) => {
-    return match.substring(0, 6) + '...' + match.substring(match.length - 4) + ' [REDACTED_KEY]';
-  });
-  // Redact key=... query params
-  sanitized = sanitized.replace(/(key=)[a-zA-Z0-9_-]{20,50}/gi, '$1[REDACTED_KEY]');
+  sanitized = sanitized.replace(/AIza[a-zA-Z0-9_-]{20,60}/g, '[REDACTED_KEY]');
+  sanitized = sanitized.replace(/(key=)[a-zA-Z0-9_-]{10,60}/gi, '$1[REDACTED_KEY]');
   return sanitized;
 }
 
 /**
- * Filter function to keep ONLY text-generation models and exclude non-text models
- * (image, tts, audio, native-audio, live, embedding, imagen, veo, robotics, computer-use, realtime, bidirectional)
+ * Filter function to keep ONLY supported text-generation models and exclude deprecated or non-text models
  */
 export function isTextOnlyGeminiModel(modelName: string): boolean {
   if (!modelName || typeof modelName !== 'string') return false;
@@ -50,15 +37,15 @@ export function isTextOnlyGeminiModel(modelName: string): boolean {
 
   const excluded = [
     'image', 'imagen', 'tts', 'audio', 'native-audio', 'live', 'embedding', 'embed',
-    'veo', 'robotics', 'computer-use', 'bison', 'gecko', 'aqa', 'realtime', 'bidirectional'
+    'veo', 'robotics', 'computer-use', 'bison', 'gecko', 'aqa', 'realtime', 'bidirectional',
+    '1.0', '1.5', '2.0', 'pro-latest', 'flash-latest', '3.8-flash'
   ];
 
   for (const kw of excluded) {
     if (name.includes(kw)) return false;
   }
 
-  // Exclude legacy bison/gemini-1.0 models
-  if (name.startsWith('gemini-1.0') || name.startsWith('text-bison') || name.startsWith('chat-bison')) {
+  if (name === 'gemini-pro') {
     return false;
   }
 
@@ -68,9 +55,14 @@ export function isTextOnlyGeminiModel(modelName: string): boolean {
 export function getCachedWorkingModel(): string {
   if (typeof window !== 'undefined' && window.localStorage) {
     try {
-      if (localStorage.getItem('eduplay_cached_working_model')) localStorage.removeItem('eduplay_cached_working_model');
-      if (localStorage.getItem('eduplay_cached_working_model_v2')) localStorage.removeItem('eduplay_cached_working_model_v2');
-      if (localStorage.getItem('eduplay_cached_working_model_v3')) localStorage.removeItem('eduplay_cached_working_model_v3');
+      [
+        'eduplay_cached_working_model',
+        'eduplay_cached_working_model_v2',
+        'eduplay_cached_working_model_v3',
+        'eduplay_cached_working_model_v4',
+      ].forEach((k) => {
+        if (localStorage.getItem(k)) localStorage.removeItem(k);
+      });
     } catch {}
 
     const cached = localStorage.getItem(CACHED_WORKING_MODEL_KEY)?.trim() || '';
@@ -99,8 +91,13 @@ export function setCachedWorkingModel(modelName: string): void {
 export function getAdminSelectedModel(): string {
   if (typeof window !== 'undefined' && window.localStorage) {
     try {
-      if (localStorage.getItem('eduplay_admin_selected_model_v2')) localStorage.removeItem('eduplay_admin_selected_model_v2');
-      if (localStorage.getItem('eduplay_admin_selected_model_v3')) localStorage.removeItem('eduplay_admin_selected_model_v3');
+      [
+        'eduplay_admin_selected_model_v2',
+        'eduplay_admin_selected_model_v3',
+        'eduplay_admin_selected_model_v4',
+      ].forEach((k) => {
+        if (localStorage.getItem(k)) localStorage.removeItem(k);
+      });
     } catch {}
 
     const selected = localStorage.getItem(ADMIN_SELECTED_MODEL_KEY)?.trim() || '';
@@ -138,74 +135,39 @@ export function getActiveModelInfo(): { modelName: string; source: 'admin' | 'ca
   return { modelName: DEFAULT_MODEL, source: 'default', sourceLabel: 'mặc định' };
 }
 
-export const GLOBAL_API_KEY_STORAGE_KEY = 'eduplay_global_gemini_api_key';
-
-export function getStoredGlobalApiKey(): string {
-  if (typeof window !== 'undefined' && window.localStorage) {
-    return localStorage.getItem(GLOBAL_API_KEY_STORAGE_KEY)?.trim() || '';
+function getPreferredModelName(): string {
+  const adminModel = getAdminSelectedModel();
+  if (adminModel && isTextOnlyGeminiModel(adminModel)) {
+    return adminModel;
   }
-  return '';
-}
-
-export function setStoredGlobalApiKey(key: string): void {
-  if (typeof window !== 'undefined' && window.localStorage) {
-    const trimmed = key.trim();
-    if (trimmed) {
-      localStorage.setItem(GLOBAL_API_KEY_STORAGE_KEY, trimmed);
-    } else {
-      localStorage.removeItem(GLOBAL_API_KEY_STORAGE_KEY);
-    }
+  const cachedModel = getCachedWorkingModel();
+  if (cachedModel && isTextOnlyGeminiModel(cachedModel)) {
+    return cachedModel;
   }
-}
-
-export function getStoredApiKey(): string {
-  if (typeof window !== 'undefined' && window.localStorage) {
-    for (const keyName of STORAGE_KEYS) {
-      const val = localStorage.getItem(keyName)?.trim();
-      if (val) return val;
-    }
-  }
-  return '';
-}
-
-export function setStoredApiKey(key: string): void {
-  if (typeof window !== 'undefined' && window.localStorage) {
-    const trimmed = key.trim();
-    if (trimmed) {
-      localStorage.setItem('eduplay_gemini_api_key', trimmed);
-    } else {
-      STORAGE_KEYS.forEach(k => localStorage.removeItem(k));
-    }
-  }
+  return DEFAULT_MODEL;
 }
 
 /**
  * Discover models supported by the server backend.
  */
-export async function getAvailableGeminiModels(_apiKey?: string): Promise<string[]> {
-  const defaultFallback = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.1-flash-lite'];
+export async function getAvailableGeminiModels(): Promise<string[]> {
   try {
     const response = await fetch('/api/gemini/models');
     const contentType = response.headers.get('content-type') || '';
     if (response.ok && contentType.includes('application/json')) {
-      const text = await response.text();
-      if (text && text.trim()) {
-        try {
-          const data = JSON.parse(text);
-          if (Array.isArray(data.models) && data.models.length > 0) {
-            return data.models;
-          }
-        } catch {}
+      const data = await response.json();
+      if (Array.isArray(data?.models) && data.models.length > 0) {
+        return data.models;
       }
     }
   } catch (err) {
     console.warn('Lỗi khi gọi /api/gemini/models:', err);
   }
-  return defaultFallback;
+  return [...FALLBACK_GEMINI_MODELS];
 }
 
 /**
- * Execute generateContent with a timeout proxy
+ * Execute generateContent via server endpoint
  */
 export async function generateContentWithTimeout(
   _ai: any,
@@ -220,193 +182,78 @@ export async function generateContentWithTimeout(
 }
 
 /**
- * Resolve Gemini API Key with priority
- */
-export async function resolveGeminiApiKey(customKey?: string): Promise<string> {
-  let apiKey = (customKey !== undefined ? customKey : getStoredApiKey())?.trim();
-  if (apiKey) return apiKey;
-
-  const localGlobalKey = getStoredGlobalApiKey();
-  if (localGlobalKey) return localGlobalKey;
-
-  try {
-    if (db) {
-      const docRef = doc(db, 'settings', 'ai_config');
-      const docSnap = await getDoc(docRef);
-      if (docSnap && docSnap.exists()) {
-        const data = docSnap.data() as any;
-        apiKey = (data?.globalApiKey || data?.apiKey || '')?.trim();
-        if (apiKey) {
-          setStoredGlobalApiKey(apiKey);
-          return apiKey;
-        }
-      }
-    }
-  } catch (e: any) {
-    console.warn('Không thể đọc Global API Key từ Firestore:', e?.message || e);
-  }
-
-  const viteKey = (import.meta as any).env?.VITE_GEMINI_API_KEY;
-  if (viteKey && typeof viteKey === 'string' && viteKey.trim()) {
-    return viteKey.trim();
-  }
-
-  return '';
-}
-
-/**
- * Test live Gemini connection and latency via server endpoint with direct client fallback for static hosts (Vercel)
+ * Test live Gemini connection and latency strictly via server endpoint
  */
 export async function testGeminiLatency(
-  customKey?: string,
+  _unused?: unknown,
   onProgress?: (progressText: string) => void
 ): Promise<LatencyTestResult> {
   const startTime = Date.now();
   onProgress?.('Đang kết nối đến máy chủ AI (Gemini Server)...');
-  
-  const adminModel = getAdminSelectedModel();
-  const cachedModel = getCachedWorkingModel();
-  const targetModel = (adminModel && isTextOnlyGeminiModel(adminModel))
-    ? adminModel
-    : ((cachedModel && isTextOnlyGeminiModel(cachedModel)) ? cachedModel : DEFAULT_MODEL);
-  
-  const keyToTest = customKey || getStoredApiKey() || undefined;
 
-  // 1. Try server endpoint first
+  const activeInfo = getActiveModelInfo();
+  const targetModel = getPreferredModelName();
+
   try {
     const response = await fetch('/api/gemini/latency', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ customKey: keyToTest }),
+      body: JSON.stringify({ model: targetModel }),
     });
 
     const contentType = response.headers.get('content-type') || '';
-    if (response.ok && contentType.includes('application/json')) {
-      const text = await response.text();
-      if (text && text.trim()) {
-        try {
-          const data = JSON.parse(text);
-          if (data && data.status !== 'error') {
-            return {
-              latencyMs: data.latencyMs || (Date.now() - startTime),
-              status: 'online',
-              modelName: data.modelName || targetModel,
-              isCachedModel: true,
-              modelSource: 'default',
-              sourceLabel: 'máy chủ',
-              message: data.message || 'Kết nối máy chủ Gemini thành công!',
-            };
-          } else if (data && data.status === 'error') {
-            return {
-              latencyMs: data.latencyMs || (Date.now() - startTime),
-              status: 'error',
-              modelName: data.modelName || targetModel,
-              modelSource: 'default',
-              sourceLabel: 'máy chủ',
-              message: data.message || 'Lỗi kết nối máy chủ Gemini API',
-            };
-          }
-        } catch {
-          // Proceed to client fallback
-        }
-      }
-    }
-  } catch (err) {
-    console.warn('Server latency endpoint unavailable, using direct client-side fallback:', err);
-  }
-
-  // 2. Direct client-side test fallback (for Vercel or when server endpoint returns HTML / non-JSON)
-  onProgress?.('Đang kết nối trực tiếp đến Google Gemini API...');
-  const resolvedKey = await resolveGeminiApiKey(keyToTest);
-  if (!resolvedKey) {
-    return {
-      latencyMs: Date.now() - startTime,
-      status: 'error',
-      modelName: targetModel,
-      modelSource: 'default',
-      sourceLabel: 'máy chủ',
-      message: 'Chưa cấu hình API Key. Vui lòng nhập Personal API Key hoặc lưu Global API Key.',
-    };
-  }
-
-  try {
-    const candidateModels = [targetModel, 'gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-3.1-flash-lite'];
-    const uniqueModels = Array.from(new Set(candidateModels.filter(Boolean)));
-    let lastErrorMsg = '';
-
-    for (const mName of uniqueModels) {
+    const text = await response.text();
+    let data: any = null;
+    if (text && text.trim() && contentType.includes('application/json')) {
       try {
-        const directRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${mName}:generateContent?key=${resolvedKey}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: 'Xin chào, trả lời "OK" để kiểm tra độ trễ.' }] }],
-            }),
-          }
-        );
-
-        const resText = await directRes.text();
-        let resData: any = null;
-        try {
-          resData = JSON.parse(resText);
-        } catch {}
-
-        if (directRes.ok && resData?.candidates?.length > 0) {
-          const durationMs = Date.now() - startTime;
-          setCachedWorkingModel(mName);
-          return {
-            latencyMs: durationMs,
-            status: 'online',
-            modelName: mName,
-            isCachedModel: true,
-            modelSource: 'default',
-            sourceLabel: 'máy chủ',
-            message: 'Kết nối máy chủ Gemini thành công!',
-          };
-        } else {
-          lastErrorMsg = resData?.error?.message || `Lỗi phản hồi (${directRes.status})`;
-        }
-      } catch (subErr: any) {
-        lastErrorMsg = subErr?.message || 'Lỗi kết nối';
-      }
+        data = JSON.parse(text);
+      } catch {}
     }
 
-    if (lastErrorMsg.includes('API_KEY_INVALID') || lastErrorMsg.includes('API key not valid')) {
-      lastErrorMsg = 'Khóa API Key không hợp lệ. Vui lòng kiểm tra lại.';
-    } else if (lastErrorMsg.includes('RESOURCE_EXHAUSTED') || lastErrorMsg.includes('Quota') || lastErrorMsg.includes('429')) {
-      lastErrorMsg = 'Hạn mức API Gemini đã hết (Quota Exceeded). Vui lòng thử lại sau.';
+    if (response.ok && data && data.status !== 'error') {
+      const resolvedModel = data.modelName || targetModel;
+      setCachedWorkingModel(resolvedModel);
+      return {
+        latencyMs: data.latencyMs || (Date.now() - startTime),
+        status: 'online',
+        modelName: resolvedModel,
+        isCachedModel: true,
+        modelSource: activeInfo.source,
+        sourceLabel: activeInfo.sourceLabel,
+        message: data.message || 'Kết nối máy chủ Gemini thành công!',
+      };
     }
 
     return {
-      latencyMs: Date.now() - startTime,
+      latencyMs: data?.latencyMs || (Date.now() - startTime),
       status: 'error',
-      modelName: targetModel,
-      modelSource: 'default',
-      sourceLabel: 'máy chủ',
-      message: sanitizeErrorMessage(lastErrorMsg || 'Không thể kết nối đến máy chủ Gemini.'),
+      modelName: data?.modelName || targetModel,
+      modelSource: activeInfo.source,
+      sourceLabel: activeInfo.sourceLabel,
+      httpStatus: data?.httpStatus || response.status,
+      rawErrorDetails: data?.rawErrorDetails ? sanitizeErrorMessage(data.rawErrorDetails) : undefined,
+      message: sanitizeErrorMessage(data?.message || data?.error || `Lỗi kết nối máy chủ AI (${response.status})`),
     };
-  } catch (directErr: any) {
+  } catch (err: any) {
     return {
       latencyMs: Date.now() - startTime,
       status: 'error',
       modelName: targetModel,
-      modelSource: 'default',
-      sourceLabel: 'máy chủ',
-      message: sanitizeErrorMessage(directErr?.message || 'Lỗi kết nối Gemini API.'),
+      modelSource: activeInfo.source,
+      sourceLabel: activeInfo.sourceLabel,
+      message: sanitizeErrorMessage(err?.message || 'Không thể kết nối tới máy chủ AI.'),
     };
   }
 }
 
 /**
- * Core AI generation call routed to server endpoint with direct client fallback for static hosts (Vercel)
+ * Core AI generation call routed strictly through the server endpoint (/api/gemini/generate)
  */
 export async function callGeminiApi(
   prompt: string,
   systemInstruction?: string,
   responseJson: boolean = false,
-  _retries: number = 0,
+  retries: number = 0,
   fileData?: {
     base64?: string;
     mimeType?: string;
@@ -415,116 +262,62 @@ export async function callGeminiApi(
   },
   temperature?: number
 ): Promise<string> {
-  const customKey = getStoredApiKey() || undefined;
-  const adminModel = getAdminSelectedModel();
-  const cachedModel = getCachedWorkingModel();
-  let selectedModel = DEFAULT_MODEL;
-  if (adminModel && isTextOnlyGeminiModel(adminModel)) {
-    selectedModel = adminModel;
-  } else if (cachedModel && isTextOnlyGeminiModel(cachedModel)) {
-    selectedModel = cachedModel;
-  }
+  const selectedModel = getPreferredModelName();
+  const maxAttempts = Math.max(1, (Number.isFinite(retries) ? retries : 0) + 1);
+  let lastError: Error | null = null;
 
-  // 1. Try server endpoint first
-  try {
-    const response = await fetch('/api/gemini/generate', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        prompt,
-        systemInstruction,
-        responseJson,
-        fileData,
-        customKey,
-        model: selectedModel,
-        temperature,
-      }),
-    });
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      const response = await fetch('/api/gemini/generate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          prompt,
+          systemInstruction,
+          responseJson,
+          fileData,
+          model: selectedModel,
+          temperature,
+        }),
+      });
 
-    const contentType = response.headers.get('content-type') || '';
-    if (response.ok && contentType.includes('application/json')) {
-      const text = await response.text();
-      if (text && text.trim()) {
+      const contentType = response.headers.get('content-type') || '';
+      const rawBody = await response.text();
+      let data: any = null;
+      if (rawBody && rawBody.trim() && contentType.includes('application/json')) {
         try {
-          const data = JSON.parse(text);
-          if (data && typeof data.text === 'string') {
-            return data.text;
-          }
+          data = JSON.parse(rawBody);
         } catch {}
       }
-    }
-  } catch (serverErr) {
-    console.warn('Server /api/gemini/generate unavailable, falling back to direct client generation:', serverErr);
-  }
 
-  // 2. Direct client fallback with resolved API Key (for Vercel static deployments)
-  const resolvedKey = await resolveGeminiApiKey(customKey);
-  if (!resolvedKey) {
-    throw new Error('Chưa cấu hình Gemini API Key trên hệ thống.');
-  }
-
-  const parts: any[] = [{ text: prompt }];
-  if (fileData?.base64 && fileData?.mimeType) {
-    parts.unshift({
-      inlineData: {
-        mimeType: fileData.mimeType,
-        data: fileData.base64.replace(/^data:[^;]+;base64,/, '')
+      if (response.ok && data && typeof data.text === 'string') {
+        if (data.model && isTextOnlyGeminiModel(data.model)) {
+          setCachedWorkingModel(data.model);
+        }
+        return data.text;
       }
-    });
-  }
 
-  const payload: any = {
-    contents: [{ parts }],
-  };
-  if (systemInstruction) {
-    payload.systemInstruction = { parts: [{ text: systemInstruction }] };
-  }
-  const genConfig: any = {};
-  if (responseJson) {
-    genConfig.responseMimeType = 'application/json';
-  }
-  if (typeof temperature === 'number') {
-    genConfig.temperature = temperature;
-  }
-  if (Object.keys(genConfig).length > 0) {
-    payload.generationConfig = genConfig;
-  }
-
-  const directRes = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${resolvedKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      const serverErr =
+        data?.error ||
+        data?.message ||
+        `Máy chủ AI trả về lỗi (${response.status})`;
+      throw new Error(sanitizeErrorMessage(serverErr));
+    } catch (err: any) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (attempt < maxAttempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 800 * Math.pow(2, attempt)));
+      }
     }
-  );
-
-  const resText = await directRes.text();
-  let resData: any = null;
-  try {
-    resData = JSON.parse(resText);
-  } catch {
-    throw new Error(`Phản hồi máy chủ không hợp lệ (${directRes.status}): ${resText.slice(0, 100)}`);
   }
 
-  if (!directRes.ok) {
-    const err = resData?.error?.message || `Lỗi Gemini API (${directRes.status})`;
-    throw new Error(sanitizeErrorMessage(err));
-  }
-
-  const candidate = resData?.candidates?.[0];
-  const outText = candidate?.content?.parts?.[0]?.text;
-  if (typeof outText !== 'string') {
-    throw new Error('Máy chủ phản hồi dữ liệu rỗng.');
-  }
-
-  return outText;
+  throw lastError || new Error('Không thể kết nối tới máy chủ AI. Vui lòng thử lại.');
 }
 
 /**
- * Client-side streaming helper connecting to server SSE stream with direct fallback
+ * Client-side streaming helper connecting strictly to the server SSE stream (/api/gemini/stream)
+ * with fallback to server /api/gemini/generate
  */
 export async function* streamGeminiApi(
   prompt: string,
@@ -535,14 +328,12 @@ export async function* streamGeminiApi(
     mimeType?: string;
     name?: string;
     text?: string;
-  }
+  },
+  temperature?: number
 ): AsyncGenerator<string, void, unknown> {
-  const customKey = getStoredApiKey() || undefined;
-  const adminModel = getAdminSelectedModel();
-  const cachedModel = getCachedWorkingModel();
-  const model = adminModel || cachedModel || DEFAULT_MODEL;
-
+  const model = getPreferredModelName();
   let streamWorked = false;
+
   try {
     const response = await fetch('/api/gemini/stream', {
       method: 'POST',
@@ -552,13 +343,13 @@ export async function* streamGeminiApi(
         systemInstruction,
         responseJson,
         fileData,
-        customKey,
         model,
+        temperature,
       }),
     });
 
     const contentType = response.headers.get('content-type') || '';
-    if (response.ok && response.body && !contentType.includes('text/html')) {
+    if (response.ok && response.body && !contentType.includes('text/html') && !contentType.includes('application/json')) {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -576,7 +367,7 @@ export async function* streamGeminiApi(
             if (payload === '[DONE]') return;
             try {
               const parsed = JSON.parse(payload);
-              if (parsed.error) throw new Error(parsed.error);
+              if (parsed.error) throw new Error(sanitizeErrorMessage(parsed.error));
               if (parsed.text) {
                 streamWorked = true;
                 yield parsed.text;
@@ -590,27 +381,46 @@ export async function* streamGeminiApi(
       if (streamWorked) return;
     }
   } catch (streamErr) {
-    console.warn('Server SSE stream unavailable, falling back to direct generation:', streamErr);
+    console.warn('Server SSE stream fallback to server generate endpoint:', streamErr);
   }
 
-  // Fallback to direct call if stream is unavailable
-  const fullText = await callGeminiApi(prompt, systemInstruction, responseJson, 0, fileData);
+  // Fallback to server /api/gemini/generate if SSE stream is unavailable
+  const fullText = await callGeminiApi(prompt, systemInstruction, responseJson, 0, fileData, temperature);
   yield fullText;
 }
 
 /**
- * Helper to initialize Live API session from server (/api/gemini/live-token)
+ * Verify server-side Live API readiness (/api/gemini/live-token)
  */
-export async function createLiveApiSession(customKey?: string) {
+export async function createLiveApiSession(model: string = LIVE_GEMINI_MODEL) {
   const response = await fetch('/api/gemini/live-token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ customKey: customKey || getStoredApiKey() || undefined }),
+    body: JSON.stringify({ model }),
   });
   if (!response.ok) {
-    throw new Error('Không thể khởi tạo phiên Live API từ máy chủ');
+    const data = await response.json().catch(() => ({}));
+    throw new Error(sanitizeErrorMessage(data?.error || 'Không thể khởi tạo phiên Live API từ máy chủ'));
   }
   return await response.json();
+}
+
+/**
+ * Connect to the server-side Gemini Live API WebSocket bridge (/api/gemini/live)
+ */
+export function connectLiveApiWebSocket(options?: {
+  voiceName?: 'Puck' | 'Charon' | 'Kore' | 'Fenrir' | 'Zephyr';
+  systemInstruction?: string;
+  model?: string;
+}): WebSocket {
+  const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const host = typeof window !== 'undefined' ? window.location.host : 'localhost:3000';
+  const params = new URLSearchParams();
+  if (options?.voiceName) params.set('voiceName', options.voiceName);
+  if (options?.systemInstruction) params.set('systemInstruction', options.systemInstruction);
+  if (options?.model) params.set('model', options.model);
+  const query = params.toString();
+  return new WebSocket(`${protocol}//${host}/api/gemini/live${query ? `?${query}` : ''}`);
 }
 
 /**

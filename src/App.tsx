@@ -19,6 +19,7 @@ import { StudentExamModule } from './components/modules/StudentExamModule';
 import { StudentLessonModule } from './components/modules/StudentLessonModule';
 import { StudentELearning } from './components/modules/StudentELearning';
 import { PublicLessonPlayerView } from './components/modules/PublicLessonPlayerView';
+import { PublicGamePlayerView } from './components/modules/PublicGamePlayerView';
 import { UseQuestionBankModal } from './components/modules/UseQuestionBankModal';
 import { GameRoomConfigModal } from './components/modules/GameRoomConfigModal';
 
@@ -61,7 +62,8 @@ import {
   saveGameToFirestore,
   deleteGameFromFirestore,
   subscribeToGamesFromFirestore,
-  getLocalCachedGames
+  getLocalCachedGames,
+  extractGameIdFromPath
 } from './services/gameStorageService';
 import { initializeAndSyncAllCollections } from './services/dbInitService';
 import {
@@ -76,7 +78,8 @@ import { RewardToastNotification } from './components/common/RewardToastNotifica
 
 export function App() {
   const [publicLessonId, setPublicLessonId] = useState<string | null>(() => extractLessonIdFromPath());
-  const [showPortal, setShowPortal] = useState<boolean>(() => !extractLessonIdFromPath());
+  const [publicGameId, setPublicGameId] = useState<string | null>(() => extractGameIdFromPath());
+  const [showPortal, setShowPortal] = useState<boolean>(() => !extractLessonIdFromPath() && !extractGameIdFromPath());
   const [activeModule, setActiveModule] = useState<ModuleType>('dashboard');
   const [userRole, setUserRole] = useState<UserRole>('teacher');
   const [gameInitialTab, setGameInitialTab] = useState<'games' | 'store'>('games');
@@ -105,7 +108,6 @@ export function App() {
 
   const [currentGrade, setCurrentGrade] = useState<string>('Khối 3');
   const [currentClass, setCurrentClass] = useState<string>('Lớp 3A');
-  const [apiKey, setApiKey] = useState<string>(() => localStorage.getItem('eduplay_gemini_api_key') || '');
   const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
 
   // Application Data States
@@ -139,12 +141,14 @@ export function App() {
     type: 'success' | 'info' | 'error';
   } | null>(null);
 
-  // Sync browser back/forward navigation for /lesson/[id] routes
+  // Sync browser back/forward navigation for /lesson/[id] and /game/[id] routes
   useEffect(() => {
     const handlePopState = () => {
       const nextLessonId = extractLessonIdFromPath();
+      const nextGameId = extractGameIdFromPath();
       setPublicLessonId(nextLessonId);
-      if (nextLessonId) {
+      setPublicGameId(nextGameId);
+      if (nextLessonId || nextGameId) {
         setShowPortal(false);
       } else {
         setShowPortal(true);
@@ -154,9 +158,9 @@ export function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  // Initialize and Sync all Firebase collections on mount (skipped during public guest route)
+  // Initialize and Sync all Firebase collections on mount (skipped during public guest routes)
   useEffect(() => {
-    if (publicLessonId) return;
+    if (publicLessonId || publicGameId) return;
     initializeAndSyncAllCollections().then(res => {
       if (res.success) {
         console.log('Firebase collections sync status:', res.message);
@@ -164,11 +168,11 @@ export function App() {
     }).catch(err => {
       console.warn('Firebase collections init warning:', err);
     });
-  }, [publicLessonId]);
+  }, [publicLessonId, publicGameId]);
 
   // Sync QuestionBank with Firestore Real-time listener (teachers/admin only, skipped on guest/portal/student views)
   useEffect(() => {
-    if (publicLessonId || showPortal || userRole === 'student') return;
+    if (publicLessonId || publicGameId || showPortal || userRole === 'student') return;
     const unsubscribe = subscribeToQuestionsFromFirestore(
       (loadedQuestions) => {
         if (loadedQuestions && loadedQuestions.length > 0) {
@@ -182,11 +186,11 @@ export function App() {
     );
 
     return () => unsubscribe();
-  }, [publicLessonId, showPortal, userRole]);
+  }, [publicLessonId, publicGameId, showPortal, userRole]);
 
   // Sync ExamPapers with Firestore Real-time listener
   useEffect(() => {
-    if (publicLessonId || showPortal) return;
+    if (publicLessonId || publicGameId || showPortal) return;
     const unsubscribe = subscribeToExamsFromFirestore(
       (loadedExams) => {
         if (loadedExams && loadedExams.length > 0) {
@@ -200,11 +204,11 @@ export function App() {
     );
 
     return () => unsubscribe();
-  }, [publicLessonId, showPortal]);
+  }, [publicLessonId, publicGameId, showPortal]);
 
   // Sync HomeworkAssignments with Firestore Real-time listener
   useEffect(() => {
-    if (publicLessonId || showPortal) return;
+    if (publicLessonId || publicGameId || showPortal) return;
     const unsubscribe = subscribeToAssignmentsFromFirestore(
       (loadedAssignments) => {
         if (loadedAssignments && loadedAssignments.length > 0) {
@@ -218,11 +222,11 @@ export function App() {
     );
 
     return () => unsubscribe();
-  }, [publicLessonId, showPortal]);
+  }, [publicLessonId, publicGameId, showPortal]);
 
   // Sync Games with Firestore Real-time listener
   useEffect(() => {
-    if (publicLessonId || showPortal) return;
+    if (publicLessonId || publicGameId || showPortal) return;
     const unsubscribe = subscribeToGamesFromFirestore(
       (loadedGames) => {
         if (loadedGames && loadedGames.length > 0) {
@@ -235,11 +239,11 @@ export function App() {
     );
 
     return () => unsubscribe();
-  }, [publicLessonId, showPortal]);
+  }, [publicLessonId, publicGameId, showPortal]);
 
   // Sync Lessons with Firestore Real-time listener
   useEffect(() => {
-    if (publicLessonId || showPortal) return;
+    if (publicLessonId || publicGameId || showPortal) return;
     const unsubscribe = subscribeToLessonsFromFirestore(
       (loadedLessons) => {
         if (loadedLessons && loadedLessons.length > 0) {
@@ -252,7 +256,7 @@ export function App() {
     );
 
     return () => unsubscribe();
-  }, [publicLessonId, showPortal]);
+  }, [publicLessonId, publicGameId, showPortal]);
 
   // Global Toast Notification Listener
   useEffect(() => {
@@ -328,10 +332,6 @@ export function App() {
   }, [teacherEmail, teacherName]);
 
   // Save Handlers with Live Activity Logs & Stat Updates
-  const handleSaveApiKey = (key: string) => {
-    setApiKey(key);
-    localStorage.setItem('eduplay_gemini_api_key', key);
-  };
 
   const handleSaveLesson5E = async (lesson: Lesson5EPlan) => {
     setLessons5E((prev) => {
@@ -603,6 +603,14 @@ export function App() {
     setShowPortal(true);
   };
 
+  if (publicGameId) {
+    return (
+      <ErrorBoundary fallbackTitle="Không thể mở trò chơi công khai">
+        <PublicGamePlayerView gameId={publicGameId} />
+      </ErrorBoundary>
+    );
+  }
+
   if (publicLessonId) {
     return (
       <ErrorBoundary fallbackTitle="Không thể mở bài giảng công khai">
@@ -625,8 +633,6 @@ export function App() {
       <Header
         userRole={userRole}
         currentUserName={userRole === 'student' ? (currentStudent?.name || 'Hoàng Bảo An') : teacherName}
-        apiKey={apiKey}
-        onSaveApiKey={handleSaveApiKey}
         isApiKeyModalOpen={isApiKeyModalOpen}
         setIsApiKeyModalOpen={setIsApiKeyModalOpen}
       />

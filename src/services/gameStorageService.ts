@@ -1,7 +1,8 @@
 import { db } from './firebase';
-import { doc, setDoc, deleteDoc } from 'firebase/firestore';
+import { doc, getDoc, getDocFromServer, setDoc, deleteDoc } from 'firebase/firestore';
 import { GameItem, QuizziGameItem } from '../types';
 import { removeUndefined } from './teacherStorageService';
+import { ensureAnonymousGuestAuth } from './lessonStorageService';
 import {
   attachOwnershipOnCreate,
   getCurrentAccessContext,
@@ -15,6 +16,92 @@ export const QUIZZI_CACHE_KEY = 'eduplay_quizzi_games';
 export const QUIZZI_COLLECTION = 'quizzi_games';
 
 export const DEFAULT_QUIZZI_GAMES: QuizziGameItem[] = [];
+
+export type PublicGameFetchResult =
+  | { status: 'ok'; game: QuizziGameItem }
+  | { status: 'disabled' }
+  | { status: 'not_found' }
+  | { status: 'error'; message?: string };
+
+/**
+ * Extract game ID when URL matches /game/[gameId]
+ */
+export function extractGameIdFromPath(pathname?: string): string | null {
+  const path = pathname ?? (typeof window !== 'undefined' ? window.location.pathname : '');
+  const match = path.match(/^\/game\/([^/?#]+)\/?$/i);
+  if (!match || !match[1]) return null;
+  try {
+    const decoded = decodeURIComponent(match[1]).trim();
+    return decoded || null;
+  } catch {
+    return match[1].trim() || null;
+  }
+}
+
+export function isFreeAiGameItem(game?: Partial<QuizziGameItem> | null): boolean {
+  if (!game) return false;
+  return Boolean(game.isFreeAiGame || game.type === 'Trò chơi tự do');
+}
+
+export async function fetchPublicFreeAiGameById(gameId: string): Promise<PublicGameFetchResult> {
+  const cleanId = (gameId || '').trim();
+  if (!cleanId) return { status: 'not_found' };
+
+  await ensureAnonymousGuestAuth();
+
+  if (db) {
+    try {
+      const ref = doc(db, QUIZZI_COLLECTION, cleanId);
+      let snap;
+      try {
+        snap = await getDocFromServer(ref);
+      } catch (serverErr: any) {
+        const serverCode = serverErr?.code || '';
+        const serverMsg = String(serverErr?.message || '');
+        if (serverCode === 'permission-denied' || serverMsg.includes('Missing or insufficient permissions')) {
+          return { status: 'disabled' };
+        }
+        snap = await getDoc(ref);
+      }
+
+      if (!snap.exists()) {
+        return { status: 'not_found' };
+      }
+
+      const game = { id: snap.id, ...snap.data() } as QuizziGameItem;
+      if (!isFreeAiGameItem(game) || !game.htmlContent) {
+        return { status: 'not_found' };
+      }
+      if (game.isPublicShareEnabled === false) {
+        return { status: 'disabled' };
+      }
+
+      return { status: 'ok', game };
+    } catch (err: any) {
+      const code = err?.code || '';
+      const message = String(err?.message || '');
+      if (code === 'permission-denied' || message.includes('Missing or insufficient permissions')) {
+        return { status: 'disabled' };
+      }
+
+      const cached = getRawCachedQuizziGames().find(item => String(item.id) === cleanId);
+      if (cached && isFreeAiGameItem(cached) && cached.htmlContent) {
+        if (cached.isPublicShareEnabled === false) return { status: 'disabled' };
+        return { status: 'ok', game: cached };
+      }
+      return { status: 'error', message: 'Không thể kết nối máy chủ trò chơi. Vui lòng thử lại sau.' };
+    }
+  }
+
+  const cached = getRawCachedQuizziGames().find(item => String(item.id) === cleanId);
+  if (!cached || !isFreeAiGameItem(cached) || !cached.htmlContent) {
+    return { status: 'not_found' };
+  }
+  if (cached.isPublicShareEnabled === false) {
+    return { status: 'disabled' };
+  }
+  return { status: 'ok', game: cached };
+}
 
 function getRawCachedGames(): GameItem[] {
   if (typeof window === 'undefined') return [];

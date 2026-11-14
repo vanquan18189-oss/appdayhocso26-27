@@ -246,7 +246,6 @@ if (typeof window !== 'undefined') {
         'eduplay_teacher_email',
         'eduplay_teacher_name',
         'eduplay_student_session',
-        'eduplay_gemini_api_key',
         'eduplay_selected_academic_year',
         'eduplay_selected_semester',
         LAST_PROJECT_KEY,
