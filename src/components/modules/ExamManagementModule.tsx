@@ -72,7 +72,7 @@ import {
   Save,
   SaveAll,
   Image as ImageIcon,
-  FileQuestion, Upload, Volume2, Database
+  FileQuestion, Upload, Volume2, Database, QrCode
 } from 'lucide-react';
 import { ExamPaper, QuestionItem, UserRole } from '../../types';
 import { generateExamQuestionsAI } from '../../services/geminiService';
@@ -80,6 +80,7 @@ import { exportExamToExcel, downloadExamMatrixTemplate } from '../../services/ex
 import { ManualQuestionBankModal } from './ManualQuestionBankModal';
 import { UseQuestionBankModal } from './UseQuestionBankModal';
 import { ShareContentModal } from './ShareContentModal';
+import { ExamListExportModal } from './ExamListExportModal';
 import { DateTimePicker } from '../common/DateTimePicker';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { getLocalCachedQuestions, QUESTIONS_CACHE_KEY, saveQuestionsBatchToFirestore } from '../../services/questionStorageService';
@@ -208,6 +209,16 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const [deletingExam, setDeletingExam] = useState<ExamPaper | null>(null);
   const [isManualExamModalOpen, setIsManualExamModalOpen] = useState(false);
   const [isBankExamModalOpen, setIsBankExamModalOpen] = useState(false);
+
+  // Exam Catalog & QR Export Modal state
+  const [examExportModalState, setExamExportModalState] = useState<{
+    isOpen: boolean;
+    exams: ExamPaper[];
+    titleContext?: string;
+  }>({
+    isOpen: false,
+    exams: [],
+  });
 
 
   // Bulk cleanup state
@@ -3089,7 +3100,23 @@ return (
             </div>
 
             {userRole !== 'student' && (
-              <div className="flex items-center gap-2.5 shrink-0 self-end sm:self-auto">
+              <div className="flex items-center gap-2.5 flex-wrap shrink-0 self-end sm:self-auto">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setExamExportModalState({
+                      isOpen: true,
+                      exams: filteredExams,
+                      titleContext: `Danh mục đề kiểm tra đang lọc (${filterGrade} • ${filterSubject} • ${filterType})`,
+                    })
+                  }
+                  className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-md shadow-sky-200/50 flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
+                  title="Xuất danh mục đề kiểm tra đang lọc ra file Word (.docx) kèm Mã QR và tải ảnh QR"
+                >
+                  <QrCode className="w-4 h-4" />
+                  <span>Xuất danh mục & Mã QR</span>
+                </button>
+
                 <button
                   onClick={() => setIsBankExamModalOpen(true)}
                   className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-md shadow-amber-200/50 flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
@@ -3211,6 +3238,23 @@ return (
                 <RefreshCw className={`w-3.5 h-3.5 ${isDirectRefreshing ? 'animate-spin' : ''}`} />
                 <span>{isDirectRefreshing ? 'Đang đọc...' : 'Làm mới số liệu'}</span>
               </button>
+              {userRole !== 'student' && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setExamExportModalState({
+                      isOpen: true,
+                      exams: filteredExams,
+                      titleContext: `Danh mục đề kiểm tra đang lọc (${filterGrade} • ${filterSubject} • ${filterType})`,
+                    })
+                  }
+                  className="px-3 py-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-bold shadow-xs flex items-center gap-1.5 transition-all cursor-pointer"
+                  title="Xuất toàn bộ danh sách đề kiểm tra đang lọc ra file Word (.docx) kèm Mã QR và tải ảnh QR"
+                >
+                  <QrCode className="w-3.5 h-3.5" />
+                  <span>Xuất danh mục & Mã QR</span>
+                </button>
+              )}
             </div>
           </div>
 
@@ -3446,18 +3490,53 @@ return (
                         })()}
                       </td>
                       <td className="px-6 py-4 text-center">
-                        <button 
-                          onClick={() => setOpenActionMenuId(openActionMenuId === exam.id ? null : exam.id)}
-                          className="p-1.5 rounded-lg hover:bg-slate-200 text-slate-500 transition-colors"
-                        >
-                          <MoreVertical className="w-4 h-4" />
-                        </button>
+                        <div className="flex items-center justify-center gap-1.5">
+                          {/* Quick QR / Sheet Export Button for single exam */}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExamExportModalState({
+                                isOpen: true,
+                                exams: [exam],
+                                titleContext: `Đề kiểm tra: ${exam.title}`,
+                              });
+                            }}
+                            className="p-1.5 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 transition-colors cursor-pointer flex items-center justify-center"
+                            title="Mã QR / Tải phiếu Word (.docx) của đề kiểm tra này"
+                          >
+                            <QrCode className="w-4 h-4" />
+                          </button>
+
+                          <button 
+                            onClick={() => setOpenActionMenuId(openActionMenuId === exam.id ? null : exam.id)}
+                            className="p-1.5 rounded-lg hover:bg-slate-200 text-slate-500 transition-colors cursor-pointer"
+                            title="Tùy chọn thao tác"
+                          >
+                            <MoreVertical className="w-4 h-4" />
+                          </button>
+                        </div>
                         
                         {/* Popover Actions */}
                         {openActionMenuId === exam.id && (
                           <>
                             <div className="fixed inset-0 z-10" onClick={() => setOpenActionMenuId(null)}></div>
                             <div className="absolute right-12 top-6 z-20 bg-white border border-slate-200 shadow-xl rounded-2xl p-2 flex flex-wrap items-center gap-2 max-w-[230px]">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setExamExportModalState({
+                                    isOpen: true,
+                                    exams: [exam],
+                                    titleContext: `Đề kiểm tra: ${exam.title}`,
+                                  });
+                                  setOpenActionMenuId(null);
+                                }}
+                                title="Mã QR / Tải phiếu (.docx)"
+                                className="p-2.5 rounded-xl border border-sky-100 text-sky-700 hover:bg-sky-50 transition-colors cursor-pointer"
+                              >
+                                <QrCode className="w-4 h-4 mx-auto" />
+                              </button>
                               {userRole !== 'student' && perms.canAssign && (
                                 <button onClick={() => handleOpenAssignmentModal(exam)} title="Giao bài" className="p-2.5 rounded-xl border border-indigo-100 text-indigo-600 hover:bg-indigo-50 transition-colors cursor-pointer"><Rocket className="w-4 h-4 mx-auto" /></button>
                               )}
@@ -6413,6 +6492,19 @@ return (
           <span className="text-xs font-extrabold tracking-wide">{toast.message}</span>
         </div>
       )}
+
+      {/* Cửa sổ xem trước & Xuất danh mục Đề kiểm tra + Mã QR (.docx & PNG/ZIP) */}
+      <ExamListExportModal
+        isOpen={examExportModalState.isOpen}
+        onClose={() =>
+          setExamExportModalState((prev) => ({
+            ...prev,
+            isOpen: false,
+          }))
+        }
+        exams={examExportModalState.exams}
+        titleContext={examExportModalState.titleContext}
+      />
 
     </div>
   );

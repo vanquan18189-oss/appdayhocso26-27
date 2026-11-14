@@ -49,7 +49,8 @@ import {
   ArrowUp,
   ArrowUpDown,
   GripVertical,
-  Settings
+  Settings,
+  QrCode
 } from 'lucide-react';
 import { SUBJECTS, GRADES, CLASSES_BY_GRADE, ALL_CLASSES, QUESTION_TYPES, normalizeQuestionType, getDefaultAnswerSchemaByType, sanitizeQuestionForFirestore, getQuestionTypeLabel, isGradeMatching, extractGradeDigit } from '../../lib/constants';
 import { useClassesList } from '../../services/classStorageService';
@@ -59,6 +60,7 @@ import { exportAssignmentResultsExcel } from '../../services/excelService';
 import { ManualQuestionBankModal } from './ManualQuestionBankModal';
 import { UseQuestionBankModal } from './UseQuestionBankModal';
 import { ShareContentModal } from './ShareContentModal';
+import { AssignmentExportModal } from './AssignmentExportModal';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { getLocalCachedQuestions, QUESTIONS_CACHE_KEY, saveQuestionsBatchToFirestore } from '../../services/questionStorageService';
 import { useScoreSort } from '../../lib/useScoreSort';
@@ -290,6 +292,16 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   const [selectedMisfiledIds, setSelectedMisfiledIds] = useState<Set<string>>(new Set());
   const [isMigrating, setIsMigrating] = useState(false);
   const [migrationReport, setMigrationReport] = useState<MigrationReport | null>(null);
+
+  // Assignment Catalog & QR Export Modal state
+  const [assignmentExportModalState, setAssignmentExportModalState] = useState<{
+    isOpen: boolean;
+    assignments: HomeworkAssignment[];
+    titleContext?: string;
+  }>({
+    isOpen: false,
+    assignments: [],
+  });
 
   // Listener for opening tracking modal from Header notification
   useEffect(() => {
@@ -2111,6 +2123,21 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
               <Database className="w-4 h-4" />
               <span>Chọn từ Ngân hàng câu hỏi</span>
             </button>
+            <button
+              type="button"
+              onClick={() =>
+                setAssignmentExportModalState({
+                  isOpen: true,
+                  assignments: filteredAssignments,
+                  titleContext: `Danh mục bài tập đang lọc (${selectedGrade} • ${selectedClass} • ${selectedSubject})`,
+                })
+              }
+              className="px-4 py-2.5 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer shadow-sm transition-all"
+              title="Xuất danh mục bài tập đang lọc ra file Word (.docx) kèm Mã QR và tải ảnh QR"
+            >
+              <QrCode className="w-4 h-4" />
+              <span>Xuất danh mục & Mã QR</span>
+            </button>
           </div>
         </div>
 
@@ -2422,6 +2449,23 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                             </button>
                           )}
 
+                          {/* Quick QR / Sheet Export Button for single assignment */}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setAssignmentExportModalState({
+                                isOpen: true,
+                                assignments: [as],
+                                titleContext: `Bài tập: ${as.title}`,
+                              });
+                            }}
+                            className="p-2 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 transition-all cursor-pointer flex items-center justify-center"
+                            title="Mã QR / Tải phiếu Word (.docx) của bài tập này"
+                          >
+                            <QrCode className="w-4 h-4" />
+                          </button>
+
                           {/* 3 dots Menu Button */}
                           <button
                             onClick={(e) => {
@@ -2438,6 +2482,21 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                           {openActionMenuId === as.id && (
                             <div className="absolute right-4 top-12 z-30 w-56 bg-white rounded-xl shadow-xl border border-slate-200 py-1 text-left text-xs animate-fade-in divide-y divide-slate-100">
                               <div className="py-1">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setAssignmentExportModalState({
+                                      isOpen: true,
+                                      assignments: [as],
+                                      titleContext: `Bài tập: ${as.title}`,
+                                    });
+                                    setOpenActionMenuId(null);
+                                  }}
+                                  className="w-full px-3.5 py-2 text-left hover:bg-sky-50 flex items-center gap-2.5 font-bold text-sky-700 cursor-pointer"
+                                >
+                                  <QrCode className="w-4 h-4 text-sky-600" /> Mã QR / Tải phiếu (.docx)
+                                </button>
                                 {perms.canEdit && (
                                   <>
                                     <button
@@ -5525,6 +5584,19 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
           </div>
         </div>
       )}
+
+      {/* Cửa sổ xem trước & Xuất danh mục Bài tập + Mã QR (.docx & PNG/ZIP) */}
+      <AssignmentExportModal
+        isOpen={assignmentExportModalState.isOpen}
+        onClose={() =>
+          setAssignmentExportModalState((prev) => ({
+            ...prev,
+            isOpen: false,
+          }))
+        }
+        assignments={assignmentExportModalState.assignments}
+        titleContext={assignmentExportModalState.titleContext}
+      />
     </div>
   );
 };
