@@ -1,5 +1,6 @@
 import { db, auth } from './firebase';
-import { collection, doc, getDocs, getDoc } from 'firebase/firestore';
+import { collection, doc, getDocs, getDoc, getDocFromServer } from 'firebase/firestore';
+import { ensureAnonymousGuestAuth } from './lessonStorageService';
 import { trackedSetDoc, trackedDeleteDoc, trackedWriteBatch, extractFirestoreErrorDetails } from './firestoreWriteTracker';
 import { HomeworkAssignment } from '../types';
 import { removeUndefined, resolveCurrentTeacherProfile } from './teacherStorageService';
@@ -555,5 +556,92 @@ export async function deduplicateSubmissions(examId?: string): Promise<{ cleaned
     return { cleanedCount: 0, removedIds: [] };
   }
 }
+
+export type PublicAssignmentFetchResult =
+  | { status: 'ok'; assignment: HomeworkAssignment }
+  | { status: 'not_found' }
+  | { status: 'error'; message?: string };
+
+/**
+ * Trích xuất ID bài tập khi URL có dạng /assignment/[assignmentId]
+ */
+export function extractAssignmentIdFromPath(pathname?: string): string | null {
+  const path = pathname ?? (typeof window !== 'undefined' ? window.location.pathname : '');
+  const match = path.match(/^\/assignment\/([^/?#]+)\/?$/i);
+  if (!match || !match[1]) return null;
+  try {
+    const decoded = decodeURIComponent(match[1]).trim();
+    return decoded || null;
+  } catch {
+    return match[1].trim() || null;
+  }
+}
+
+/**
+ * Tải nội dung bài tập công khai theo ID (chế độ chỉ đọc, tự động signInAnonymously ngầm nếu cần).
+ */
+export async function fetchPublicAssignmentById(
+  assignmentId: string
+): Promise<PublicAssignmentFetchResult> {
+  const cleanId = (assignmentId || '').trim();
+  if (!cleanId) return { status: 'not_found' };
+
+  await ensureAnonymousGuestAuth();
+
+  if (db) {
+    try {
+      const ref = doc(db, 'assignments', cleanId);
+      let snap;
+      try {
+        snap = await getDocFromServer(ref);
+      } catch {
+        snap = await getDoc(ref);
+      }
+
+      if (snap.exists()) {
+        const assignment = { id: snap.id, ...snap.data() } as HomeworkAssignment;
+        return { status: 'ok', assignment };
+      }
+
+      // Thử tìm bài tập gốc nếu ID có hậu tố -class-...
+      const baseId = cleanId.replace(/-class-[a-z0-9_-]+$/i, '');
+      if (baseId && baseId !== cleanId) {
+        const baseRef = doc(db, 'assignments', baseId);
+        let baseSnap;
+        try {
+          baseSnap = await getDocFromServer(baseRef);
+        } catch {
+          baseSnap = await getDoc(baseRef);
+        }
+        if (baseSnap.exists()) {
+          const assignment = { id: cleanId, ...baseSnap.data() } as HomeworkAssignment;
+          return { status: 'ok', assignment };
+        }
+      }
+    } catch (err: any) {
+      console.warn('Lỗi tải bài tập từ Firestore, chuyển sang dự phòng cache:', err);
+      const cached = getRawCachedAssignments().find(
+        item => item.id === cleanId || item.originalAssignmentId === cleanId
+      );
+      if (cached) {
+        return { status: 'ok', assignment: cached };
+      }
+      return {
+        status: 'error',
+        message: 'Không thể kết nối đến máy chủ bài tập. Vui lòng thử lại sau.'
+      };
+    }
+  }
+
+  const cached = getRawCachedAssignments().find(
+    item => item.id === cleanId || item.originalAssignmentId === cleanId
+  );
+  if (cached) {
+    return { status: 'ok', assignment: cached };
+  }
+
+  return { status: 'not_found' };
+}
+
 
 

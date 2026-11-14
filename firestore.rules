@@ -63,68 +63,91 @@ service cloud.firestore {
     }
 
     // ELearning lessons collection:
-    // Allow public/guest read on lessons and teacher/authenticated write.
+    // Anonymous / unauthenticated users can ONLY read published AND approved lessons (never write).
+    // Resource == null allows getDoc to distinguish non-existent lessons ("Không tìm thấy bài giảng")
+    // from existing unpublished/unapproved lessons (permission-denied -> "Bài giảng chưa được công bố").
     match /elearning_lessons/{lessonId} {
-      allow read: if true;
+      allow get: if isNonAnonymousSignedIn() || resource == null || isPublishedAndApprovedLesson(resource.data);
+      allow list: if isNonAnonymousSignedIn() || isPublishedAndApprovedLesson(resource.data);
       allow write: if isNonAnonymousSignedIn();
     }
 
     // Questions collection:
+    // Prevent anonymous question-bank scraping; allow anonymous read only for questions explicitly tied to
+    // an approved & published lessonId.
     match /questions/{questionId} {
-      allow read: if true;
+      allow get: if isNonAnonymousSignedIn() || (
+        resource != null &&
+        resource.data.get('lessonId', '') != '' &&
+        exists(/databases/$(database)/documents/elearning_lessons/$(resource.data.lessonId)) &&
+        isPublishedAndApprovedLesson(get(/databases/$(database)/documents/elearning_lessons/$(resource.data.lessonId)).data)
+      );
+      allow list: if isNonAnonymousSignedIn() || (
+        resource.data.get('lessonId', '') != '' &&
+        exists(/databases/$(database)/documents/elearning_lessons/$(resource.data.lessonId)) &&
+        isPublishedAndApprovedLesson(get(/databases/$(database)/documents/elearning_lessons/$(resource.data.lessonId)).data)
+      );
       allow write: if isNonAnonymousSignedIn();
     }
 
-    // Assignments collection (including submissions subcollection for Guest & School Students)
+    // Assignments collection (public read-only get by ID for /assignment/[id] QR sharing; writes & submissions restricted)
     match /assignments/{assignmentId} {
-      allow read, write: if true;
+      allow get: if true;
+      allow list, write: if !isAnonymousAuth();
 
       match /{allSubpaths=**} {
-        allow read, write: if true;
+        allow read, write: if !isAnonymousAuth();
       }
     }
 
-    // Exams collection (including submissions subcollection for Guest & School Students)
+    // Exams collection (public read-only get by ID for /exam/[id] QR sharing; writes & submissions restricted)
     match /exams/{examId} {
-      allow read, write: if true;
+      allow get: if true;
+      allow list, write: if !isAnonymousAuth();
 
       match /{allSubpaths=**} {
-        allow read, write: if true;
+        allow read, write: if !isAnonymousAuth();
       }
     }
 
     match /exam_drafts/{draftId} {
-      allow read, write: if true;
+      allow read, write: if !isAnonymousAuth();
     }
 
     match /exam_progress/{progressId} {
-      allow read, write: if true;
+      allow read, write: if !isAnonymousAuth();
     }
 
     // ELearning assignments & student progress
     match /assigned_elearning/{id} {
-      allow read, write: if true;
+      allow read, write: if !isAnonymousAuth();
     }
 
     match /elearning_assignments/{id} {
-      allow read, write: if true;
+      allow read, write: if !isAnonymousAuth();
     }
 
     match /elearning_student_progress/{progressId} {
-      allow read, write: if true;
+      allow read, write: if !isAnonymousAuth();
     }
 
     // Games & Quizzis collections
     match /games/{gameId} {
-      allow read, write: if true;
+      allow read, write: if !isAnonymousAuth();
     }
 
     match /quizzis/{quizId} {
-      allow read, write: if true;
+      allow read, write: if !isAnonymousAuth();
     }
 
     match /quizzi_games/{quizId} {
-      allow read: if true;
+      allow get: if isNonAnonymousSignedIn() ||
+        resource == null ||
+        (
+          resource.data.get('isFreeAiGame', false) == true &&
+          resource.data.get('isPublicShareEnabled', true) == true
+        );
+      allow list: if isNonAnonymousSignedIn();
       allow write: if isNonAnonymousSignedIn();
     }
 
@@ -134,7 +157,7 @@ service cloud.firestore {
 
     // Live Quiz Sessions collection (interactive student join)
     match /quiz_live_sessions/{sessionId} {
-      allow read, write: if true;
+      allow read, write: if !isAnonymousAuth();
     }
 
     // Teachers collection (Restricted to authorized teachers/admins)
@@ -188,8 +211,7 @@ service cloud.firestore {
     }
 
     match /classes/{classId} {
-      allow read: if true;
-      allow write: if !isAnonymousAuth();
+      allow read, write: if !isAnonymousAuth();
     }
 
     match /student_enrollments/{id} {
@@ -197,7 +219,7 @@ service cloud.firestore {
     }
 
     match /student_results/{id} {
-      allow read, write: if true;
+      allow read, write: if !isAnonymousAuth();
     }
 
     match /student_year_end_results/{id} {
@@ -205,7 +227,7 @@ service cloud.firestore {
     }
 
     match /score_records/{id} {
-      allow read, write: if true;
+      allow read, write: if !isAnonymousAuth();
     }
 
     match /deleted_submissions_backup/{id} {
@@ -214,7 +236,7 @@ service cloud.firestore {
 
     // Notifications, activity logs & settings
     match /notifications/{id} {
-      allow read, write: if true;
+      allow read, write: if !isAnonymousAuth();
     }
 
     match /activityLogs/{id} {

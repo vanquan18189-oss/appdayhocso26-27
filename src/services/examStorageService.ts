@@ -1,5 +1,6 @@
 import { db, isFirestoreQuotaExceeded } from './firebase';
-import { collection, doc, getDocs, getDoc } from 'firebase/firestore';
+import { collection, doc, getDocs, getDoc, getDocFromServer } from 'firebase/firestore';
+import { ensureAnonymousGuestAuth } from './lessonStorageService';
 import { trackedSetDoc, trackedDeleteDoc, trackedWriteBatch, extractFirestoreErrorDetails } from './firestoreWriteTracker';
 import { ExamPaper } from '../types';
 import { removeUndefined } from './teacherStorageService';
@@ -556,6 +557,91 @@ export async function importExamsFromJSON(
     };
   }
 }
+
+export type PublicExamFetchResult =
+  | { status: 'ok'; exam: ExamPaper }
+  | { status: 'not_found' }
+  | { status: 'error'; message?: string };
+
+/**
+ * Trích xuất ID đề kiểm tra khi URL có dạng /exam/[examId]
+ */
+export function extractExamIdFromPath(pathname?: string): string | null {
+  const path = pathname ?? (typeof window !== 'undefined' ? window.location.pathname : '');
+  const match = path.match(/^\/exam\/([^/?#]+)\/?$/i);
+  if (!match || !match[1]) return null;
+  try {
+    const decoded = decodeURIComponent(match[1]).trim();
+    return decoded || null;
+  } catch {
+    return match[1].trim() || null;
+  }
+}
+
+/**
+ * Tải nội dung đề kiểm tra công khai theo ID (chế độ chỉ đọc, tự động signInAnonymously ngầm nếu cần).
+ */
+export async function fetchPublicExamById(examId: string): Promise<PublicExamFetchResult> {
+  const cleanId = (examId || '').trim();
+  if (!cleanId) return { status: 'not_found' };
+
+  await ensureAnonymousGuestAuth();
+
+  if (db) {
+    try {
+      const ref = doc(db, 'exams', cleanId);
+      let snap;
+      try {
+        snap = await getDocFromServer(ref);
+      } catch {
+        snap = await getDoc(ref);
+      }
+
+      if (snap.exists()) {
+        const exam = { id: snap.id, ...snap.data() } as ExamPaper;
+        return { status: 'ok', exam };
+      }
+
+      // Thử tìm đề gốc nếu ID có hậu tố -class-...
+      const baseId = cleanId.replace(/-class-[a-z0-9_-]+$/i, '');
+      if (baseId && baseId !== cleanId) {
+        const baseRef = doc(db, 'exams', baseId);
+        let baseSnap;
+        try {
+          baseSnap = await getDocFromServer(baseRef);
+        } catch {
+          baseSnap = await getDoc(baseRef);
+        }
+        if (baseSnap.exists()) {
+          const exam = { id: cleanId, ...baseSnap.data() } as ExamPaper;
+          return { status: 'ok', exam };
+        }
+      }
+    } catch (err: any) {
+      console.warn('Lỗi tải đề kiểm tra từ Firestore, chuyển sang dự phòng cache:', err);
+      const cached = getRawCachedExams().find(
+        item => item.id === cleanId || item.originalExamId === cleanId
+      );
+      if (cached) {
+        return { status: 'ok', exam: cached };
+      }
+      return {
+        status: 'error',
+        message: 'Không thể kết nối đến máy chủ đề kiểm tra. Vui lòng thử lại sau.'
+      };
+    }
+  }
+
+  const cached = getRawCachedExams().find(
+    item => item.id === cleanId || item.originalExamId === cleanId
+  );
+  if (cached) {
+    return { status: 'ok', exam: cached };
+  }
+
+  return { status: 'not_found' };
+}
+
 
 
 

@@ -23,15 +23,14 @@ export const EXAM_HEADER_LINE_2 = 'Trường Tiểu học Quang Hưng - Phân hi
 export const EXAM_HEADER_LINE_3 =
   'Dùng camera điện thoại hoặc Zalo quét mã QR để mở trực tiếp đề kiểm tra.';
 
+export const PUBLIC_VERCEL_DOMAIN = 'https://appdayhocso26-27.vercel.app';
+
 /**
  * Tạo đường dẫn công khai truy cập/làm bài trực tuyến của đề kiểm tra.
+ * Luôn sử dụng tên miền công khai chính thức https://appdayhocso26-27.vercel.app/exam/[id]
  */
 export function buildExamPublicUrl(examId: string): string {
-  const origin =
-    typeof window !== 'undefined' && window.location?.origin
-      ? window.location.origin
-      : 'https://eduplay.vn';
-  return `${origin}/exam/${encodeURIComponent(examId)}`;
+  return `${PUBLIC_VERCEL_DOMAIN}/exam/${encodeURIComponent((examId || '').trim())}`;
 }
 
 /**

@@ -61,6 +61,7 @@ import { ManualQuestionBankModal } from './ManualQuestionBankModal';
 import { UseQuestionBankModal } from './UseQuestionBankModal';
 import { ShareContentModal } from './ShareContentModal';
 import { AssignmentExportModal } from './AssignmentExportModal';
+import { buildAssignmentPublicUrl } from '../../utils/assignmentExportUtils';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { getLocalCachedQuestions, QUESTIONS_CACHE_KEY, saveQuestionsBatchToFirestore } from '../../services/questionStorageService';
 import { useScoreSort } from '../../lib/useScoreSort';
@@ -721,43 +722,8 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     const questions = detailAssignment.questions || [];
     const questionCount = questions.length > 0 ? questions.length : 5;
 
-    // Append any guest student submissions that are not in classStudentsRoster
-    const combinedRoster = [...classStudentsRoster];
-    const seenGuestCodes = new Set<string>();
-    subList.forEach((sub: any, sIdx: number) => {
-      if (!sub) return;
-      const alreadyInRoster = combinedRoster.some(st => isSameStudent(st, sub, targetClassName));
-      if (!alreadyInRoster && (sub.isGuest || sub.isGuestSubmission || sub.studentName)) {
-        const guestCode = String(sub.studentCode || sub.studentId || sub.maHs || `GUEST-${sIdx + 1}`).toUpperCase();
-        if (seenGuestCodes.has(guestCode)) return;
-        seenGuestCodes.add(guestCode);
-        const displayGuestName = sub.classOrSchool && !String(sub.studentName || '').includes(sub.classOrSchool)
-          ? `${sub.studentName || 'Học sinh tự do'} (${sub.classOrSchool})`
-          : (sub.studentName || 'Học sinh tự do');
-        combinedRoster.push({
-          id: guestCode,
-          stt: combinedRoster.length + 1,
-          code: guestCode,
-          username: guestCode,
-          name: displayGuestName,
-          fullName: displayGuestName,
-          className: targetClassName,
-          gender: 'Nam',
-          dob: '',
-          sddcn: guestCode,
-          parentName: '',
-          phone: '',
-          email: '',
-          status: 'active',
-        } as any);
-      }
-    });
-
-    const resultList = combinedRoster.map((st, idx) => {
-      const submission = subList.find(sub =>
-        isSameStudent(st, sub, targetClassName) ||
-        String(sub?.studentCode || sub?.studentId || '').toUpperCase() === String(st.code || '').toUpperCase()
-      ) || null;
+    const resultList = classStudentsRoster.map((st, idx) => {
+      const submission = subList.find(sub => isSameStudent(st, sub, targetClassName)) || null;
 
       if (submission) {
         const rawAnswers = submission.answers || submission.studentAnswers || submission.answersById;
@@ -1929,7 +1895,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   };
 
   const handleShareLink = (as: HomeworkAssignment) => {
-    const url = `${window.location.origin}/assignment/${as.id}`;
+    const url = buildAssignmentPublicUrl(as.id);
     navigator.clipboard?.writeText(url);
     showToast(`Đã sao chép liên kết bài tập: "${as.title}"`);
     setOpenActionMenuId(null);

@@ -23,15 +23,14 @@ export const ASSIGNMENT_HEADER_LINE_2 = 'Trường Tiểu học Quang Hưng - Ph
 export const ASSIGNMENT_HEADER_LINE_3 =
   'Dùng camera điện thoại hoặc Zalo quét mã QR để mở trực tiếp bài tập làm bài trực tuyến.';
 
+export const PUBLIC_VERCEL_DOMAIN = 'https://appdayhocso26-27.vercel.app';
+
 /**
  * Tạo đường dẫn chia sẻ công khai của bài tập để học sinh làm bài trực tuyến.
+ * Luôn sử dụng tên miền công khai chính thức https://appdayhocso26-27.vercel.app/assignment/[id]
  */
 export function buildAssignmentPublicUrl(assignmentId: string): string {
-  const origin =
-    typeof window !== 'undefined' && window.location?.origin
-      ? window.location.origin
-      : 'https://eduplay.vn';
-  return `${origin}/assignment/${encodeURIComponent(assignmentId)}`;
+  return `${PUBLIC_VERCEL_DOMAIN}/assignment/${encodeURIComponent((assignmentId || '').trim())}`;
 }
 
 /**

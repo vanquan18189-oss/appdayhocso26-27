@@ -81,6 +81,7 @@ import { ManualQuestionBankModal } from './ManualQuestionBankModal';
 import { UseQuestionBankModal } from './UseQuestionBankModal';
 import { ShareContentModal } from './ShareContentModal';
 import { ExamListExportModal } from './ExamListExportModal';
+import { buildExamPublicUrl } from '../../utils/examExportUtils';
 import { DateTimePicker } from '../common/DateTimePicker';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { getLocalCachedQuestions, QUESTIONS_CACHE_KEY, saveQuestionsBatchToFirestore } from '../../services/questionStorageService';
@@ -648,7 +649,9 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const [sharingExam, setSharingExam] = useState<ExamPaper | null>(null);
 
   const handleShareLink = (exam: ExamPaper) => {
-    alert("Đã sao chép liên kết chia sẻ đề: " + window.location.origin + "/exam/" + exam.id);
+    const url = buildExamPublicUrl(exam.id);
+    navigator.clipboard?.writeText(url);
+    showToast(`Đã sao chép liên kết chia sẻ đề: ${url}`, 'success');
   };
 
   const handleConfirmShare = (exam: ExamPaper) => {
@@ -1009,9 +1012,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     const studentSubMap = new Map<string, any>();
     const usedSubIndices = new Set<number>();
 
-    const combinedExamRoster = [...classStudentsRoster];
-
-    combinedExamRoster.forEach(st => {
+    classStudentsRoster.forEach(st => {
       const stdCode = st.code.toUpperCase();
 
       // QUY TẮC DUY NHẤT:
@@ -1029,41 +1030,9 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       }
     });
 
-    // Bổ sung các bài nộp của Học sinh tự do (Guest Mode) vào danh sách theo dõi của giáo viên
-    const seenGuestExamCodes = new Set<string>();
-    candidateSubmissions.forEach((sub, idx) => {
-      if (usedSubIndices.has(idx) || !sub) return;
-      if (sub.isGuest || sub.isGuestSubmission) {
-        const gCode = String(sub.studentCode || sub.studentId || sub.maHs || `GUEST-${idx + 1}`).toUpperCase();
-        if (seenGuestExamCodes.has(gCode)) return;
-        seenGuestExamCodes.add(gCode);
-        usedSubIndices.add(idx);
-        const displayGuestName = sub.classOrSchool && !String(sub.studentName || '').includes(sub.classOrSchool)
-          ? `${sub.studentName || 'Học sinh tự do'} (${sub.classOrSchool})`
-          : (sub.studentName || 'Học sinh tự do');
-        combinedExamRoster.push({
-          id: gCode,
-          stt: combinedExamRoster.length + 1,
-          code: gCode,
-          username: gCode,
-          name: displayGuestName,
-          fullName: displayGuestName,
-          className: trackingExam.targetClass || 'Tự do',
-          gender: 'Nam',
-          dob: '',
-          sddcn: gCode,
-          parentName: '',
-          phone: '',
-          email: '',
-          status: 'active',
-        } as any);
-        studentSubMap.set(gCode, sub);
-      }
-    });
-
     const questionCount = trackingExam.questions?.length || 5;
 
-    const mapped = combinedExamRoster.map((st, idx) => {
+    const mapped = classStudentsRoster.map((st, idx) => {
       const submission = studentSubMap.get(st.code.toUpperCase());
 
       if (submission) {
