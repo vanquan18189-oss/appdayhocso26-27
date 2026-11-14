@@ -143,6 +143,8 @@ interface StudentReviewViewProps {
   teacherName?: string;
   overallResults?: Overall5EResults;
   isReviewMode?: boolean;
+  isGuestMode?: boolean;
+  backButtonLabel?: string;
   lastUpdatedAt?: string;
   onRestartLesson: () => void;
   onBackToList: () => void;
@@ -156,12 +158,14 @@ export const StudentReviewView: React.FC<StudentReviewViewProps> = ({
   teacherName,
   overallResults = {},
   isReviewMode = false,
+  isGuestMode = false,
+  backButtonLabel,
   lastUpdatedAt,
   onRestartLesson,
   onBackToList
 }) => {
   const [showRestartConfirm, setShowRestartConfirm] = React.useState<boolean>(false);
-  const studentSession = getCurrentStudentSession();
+  const studentSession = isGuestMode ? null : getCurrentStudentSession();
   const avatarSource = getStudentAvatarSource(
     studentAvatar || studentSession?.avatarUrl || studentSession?.avatar,
     currentUserName
@@ -463,11 +467,22 @@ export const StudentReviewView: React.FC<StudentReviewViewProps> = ({
 
           {/* FOOTER INFO */}
           <div className={`pt-3.5 flex flex-col sm:flex-row items-center justify-between text-xs max-w-2xl mx-auto gap-2 ${tierTheme.footerBorder} ${tierTheme.footerTextColor}`}>
-            <span>Học sinh: <strong className={`font-bold ${tierTheme.studentNameColor}`}>{currentUserName} ({currentClass})</strong></span>
+            <span>
+              Học sinh:{' '}
+              <strong className={`font-bold ${tierTheme.studentNameColor}`}>
+                {currentUserName}{currentClass ? ` (${currentClass})` : ''}
+              </strong>
+            </span>
             <span>Giáo viên đánh giá: <strong className={`font-bold ${tierTheme.teacherNameColor}`}>{resolvedTeacherName}</strong></span>
           </div>
         </div>
       </div>
+
+      {isGuestMode && (
+        <div className="bg-sky-50 border border-sky-200 text-sky-900 px-4 py-3 rounded-2xl text-xs font-medium flex items-center justify-between gap-3">
+          <span>Chế độ học công khai: Kết quả chỉ hiển thị trên màn hình và không lưu vào hồ sơ học sinh.</span>
+        </div>
+      )}
 
       {/* 3. TỔNG KẾT TIẾN TRÌNH HỌC TẬP 5E - DẠNG HÀNH TRÌNH TIMELINE */}
       <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200 shadow-sm space-y-6">
@@ -504,9 +519,25 @@ export const StudentReviewView: React.FC<StudentReviewViewProps> = ({
 
         {/* 1. THẺ HUY HIỆU TÀI NGUYÊN & TIẾN ĐỘ 5E CHUẨN SƯ PHẠM TIỂU HỌC */}
         {(() => {
-          const studentSession = getCurrentStudentSession();
-          const effectiveStudentId = studentSession?.code || studentSession?.id || 'HS001';
-          const effectiveStudentName = studentSession?.name || currentUserName || 'Học sinh';
+          if (isGuestMode) {
+            return (
+              <StudentRewardBadgeCard
+                score={calcScore}
+                maxScore={100}
+                scoreDisplay={hasEnoughScoreData ? `${calcScore} / 100 điểm` : 'Chưa có điểm'}
+                scoreLabel="Kết quả bài học"
+                coins={0}
+                coinsLabel="Chế độ khách (không lưu hồ sơ)"
+                exp={calcScore}
+                level={1}
+                completedSteps={completedStepsCount}
+                totalSteps={5}
+              />
+            );
+          }
+          const activeStudentSession = getCurrentStudentSession();
+          const effectiveStudentId = activeStudentSession?.code || activeStudentSession?.id || 'HS001';
+          const effectiveStudentName = activeStudentSession?.name || currentUserName || 'Học sinh';
           const profile = getStudentGameProfile(effectiveStudentId, effectiveStudentName);
           return (
             <StudentRewardBadgeCard
@@ -771,7 +802,7 @@ export const StudentReviewView: React.FC<StudentReviewViewProps> = ({
             className="w-full sm:w-auto px-8 py-3.5 rounded-2xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white text-xs sm:text-sm font-black transition-all shadow-lg shadow-purple-600/30 flex items-center justify-center gap-2 cursor-pointer active:scale-98"
           >
             <Home className="w-4 h-4" />
-            <span>Quay về danh sách bài giảng</span>
+            <span>{backButtonLabel || 'Quay về danh sách bài giảng'}</span>
           </button>
         </div>
 

@@ -70,6 +70,12 @@ import {
 } from '../../services/studentSessionService';
 import { auth } from '../../services/firebase';
 import { resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
+import {
+  getCurrentAccessContext,
+  getContentPermissions,
+  filterAccessibleItems,
+  canTeacherAccessClass
+} from '../../services/permissionService';
 
 interface InteractiveGamesModuleProps {
   games: GameItem[];
@@ -99,23 +105,17 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
   const { getClassesForGrade } = useClassesList();
   const authEmail = (typeof window !== 'undefined' ? (auth?.currentUser?.email || localStorage.getItem('eduplay_teacher_email')) : null);
   const activeTeacherProfile = useMemo(() => resolveCurrentTeacherProfile(authEmail), [authEmail]);
-  const isAdmin = userRole === 'admin' || activeTeacherProfile.userRole === 'admin' || (activeTeacherProfile.role || '').toLowerCase().includes('admin');
+  const accessContext = useMemo(() => getCurrentAccessContext(userRole, authEmail), [userRole, authEmail]);
+  const isAdmin = accessContext.isAdmin;
+  const [resourceTab, setResourceTab] = useState<'all' | 'mine' | 'colleagues'>('all');
 
   const isRoomOwner = useCallback((room: GameItem): boolean => {
-    if (isAdmin) return true;
-    const currentId = activeTeacherProfile.id; // e.g. 'gv-06', 'gv-12'
-    if (room.teacherId && room.teacherId === currentId) return true;
-    if (room.createdBy && room.createdBy === currentId) return true;
-    return false;
-  }, [isAdmin, activeTeacherProfile.id]);
+    return getContentPermissions(room, accessContext).isOwner || isAdmin;
+  }, [accessContext, isAdmin]);
 
   const isQuizziOwner = useCallback((game: QuizziGameItem): boolean => {
-    if (isAdmin) return true;
-    const currentId = activeTeacherProfile.id; // e.g. 'gv-06', 'gv-12'
-    if (game.teacherId && game.teacherId === currentId) return true;
-    if (game.createdBy && game.createdBy === currentId) return true;
-    return false;
-  }, [isAdmin, activeTeacherProfile.id]);
+    return getContentPermissions(game, accessContext).isOwner || isAdmin;
+  }, [accessContext, isAdmin]);
 
   const [activeGame, setActiveGame] = useState<GameItem | null>(null);
   const [activeTab, setActiveTab] = useState<'games' | 'store'>(initialTab);
@@ -277,7 +277,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
   const [editingQuizziGame, setEditingQuizziGame] = useState<QuizziGameItem | null>(null);
   const [deletedCards, setDeletedCards] = useState<(number | string)[]>([]);
   const [gameToDelete, setGameToDelete] = useState<{ id: number | string; title: string } | null>(null);
-  const [sharingGame, setSharingGame] = useState<{ id?: string; title: string; grade?: string; subject?: string } | null>(null);
+  const [sharingGame, setSharingGame] = useState<(any & { _shareCollection?: 'games' | 'quizzi_games' }) | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   
   // Filter States
@@ -367,7 +367,19 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
     };
   }, [normalizedGames, normalizedQuizziGames, deletedCards, currentUserId, currentUserName]);
 
-  const filteredGames = normalizedQuizziGames.filter(g => {
+  const accessibleCustomRooms = useMemo(() => {
+    const rawRooms = normalizedGames.filter(g => g.id !== 'game-1' && g.id !== 'game-2' && g.id !== 'game-3' && g.id !== 'game-4');
+    if ((userRole as string) === 'student') return rawRooms;
+    return filterAccessibleItems(rawRooms, accessContext, resourceTab);
+  }, [normalizedGames, userRole, accessContext, resourceTab]);
+
+  const accessibleQuizziGames = useMemo(() => {
+    const rawQuizzi = normalizedQuizziGames.filter(g => !deletedCards.includes(g.id));
+    if ((userRole as string) === 'student') return rawQuizzi;
+    return filterAccessibleItems(rawQuizzi, accessContext, resourceTab);
+  }, [normalizedQuizziGames, deletedCards, userRole, accessContext, resourceTab]);
+
+  const filteredGames = accessibleQuizziGames.filter(g => {
     if (filterGrade !== 'Tất cả các khối' && g.grade !== filterGrade) return false;
     if (filterClass !== 'Tất cả các lớp' && g.classInfo !== filterClass) return false;
     if (filterSubject !== 'Tất cả các môn' && g.subjectLabel !== filterSubject && g.subject !== filterSubject) return false;
@@ -711,8 +723,13 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
     leaderboardResults.forEach(r => {
       if (r.className) set.add(r.className);
     });
-    return Array.from(set);
-  }, [selectedLeaderboardGame, leaderboardResults]);
+    const rawList = Array.from(set);
+    if (!accessContext.isAdmin && (userRole as string) !== 'student') {
+      const filtered = rawList.filter(c => canTeacherAccessClass(c, accessContext));
+      return filtered.length > 0 ? filtered : rawList;
+    }
+    return rawList;
+  }, [selectedLeaderboardGame, leaderboardResults, accessContext, userRole]);
 
   const sortedLeaderboard = useMemo(() => {
     return [...leaderboardResults].sort((a, b) => {
@@ -1798,7 +1815,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                   <Gamepad2 className="w-6 h-6 text-teal-100" />
                 </div>
                 <div>
-                  <div className="text-3xl font-black">{normalizedGames.filter(g => g.id !== 'game-1' && g.id !== 'game-2' && g.id !== 'game-3' && g.id !== 'game-4' && g.status !== 'closed').length}</div>
+                  <div className="text-3xl font-black">{accessibleCustomRooms.filter(g => g.status !== 'closed').length}</div>
                   <div className="text-[10px] font-black uppercase tracking-wider text-teal-100 mt-0.5">PHÒNG THI ĐẤU ĐANG HOẠT ĐỘNG</div>
                 </div>
               </div>
@@ -1812,7 +1829,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                 </div>
                 <div>
                   <div className="text-3xl font-black">
-                    {normalizedQuizziGames.filter(g => !deletedCards.includes(g.id)).length}
+                    {accessibleQuizziGames.length}
                   </div>
                   <div className="text-[10px] font-black uppercase tracking-wider text-indigo-100 mt-0.5">TRÒ CHƠI QUIZZI CÁ NHÂN</div>
                 </div>
@@ -1832,6 +1849,42 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Resource Ownership Tabs for Teachers */}
+          {(userRole as string) !== 'student' && (
+            <div className="flex flex-wrap items-center gap-2 bg-white p-3 rounded-2xl border border-slate-200 shadow-2xs">
+              <button
+                onClick={() => setResourceTab('all')}
+                className={`px-4 py-2 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+                  resourceTab === 'all'
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                📚 Tất cả trò chơi
+              </button>
+              <button
+                onClick={() => setResourceTab('mine')}
+                className={`px-4 py-2 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+                  resourceTab === 'mine'
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                👤 Trò chơi của tôi
+              </button>
+              <button
+                onClick={() => setResourceTab('colleagues')}
+                className={`px-4 py-2 rounded-xl text-xs font-extrabold transition-all cursor-pointer ${
+                  resourceTab === 'colleagues'
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                🤝 Trò chơi của đồng nghiệp (Được chia sẻ)
+              </button>
+            </div>
+          )}
 
           {/* Main Content Area */}
           <div className="flex flex-col gap-6">
@@ -1899,8 +1952,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
               
               <div className="flex-1 overflow-auto">
                 {(() => {
-                  const customRooms = normalizedGames.filter(g => g.id !== 'game-1' && g.id !== 'game-2' && g.id !== 'game-3' && g.id !== 'game-4');
-                  const filteredRooms = customRooms.filter(room => {
+                  const filteredRooms = accessibleCustomRooms.filter(room => {
                     if (filterGrade !== 'Tất cả các khối' && filterGrade !== 'Tất cả' && room.grade && room.grade !== filterGrade) return false;
                     if (filterClass !== 'Tất cả các lớp' && filterClass !== 'Tất cả' && room.classInfo && room.classInfo !== filterClass) return false;
                     if (filterSubject !== 'Tất cả các môn' && filterSubject !== 'Tất cả' && room.subject && room.subject.toLowerCase() !== filterSubject.toLowerCase()) return false;
@@ -1924,14 +1976,23 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
 
                   return (
                     <div className="divide-y divide-slate-100">
-                      {filteredRooms.slice((roomsCurrentPage - 1) * roomsPageSize, (roomsCurrentPage - 1) * roomsPageSize + roomsPageSize).map(room => (
+                      {filteredRooms.slice((roomsCurrentPage - 1) * roomsPageSize, (roomsCurrentPage - 1) * roomsPageSize + roomsPageSize).map(room => {
+                        const roomPerms = getContentPermissions(room, accessContext);
+                        return (
                         <div key={room.id} className="p-4 sm:p-5 hover:bg-slate-50/80 transition-colors flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                           <div className="flex items-start sm:items-center gap-3.5">
                             <button className="text-amber-400 hover:text-amber-500 transition-colors mt-0.5 sm:mt-0 shrink-0">
                               <Trophy className="w-5 h-5 fill-amber-400" />
                             </button>
                             <div>
-                              <h4 className="text-sm font-black text-slate-900 leading-snug">{room.title}</h4>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <h4 className="text-sm font-black text-slate-900 leading-snug">{room.title}</h4>
+                                {roomPerms.isShared && roomPerms.sharedByBadge && (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                    🤝 {roomPerms.sharedByBadge}
+                                  </span>
+                                )}
+                              </div>
                               <p className="text-xs text-slate-500 mt-0.5">{room.description || `${room.questions.length} câu hỏi`}</p>
                             </div>
                           </div>
@@ -1974,8 +2035,8 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                                 </>
                               ) : (
                                 <>
-                                  {/* 1. Nút khóa/mở - Chỉ chủ sở hữu hoặc admin đổi trạng thái. Đồng nghiệp chỉ xem trạng thái tĩnh */}
-                                  {isRoomOwner(room) ? (
+                                  {/* 1. Nút khóa/mở - Chủ sở hữu, admin hoặc người có quyền giao/sửa */}
+                                  {roomPerms.canAssign || roomPerms.canEdit ? (
                                     <button
                                       onClick={() => {
                                         const newStatus = room.status === 'closed' ? 'open' : 'closed';
@@ -2003,8 +2064,8 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                                     </span>
                                   )}
 
-                                  {/* 2. Nút bút sửa (✏️) - CHỈ chủ sở hữu/admin */}
-                                  {isRoomOwner(room) && (
+                                  {/* 2. Nút bút sửa (✏️) - theo quyền canEdit */}
+                                  {roomPerms.canEdit && (
                                     <button
                                       onClick={() => {
                                         if (onOpenEditGameRoom) onOpenEditGameRoom(room);
@@ -2017,14 +2078,12 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                                   )}
 
                                   {/* Nút chia sẻ phòng thi đấu - CHỈ chủ sở hữu/admin */}
-                                  {isRoomOwner(room) && (
+                                  {roomPerms.canShare && (
                                     <button
                                       onClick={() => {
                                         setSharingGame({
-                                          id: room.id,
-                                          title: room.title,
-                                          grade: room.grade,
-                                          subject: room.subject
+                                          ...room,
+                                          _shareCollection: 'games'
                                         });
                                       }}
                                       title="Chia sẻ phòng thi đấu"
@@ -2045,8 +2104,8 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                                     <Trophy className="w-3.5 h-3.5 fill-amber-500" />
                                   </button>
 
-                                  {/* 4. Nút xóa (🗑️) - CHỈ chủ sở hữu/admin */}
-                                  {isRoomOwner(room) && (
+                                  {/* 4. Nút xóa (🗑️) - CHỈ chủ sở hữu/admin hoặc được phép xóa */}
+                                  {roomPerms.canDelete && (
                                     <button
                                       onClick={() => {
                                         setRoomToDelete(room);
@@ -2062,15 +2121,15 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                             </div>
                           </div>
                         </div>
-                      ))}
+                      );
+                      })}
                     </div>
                   );
                 })()}
               </div>
 
               {(() => {
-                const customRooms = normalizedGames.filter(g => g.id !== 'game-1' && g.id !== 'game-2' && g.id !== 'game-3' && g.id !== 'game-4');
-                const filteredRooms = customRooms.filter(room => {
+                const filteredRooms = accessibleCustomRooms.filter(room => {
                   if (filterGrade !== 'Tất cả các khối' && filterGrade !== 'Tất cả' && room.grade && room.grade !== filterGrade) return false;
                   if (filterClass !== 'Tất cả các lớp' && filterClass !== 'Tất cả' && room.classInfo && room.classInfo !== filterClass) return false;
                   if (filterSubject !== 'Tất cả các môn' && filterSubject !== 'Tất cả' && room.subject && room.subject.toLowerCase() !== filterSubject.toLowerCase()) return false;
@@ -2190,46 +2249,59 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                   const paginatedGames = visibleGames.slice((gamesCurrentPage - 1) * gamesPageSize, (gamesCurrentPage - 1) * gamesPageSize + gamesPageSize);
                   return paginatedGames.map(game => {
                     const IconComponent = game.icon === 'Laptop' ? Laptop : game.icon === 'BookOpen' ? BookOpen : Layers;
+                    const qPerms = getContentPermissions(game, accessContext);
                     return (
                       <div key={game.id} className={`bg-white border border-${game.color}-100 rounded-xl p-4 shadow-sm hover:shadow transition-shadow relative flex flex-col h-full`}>
-                        {isQuizziOwner(game) && (
+                        {(qPerms.canShare || qPerms.canEdit || qPerms.canDelete) && (
                           <div className="absolute top-3.5 right-3.5 flex items-center gap-1">
-                            <button
-                              onClick={() => {
-                                setSharingGame({
-                                  id: String(game.id),
-                                  title: game.title,
-                                  grade: game.grade,
-                                  subject: game.subject
-                                });
-                              }}
-                              title="Chia sẻ trò chơi"
-                              className="p-1.5 text-blue-500 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
-                            >
-                              <Share2 className="w-4 h-4" />
-                            </button>
-                            <button 
-                              onClick={() => {
-                                setEditingQuizziGame(game);
-                                setShowCreateQuizziModal(true);
-                              }} 
-                              title="Chỉnh sửa trò chơi"
-                              className="p-1.5 text-amber-500 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition-colors cursor-pointer"
-                            >
-                              <Pencil className="w-4 h-4" />
-                            </button>
-                            <button 
-                              onClick={() => setGameToDelete({ id: game.id, title: game.title })} 
-                              title="Xóa trò chơi"
-                              className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
+                            {qPerms.canShare && (
+                              <button
+                                onClick={() => {
+                                  setSharingGame({
+                                    ...game,
+                                    id: String(game.id),
+                                    _shareCollection: 'quizzi_games'
+                                  });
+                                }}
+                                title="Chia sẻ trò chơi"
+                                className="p-1.5 text-blue-500 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
+                              >
+                                <Share2 className="w-4 h-4" />
+                              </button>
+                            )}
+                            {qPerms.canEdit && (
+                              <button 
+                                onClick={() => {
+                                  setEditingQuizziGame(game);
+                                  setShowCreateQuizziModal(true);
+                                }} 
+                                title="Chỉnh sửa trò chơi"
+                                className="p-1.5 text-amber-500 hover:text-amber-700 hover:bg-amber-50 rounded-lg transition-colors cursor-pointer"
+                              >
+                                <Pencil className="w-4 h-4" />
+                              </button>
+                            )}
+                            {qPerms.canDelete && (
+                              <button 
+                                onClick={() => setGameToDelete({ id: game.id, title: game.title })} 
+                                title="Xóa trò chơi"
+                                className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
                           </div>
                         )}
                         
-                        <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 bg-${game.color}-100 text-${game.color}-700 rounded-full text-[10px] font-black uppercase mb-3 w-fit`}>
-                          <IconComponent className="w-3 h-3" /> {game.subject}
+                        <div className="flex flex-wrap items-center gap-1.5 mb-3">
+                          <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 bg-${game.color}-100 text-${game.color}-700 rounded-full text-[10px] font-black uppercase w-fit`}>
+                            <IconComponent className="w-3 h-3" /> {game.subject}
+                          </div>
+                          {qPerms.isShared && qPerms.sharedByBadge && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                              🤝 {qPerms.sharedByBadge}
+                            </span>
+                          )}
                         </div>
                         
                         <h4 className="text-sm font-bold text-slate-800 mb-2 pr-20 leading-tight">{game.title}</h4>
@@ -3523,9 +3595,31 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
         isOpen={!!sharingGame}
         onClose={() => setSharingGame(null)}
         contentType="game"
+        collectionNameOverride={sharingGame?._shareCollection || 'games'}
         content={sharingGame}
         onConfirmShare={(payload) => {
-          showToast("Đã chia sẻ thành công phòng trò chơi: " + payload.title, "success");
+          if (sharingGame) {
+            if (sharingGame._shareCollection === 'quizzi_games') {
+              setQuizziGames(prev => prev.map(q => String(q.id) === String(sharingGame.id) ? {
+                ...q,
+                sharedWithTeachers: payload.sharedWithTeachers,
+                sharedWithGroups: payload.sharedWithGroups,
+                sharePermission: payload.sharePermission,
+                allowDeleteByShared: payload.allowDeleteByShared,
+              } : q));
+            } else if (onUpdateGame) {
+              onUpdateGame({
+                ...sharingGame,
+                sharedWithTeachers: payload.sharedWithTeachers,
+                sharedWithGroups: payload.sharedWithGroups,
+                sharePermission: payload.sharePermission,
+                allowDeleteByShared: payload.allowDeleteByShared,
+              });
+            }
+          }
+          showToast(payload.revoked
+            ? "Đã thu hồi chia sẻ trò chơi: " + payload.title
+            : "Đã cập nhật chia sẻ trò chơi: " + payload.title, "success");
           setSharingGame(null);
         }}
       />

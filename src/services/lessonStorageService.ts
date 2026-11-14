@@ -1,10 +1,117 @@
-import { db } from './firebase';
-import { collection, doc, setDoc, getDocs, deleteDoc, onSnapshot, query } from 'firebase/firestore';
+import { db, auth } from './firebase';
+import { collection, doc, setDoc, getDoc, getDocFromServer, getDocs, deleteDoc, onSnapshot, query } from 'firebase/firestore';
+import { signInAnonymously } from 'firebase/auth';
 import { Lesson5EPlan } from '../types';
-import { INITIAL_LESSONS } from './mockData';
 
 export const ELEARNING_LESSONS_STORAGE_KEY = 'eduplay_5e_lessons';
 export const ELEARNING_LESSONS_COLLECTION = 'elearning_lessons';
+
+export type PublicLessonFetchResult =
+  | { status: 'ok'; lesson: Lesson5EPlan }
+  | { status: 'unpublished' }
+  | { status: 'not_found' }
+  | { status: 'error'; message?: string };
+
+/**
+ * Extract lesson ID when URL matches /lesson/[lessonId]
+ */
+export function extractLessonIdFromPath(pathname?: string): string | null {
+  const path = pathname ?? (typeof window !== 'undefined' ? window.location.pathname : '');
+  const match = path.match(/^\/lesson\/([^/?#]+)\/?$/i);
+  if (!match || !match[1]) return null;
+  try {
+    const decoded = decodeURIComponent(match[1]).trim();
+    return decoded || null;
+  } catch {
+    return match[1].trim() || null;
+  }
+}
+
+/**
+ * Check whether a lesson is both published and approved for public guest access
+ */
+export function isLessonPubliclyAccessible(lesson: Partial<Lesson5EPlan> | any): boolean {
+  if (!lesson) return false;
+  const isPublished = lesson.status !== 'draft';
+  const isApproved = lesson.isApproved !== false;
+  return isPublished && isApproved;
+}
+
+/**
+ * Sign in anonymously when opening a public /lesson/... link if no user is currently signed in.
+ * Gracefully degrades if Anonymous Auth provider is not yet enabled in Firebase Console.
+ */
+export async function ensureAnonymousGuestAuth(): Promise<void> {
+  if (!auth) return;
+  if (auth.currentUser) return;
+  try {
+    await signInAnonymously(auth);
+  } catch (err: any) {
+    const code = err?.code || '';
+    if (code !== 'auth/operation-not-allowed' && code !== 'auth/admin-restricted-operation') {
+      console.warn('Anonymous sign-in warning:', err?.message || err);
+    }
+  }
+}
+
+/**
+ * Fetch a single lesson for public guest viewing (/lesson/[id]).
+ * Enforces that only published & approved lessons can be opened.
+ */
+export async function fetchPublicLessonById(lessonId: string): Promise<PublicLessonFetchResult> {
+  const cleanId = (lessonId || '').trim();
+  if (!cleanId) return { status: 'not_found' };
+
+  await ensureAnonymousGuestAuth();
+
+  if (db) {
+    try {
+      const ref = doc(db, ELEARNING_LESSONS_COLLECTION, cleanId);
+      let snap;
+      try {
+        snap = await getDocFromServer(ref);
+      } catch (serverErr: any) {
+        const serverCode = serverErr?.code || '';
+        const serverMsg = String(serverErr?.message || '');
+        if (serverCode === 'permission-denied' || serverMsg.includes('Missing or insufficient permissions')) {
+          return { status: 'unpublished' };
+        }
+        snap = await getDoc(ref);
+      }
+
+      if (!snap.exists()) {
+        return { status: 'not_found' };
+      }
+
+      const lesson = { id: snap.id, ...snap.data() } as Lesson5EPlan;
+      if (!isLessonPubliclyAccessible(lesson)) {
+        return { status: 'unpublished' };
+      }
+
+      return { status: 'ok', lesson };
+    } catch (err: any) {
+      const code = err?.code || '';
+      const message = String(err?.message || '');
+      if (code === 'permission-denied' || message.includes('Missing or insufficient permissions')) {
+        return { status: 'unpublished' };
+      }
+      // Offline / network fallback to local cache if available
+      const cached = getLocalCachedLessons().find(item => item.id === cleanId);
+      if (cached) {
+        return isLessonPubliclyAccessible(cached)
+          ? { status: 'ok', lesson: cached }
+          : { status: 'unpublished' };
+      }
+      return { status: 'error', message: 'Không thể kết nối đến máy chủ bài giảng. Vui lòng thử lại sau.' };
+    }
+  }
+
+  const cached = getLocalCachedLessons().find(item => item.id === cleanId);
+  if (!cached) return { status: 'not_found' };
+  return isLessonPubliclyAccessible(cached)
+    ? { status: 'ok', lesson: cached }
+    : { status: 'unpublished' };
+}
 
 /**
  * Get cached lessons from localStorage as fallback

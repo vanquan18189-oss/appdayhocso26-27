@@ -1,7 +1,14 @@
 import { db } from './firebase';
-import { collection, doc, setDoc, getDocs, deleteDoc, onSnapshot } from 'firebase/firestore';
+import { doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { GameItem, QuizziGameItem } from '../types';
 import { removeUndefined } from './teacherStorageService';
+import {
+  attachOwnershipOnCreate,
+  getCurrentAccessContext,
+  getContentPermissions,
+  queryAccessibleCollection,
+  invalidateQueryCache
+} from './permissionService';
 
 const GAMES_CACHE_KEY = 'eduplay_cached_games';
 export const QUIZZI_CACHE_KEY = 'eduplay_quizzi_games';
@@ -9,23 +16,28 @@ export const QUIZZI_COLLECTION = 'quizzi_games';
 
 export const DEFAULT_QUIZZI_GAMES: QuizziGameItem[] = [];
 
-/**
- * Lấy danh sách Trò chơi từ LocalStorage Cache
- */
-export function getLocalCachedGames(): GameItem[] {
+function getRawCachedGames(): GameItem[] {
   if (typeof window === 'undefined') return [];
   try {
     const cached = localStorage.getItem(GAMES_CACHE_KEY);
     if (cached !== null) {
       const parsed = JSON.parse(cached);
-      if (Array.isArray(parsed)) {
-        return parsed;
-      }
+      if (Array.isArray(parsed)) return parsed;
     }
   } catch (e) {
     console.warn('Lỗi đọc cache trò chơi từ LocalStorage:', e);
   }
   return [];
+}
+
+/**
+ * Lấy danh sách Trò chơi từ LocalStorage Cache (có lọc RBAC cho giáo viên thường)
+ */
+export function getLocalCachedGames(): GameItem[] {
+  const all = getRawCachedGames();
+  const access = getCurrentAccessContext();
+  if (access.isAdmin || access.isStudent) return all;
+  return all.filter(item => getContentPermissions(item, access).canView);
 }
 
 /**
@@ -41,13 +53,15 @@ export function saveGamesToLocalStorage(games: GameItem[]): void {
 }
 
 /**
- * Lưu một GameItem lên Firestore
+ * Lưu một GameItem lên Firestore (kèm metadata sở hữu & chia sẻ RBAC)
  */
-export async function saveGameToFirestore(game: GameItem): Promise<void> {
+export async function saveGameToFirestore(gameInput: GameItem): Promise<void> {
   try {
-    // Cập nhật LocalStorage cache trước
-    const current = getLocalCachedGames();
-    const existsIdx = current.findIndex(g => g.id === game.id);
+    const current = getRawCachedGames();
+    const existsIdx = current.findIndex(g => g.id === gameInput.id);
+    const existingGame = existsIdx >= 0 ? current[existsIdx] : null;
+    const game = attachOwnershipOnCreate({ ...gameInput }, existingGame);
+
     let updated: GameItem[];
     if (existsIdx >= 0) {
       updated = [...current];
@@ -69,28 +83,29 @@ export async function saveGameToFirestore(game: GameItem): Promise<void> {
     });
 
     await setDoc(gameRef, cleanedPayload, { merge: true });
-    console.log(`💾 Đã lưu trò chơi "${game.title}" (ID: ${game.id}) lên Cloud Firestore!`);
+    invalidateQueryCache('games');
   } catch (error) {
     console.error("Lỗi khi lưu trò chơi lên Firestore:", error);
   }
 }
 
 /**
- * Lấy toàn bộ danh sách Trò chơi từ Firestore
+ * Lấy danh sách Trò chơi từ Firestore theo phân quyền RBAC (cache 5 phút, tối đa 20 doc/nguồn, không dùng onSnapshot)
  */
-export async function getGamesFromFirestore(): Promise<GameItem[]> {
+export async function getGamesFromFirestore(forceRefresh = false): Promise<GameItem[]> {
   try {
     if (!db) return getLocalCachedGames();
 
-    const snap = await getDocs(collection(db, 'games'));
-    const items: GameItem[] = [];
-    if (!snap.empty) {
-      snap.forEach(docSnap => {
-        items.push({ id: docSnap.id, ...docSnap.data() } as GameItem);
-      });
+    const items = await queryAccessibleCollection<GameItem>('games', {
+      forceRefresh,
+      maxPerSource: 20,
+      adminLimit: 50
+    });
+    if (items.length > 0) {
+      saveGamesToLocalStorage(items);
+      return items;
     }
-    saveGamesToLocalStorage(items);
-    return items;
+    return getLocalCachedGames();
   } catch (error) {
     console.warn("Lỗi đọc danh sách trò chơi từ Firestore:", error);
     return getLocalCachedGames();
@@ -98,7 +113,7 @@ export async function getGamesFromFirestore(): Promise<GameItem[]> {
 }
 
 /**
- * Đăng ký lắng nghe thời gian thực (Real-time listener) danh sách Trò chơi từ Firestore
+ * Tải danh sách Trò chơi từ Firestore theo phân quyền RBAC (không dùng onSnapshot)
  */
 export function subscribeToGamesFromFirestore(
   onUpdate: (games: GameItem[]) => void,
@@ -109,33 +124,22 @@ export function subscribeToGamesFromFirestore(
     return () => {};
   }
 
-  try {
-    const colRef = collection(db, 'games');
-    return onSnapshot(
-      colRef,
-      (snapshot) => {
-        const loaded: GameItem[] = [];
-        if (!snapshot.empty) {
-          snapshot.forEach((docSnap) => {
-            loaded.push({ id: docSnap.id, ...docSnap.data() } as GameItem);
-          });
-          // Ưu tiên xếp các trò chơi có ID mới lên đầu
-          loaded.sort((a, b) => (b.id > a.id ? 1 : -1));
-        }
-        saveGamesToLocalStorage(loaded);
-        onUpdate(loaded);
-      },
-      (err) => {
-        console.warn('Lỗi Firestore Live Games listener:', err);
-        if (onError) onError(err);
-        onUpdate(getLocalCachedGames());
-      }
-    );
-  } catch (err) {
-    console.warn('Lỗi khởi tạo subscribeToGamesFromFirestore:', err);
-    onUpdate(getLocalCachedGames());
-    return () => {};
-  }
+  let isMounted = true;
+
+  getGamesFromFirestore(false)
+    .then(loaded => {
+      if (!isMounted) return;
+      loaded.sort((a, b) => (b.id > a.id ? 1 : -1));
+      onUpdate(loaded);
+    })
+    .catch(err => {
+      if (onError) onError(err);
+      if (isMounted) onUpdate(getLocalCachedGames());
+    });
+
+  return () => {
+    isMounted = false;
+  };
 }
 
 /**
@@ -143,14 +147,14 @@ export function subscribeToGamesFromFirestore(
  */
 export async function deleteGameFromFirestore(gameId: string): Promise<void> {
   try {
-    const current = getLocalCachedGames();
+    const current = getRawCachedGames();
     const updated = current.filter(g => g.id !== gameId);
     saveGamesToLocalStorage(updated);
 
     if (db) {
       const ref = doc(db, 'games', gameId);
       await deleteDoc(ref);
-      console.log(`🗑️ Đã xóa trò chơi ID ${gameId} trên Cloud Firestore!`);
+      invalidateQueryCache('games');
     }
   } catch (error) {
     console.error("Lỗi khi xóa trò chơi khỏi Firestore:", error);
@@ -158,26 +162,31 @@ export async function deleteGameFromFirestore(gameId: string): Promise<void> {
 }
 
 // ==========================================
-// QUIZZI GAMES STORAGE & REALTIME SYNC
+// QUIZZI GAMES STORAGE & RBAC SYNC
 // ==========================================
 
-/**
- * Lấy danh sách Trò chơi Quizzi từ LocalStorage Cache
- */
-export function getLocalCachedQuizziGames(): QuizziGameItem[] {
+function getRawCachedQuizziGames(): QuizziGameItem[] {
   if (typeof window === 'undefined') return [];
   try {
     const cached = localStorage.getItem(QUIZZI_CACHE_KEY);
     if (cached !== null) {
       const parsed = JSON.parse(cached);
-      if (Array.isArray(parsed)) {
-        return parsed;
-      }
+      if (Array.isArray(parsed)) return parsed;
     }
   } catch (e) {
     console.warn('Lỗi đọc cache Quizzi từ LocalStorage:', e);
   }
   return [];
+}
+
+/**
+ * Lấy danh sách Trò chơi Quizzi từ LocalStorage Cache (có lọc RBAC cho giáo viên thường)
+ */
+export function getLocalCachedQuizziGames(): QuizziGameItem[] {
+  const all = getRawCachedQuizziGames();
+  const access = getCurrentAccessContext();
+  if (access.isAdmin || access.isStudent) return all;
+  return all.filter(item => getContentPermissions(item, access).canView);
 }
 
 /**
@@ -193,13 +202,15 @@ export function saveQuizziGamesToLocalStorage(games: QuizziGameItem[]): void {
 }
 
 /**
- * Lưu một QuizziGameItem lên Firestore
+ * Lưu một QuizziGameItem lên Firestore (kèm metadata sở hữu & chia sẻ RBAC)
  */
-export async function saveQuizziGameToFirestore(game: QuizziGameItem): Promise<void> {
+export async function saveQuizziGameToFirestore(gameInput: QuizziGameItem): Promise<void> {
   try {
-    // 1. Cập nhật LocalStorage cache trước
-    const current = getLocalCachedQuizziGames();
-    const existsIdx = current.findIndex(g => String(g.id) === String(game.id));
+    const current = getRawCachedQuizziGames();
+    const existsIdx = current.findIndex(g => String(g.id) === String(gameInput.id));
+    const existingGame = existsIdx >= 0 ? current[existsIdx] : null;
+    const game = attachOwnershipOnCreate({ ...gameInput }, existingGame);
+
     let updated: QuizziGameItem[];
     if (existsIdx >= 0) {
       updated = [...current];
@@ -209,7 +220,6 @@ export async function saveQuizziGameToFirestore(game: QuizziGameItem): Promise<v
     }
     saveQuizziGamesToLocalStorage(updated);
 
-    // 2. Gửi lên Firestore
     if (!db) {
       console.warn('Firestore chưa sẵn sàng, lưu cache cục bộ Quizzi');
       return;
@@ -224,9 +234,9 @@ export async function saveQuizziGameToFirestore(game: QuizziGameItem): Promise<v
     });
 
     await setDoc(gameRef, cleanedPayload, { merge: true });
-    console.log(`✅ [Firestore] Đã lưu trò chơi Quizzi "${game.title}" (ID: ${docId}) vào collection "${QUIZZI_COLLECTION}" thành công!`);
+    invalidateQueryCache(QUIZZI_COLLECTION);
   } catch (error) {
-    console.error(`❌ [Firestore] Lỗi khi lưu trò chơi Quizzi "${game.title}" lên Firestore:`, error);
+    console.error(`❌ [Firestore] Lỗi khi lưu trò chơi Quizzi "${gameInput.title}" lên Firestore:`, error);
     throw error;
   }
 }
@@ -241,21 +251,22 @@ export async function saveMultipleQuizziGamesToFirestore(games: QuizziGameItem[]
 }
 
 /**
- * Lấy toàn bộ danh sách Trò chơi Quizzi từ Firestore
+ * Lấy danh sách Trò chơi Quizzi từ Firestore theo phân quyền RBAC (cache 5 phút, tối đa 20 doc/nguồn, không dùng onSnapshot)
  */
-export async function getQuizziGamesFromFirestore(): Promise<QuizziGameItem[]> {
+export async function getQuizziGamesFromFirestore(forceRefresh = false): Promise<QuizziGameItem[]> {
   try {
     if (!db) return getLocalCachedQuizziGames();
 
-    const snap = await getDocs(collection(db, QUIZZI_COLLECTION));
-    const items: QuizziGameItem[] = [];
-    if (!snap.empty) {
-      snap.forEach(docSnap => {
-        items.push({ id: docSnap.id, ...docSnap.data() } as QuizziGameItem);
-      });
+    const items = await queryAccessibleCollection<QuizziGameItem>(QUIZZI_COLLECTION, {
+      forceRefresh,
+      maxPerSource: 20,
+      adminLimit: 50
+    });
+    if (items.length > 0) {
+      saveQuizziGamesToLocalStorage(items);
+      return items;
     }
-    saveQuizziGamesToLocalStorage(items);
-    return items;
+    return getLocalCachedQuizziGames();
   } catch (error) {
     console.warn("Lỗi đọc danh sách Quizzi từ Firestore:", error);
     return getLocalCachedQuizziGames();
@@ -263,7 +274,7 @@ export async function getQuizziGamesFromFirestore(): Promise<QuizziGameItem[]> {
 }
 
 /**
- * Đăng ký lắng nghe thời gian thực (Real-time listener) danh sách Trò chơi Quizzi từ Firestore
+ * Tải danh sách Trò chơi Quizzi từ Firestore theo phân quyền RBAC (không dùng onSnapshot)
  */
 export function subscribeToQuizziGamesFromFirestore(
   onUpdate: (games: QuizziGameItem[]) => void,
@@ -274,38 +285,27 @@ export function subscribeToQuizziGamesFromFirestore(
     return () => {};
   }
 
-  try {
-    const colRef = collection(db, QUIZZI_COLLECTION);
-    return onSnapshot(
-      colRef,
-      (snapshot) => {
-        const loaded: QuizziGameItem[] = [];
-        if (!snapshot.empty) {
-          snapshot.forEach((docSnap) => {
-            loaded.push({ id: docSnap.id, ...docSnap.data() } as QuizziGameItem);
-          });
-          // Ưu tiên xếp các trò chơi mới nhất lên đầu danh sách
-          loaded.sort((a, b) => {
-            const timeA = a.updatedAt || a.createdAt || '';
-            const timeB = b.updatedAt || b.createdAt || '';
-            if (timeA && timeB && timeA !== timeB) return timeB.localeCompare(timeA);
-            return String(b.id).localeCompare(String(a.id));
-          });
-        }
-        saveQuizziGamesToLocalStorage(loaded);
-        onUpdate(loaded);
-      },
-      (err) => {
-        console.warn('Lỗi Firestore Live Quizzi games listener:', err);
-        if (onError) onError(err);
-        onUpdate(getLocalCachedQuizziGames());
-      }
-    );
-  } catch (err) {
-    console.warn('Lỗi khởi tạo subscribeToQuizziGamesFromFirestore:', err);
-    onUpdate(getLocalCachedQuizziGames());
-    return () => {};
-  }
+  let isMounted = true;
+
+  getQuizziGamesFromFirestore(false)
+    .then(loaded => {
+      if (!isMounted) return;
+      loaded.sort((a, b) => {
+        const timeA = a.updatedAt || a.createdAt || '';
+        const timeB = b.updatedAt || b.createdAt || '';
+        if (timeA && timeB && timeA !== timeB) return timeB.localeCompare(timeA);
+        return String(b.id).localeCompare(String(a.id));
+      });
+      onUpdate(loaded);
+    })
+    .catch(err => {
+      if (onError) onError(err);
+      if (isMounted) onUpdate(getLocalCachedQuizziGames());
+    });
+
+  return () => {
+    isMounted = false;
+  };
 }
 
 /**
@@ -314,18 +314,19 @@ export function subscribeToQuizziGamesFromFirestore(
 export async function deleteQuizziGameFromFirestore(gameId: string | number): Promise<void> {
   try {
     const docId = String(gameId);
-    const current = getLocalCachedQuizziGames();
+    const current = getRawCachedQuizziGames();
     const updated = current.filter(g => String(g.id) !== docId);
     saveQuizziGamesToLocalStorage(updated);
 
     if (db) {
       const ref = doc(db, QUIZZI_COLLECTION, docId);
       await deleteDoc(ref);
-      console.log(`🗑️ [Firestore] Đã xóa vĩnh viễn trò chơi Quizzi ID "${docId}" trên Firestore collection "${QUIZZI_COLLECTION}"!`);
+      invalidateQueryCache(QUIZZI_COLLECTION);
     }
   } catch (error) {
     console.error(`❌ [Firestore] Lỗi khi xóa trò chơi Quizzi ID ${gameId} khỏi Firestore:`, error);
     throw error;
   }
 }
+
 

@@ -349,12 +349,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
       shortLabel: 'Người dùng',
       icon: Users,
       description: 'Giáo viên, Học sinh & Lớp học',
-      roles: ['admin', 'teacher']
+      roles: ['admin']
     }
   ];
-
-  const menuItems = userRole === 'student' ? studentMenuItems : teacherMenuItems;
-  const visibleItems = menuItems.filter(item => item.roles.includes(userRole));
 
   // Determine separate teacher session vs student session to prevent cross-overriding
   const storedTeacherEmail = typeof window !== 'undefined' ? localStorage.getItem('eduplay_teacher_email') : null;
@@ -383,7 +380,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   }, [effectiveTeacherEmail]);
 
   const teacherProfile = asyncTeacherProfile || getCurrentTeacherProfile(effectiveTeacherEmail);
-  const effectiveTeacherRole = teacherProfile.userRole || userRole;
+  const effectiveTeacherRole = (userRole === 'admin' || teacherProfile.userRole === 'admin') ? 'admin' : userRole;
+
+  const menuItems = userRole === 'student' ? studentMenuItems : teacherMenuItems;
+  const visibleItems = menuItems.filter(item => item.roles.includes(effectiveTeacherRole));
 
   // Use profile name if present, never fall back to email prefix if profile has real name
   const effectiveTeacherName = teacherProfile?.name || resolveTeacherNameByEmail(

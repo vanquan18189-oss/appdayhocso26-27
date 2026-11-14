@@ -72,7 +72,7 @@ export const ShareContentModal: React.FC<ShareContentModalProps> = ({
       labelPrefix: 'Bài giảng:',
       linkLabel: 'Liên kết truy cập bài giảng',
       publicBankLabel: 'Đăng tải lên Ngân hàng Bài giảng dùng chung Trường Trực Khang',
-      noteText: 'Bài giảng sau khi chia sẻ sẽ xuất hiện ở Ngân Hàng Bài Giảng dùng chung để các giáo viên khác tham khảo.',
+      noteText: 'Ai có liên kết đều học được ngay, không cần đăng nhập.',
       successMsg: 'Đã chia sẻ thành công bài giảng:'
     },
     question: {
@@ -185,6 +185,11 @@ export const ShareContentModal: React.FC<ShareContentModalProps> = ({
                 )}
               </button>
             </div>
+            {contentType === 'lesson' && (
+              <p className="text-[11px] font-medium text-indigo-700">
+                Ai có liên kết đều học được ngay, không cần đăng nhập
+              </p>
+            )}
           </div>
 
           {/* Share target options */}

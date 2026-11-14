@@ -4885,27 +4885,12 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
             </div>
           ) : (
             <div>
-                {/* Header Bar with Batch Actions */}
+                {/* Header Bar */}
                 <div className="p-4 bg-slate-50/80 border-b border-slate-200 flex items-center justify-between flex-wrap gap-2">
                   <div className="text-xs font-extrabold text-slate-800 flex items-center gap-2">
                     <Award className="w-4 h-4 text-indigo-600" />
                     <span>Lịch sử các bài kiểm tra đã hoàn thành ({filteredExamHistory.length})</span>
                   </div>
-                  <button
-                    onClick={() => {
-                      setAlertModal({
-                        title: 'Xóa Tất Cả Lịch Sử Bài Làm',
-                        message: 'Bạn có chắc chắn muốn xóa lịch sử bài làm này để học sinh có thể làm lại từ đầu không?',
-                        type: 'confirm_delete_all_submissions',
-                        onConfirm: () => handleDeleteAllExamSubmissions()
-                      });
-                    }}
-                    className="px-3.5 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-600 hover:text-white text-rose-700 border border-rose-200 font-bold text-xs transition-all flex items-center gap-1.5 cursor-pointer active:scale-95"
-                    title="Xóa toàn bộ lịch sử bài làm để làm lại từ đầu"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Xóa tất cả lịch sử</span>
-                  </button>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -4918,7 +4903,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                         <th className="py-4 px-6 text-center">Xếp thứ</th>
                         <th className="py-4 px-6 text-center">Điểm số</th>
                         <th className="py-4 px-6">Thời gian nộp</th>
-                        <th className="py-4 px-6 text-center min-w-[200px]">Thao tác</th>
+                        <th className="py-4 px-6 text-center min-w-[140px]">Thao tác</th>
                       </tr>
                     </thead>
                   <tbody className="divide-y divide-slate-100 text-xs text-slate-700 font-medium">
@@ -4949,7 +4934,7 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                         </td>
                         <td className="py-4 px-6 text-slate-500">{formatSubmissionDateTime(sub.submittedTime)}</td>
                         <td className="py-4 px-6 text-center">
-                          <div className="flex items-center justify-center gap-2">
+                          <div className="flex items-center justify-center">
                             <button
                               onClick={() => setDetailSubmission({
                                 exam: sub.exam,
@@ -4960,24 +4945,10 @@ export const StudentExamModule: React.FC<StudentExamModuleProps> = ({
                                 subject: sub.subject,
                                 rank: sub.rank
                               })}
-                              className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-indigo-600 hover:text-white text-slate-700 font-bold transition-all shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
+                              className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-indigo-600 hover:text-white text-slate-700 font-bold transition-all shadow-xs inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
                               title="Xem chi tiết bài làm"
                             >
                               <Eye className="w-3.5 h-3.5" /> Xem chi tiết
-                            </button>
-                            <button
-                              onClick={() => {
-                                setAlertModal({
-                                  title: 'Xóa Lịch Sử Bài Làm',
-                                  message: 'Bạn có chắc chắn muốn xóa lịch sử bài làm này để học sinh có thể làm lại từ đầu không?',
-                                  type: 'confirm_delete_submission',
-                                  onConfirm: () => handleDeleteExamSubmission(sub)
-                                });
-                              }}
-                              className="px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-600 hover:text-white text-rose-600 border border-rose-200 font-bold transition-all shadow-xs inline-flex items-center gap-1.5 cursor-pointer active:scale-95"
-                              title="Xóa lịch sử bài làm để làm lại từ đầu"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" /> Xóa
                             </button>
                           </div>
                         </td>

@@ -49,6 +49,13 @@ import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { CognitiveLevelBadge } from '../../theme/tokens';
 import { cleanQuestionMath } from '../../utils/mathFormatter';
 import { resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
+import {
+  getCurrentAccessContext,
+  getContentPermissions,
+  filterAccessibleItems,
+  isContentOwner,
+  isContentSharedWithTeacher
+} from '../../services/permissionService';
 import { extractGradeDigit } from '../../services/classStorageService';
 import { auth } from '../../services/firebase';
 
@@ -335,18 +342,13 @@ export const QuestionBankModule: React.FC<QuestionBankModuleProps> = ({
   onNavigate
 }) => {
   const authEmail = (typeof window !== 'undefined' ? (auth?.currentUser?.email || localStorage.getItem('eduplay_teacher_email')) : null);
-  const activeTeacherProfile = useMemo(() => resolveCurrentTeacherProfile(authEmail), [authEmail]);
-  const isAdmin = userRole === 'admin' || activeTeacherProfile.userRole === 'admin' || (activeTeacherProfile.role || '').toLowerCase().includes('admin');
+  const accessContext = useMemo(() => getCurrentAccessContext(userRole, authEmail), [userRole, authEmail]);
+  const activeTeacherProfile = accessContext.teacherProfile;
+  const isAdmin = accessContext.isAdmin;
 
   const isQuestionOwner = useCallback((q: QuestionItem): boolean => {
-    if (isAdmin) return true;
-    const currentId = activeTeacherProfile.id; // e.g. 'gv-06', 'gv-12'
-    if (q.teacherId && q.teacherId === currentId) return true;
-    if (q.createdBy && q.createdBy === currentId) return true;
-    if (q.authorName && (q.authorName.includes(activeTeacherProfile.name) || activeTeacherProfile.name.includes(q.authorName))) return true;
-    if (q.authorType === 'my') return true;
-    return false;
-  }, [isAdmin, activeTeacherProfile.id, activeTeacherProfile.name]);
+    return isContentOwner(q, accessContext);
+  }, [accessContext]);
 
   // Danh sách câu hỏi đồng bộ trực tiếp từ Firestore 'questions' và cache
   const [internalQuestions, setInternalQuestions] = useState<QuestionItem[]>(() => {
@@ -406,7 +408,16 @@ export const QuestionBankModule: React.FC<QuestionBankModuleProps> = ({
   const [editingLessonName, setEditingLessonName] = useState<string | undefined>(undefined);
   const [editingGrade, setEditingGrade] = useState<string | undefined>(undefined);
   const [editingSubject, setEditingSubject] = useState<string | undefined>(undefined);
-  const [sharingQuestion, setSharingQuestion] = useState<{ id?: string; title: string; grade?: string; subject?: string } | null>(null);
+  const [sharingQuestion, setSharingQuestion] = useState<{
+    id?: string;
+    title: string;
+    grade?: string;
+    subject?: string;
+    sharedWithTeachers?: string[];
+    sharedWithGroups?: string[];
+    sharePermission?: 'view' | 'edit' | 'assign';
+    allowDeleteByShared?: boolean;
+  } | null>(null);
 
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
@@ -480,13 +491,18 @@ export const QuestionBankModule: React.FC<QuestionBankModuleProps> = ({
   const handleTriggerBatchDelete = (type: 'selected' | 'all') => {
     let targetIds: string[] = [];
     if (type === 'selected') {
-      targetIds = selectedQuestionIds;
+      targetIds = selectedQuestionIds.filter(id => {
+        const q = activeQuestionsList.find(item => item.id === id);
+        return q ? getContentPermissions(q, accessContext).canDelete : false;
+      });
     } else {
-      targetIds = filteredQuestions.map(q => q.id);
+      targetIds = filteredQuestions
+        .filter(q => getContentPermissions(q, accessContext).canDelete)
+        .map(q => q.id);
     }
 
     if (targetIds.length === 0) {
-      showToast("Không có câu hỏi nào để xóa!", "error");
+      showToast("Bạn chỉ được phép xóa các câu hỏi thuộc quyền sở hữu của mình!", "error");
       return;
     }
 
@@ -563,7 +579,8 @@ export const QuestionBankModule: React.FC<QuestionBankModuleProps> = ({
 
   const handleConfirmSingleDelete = async () => {
     if (!deletingQuestion) return;
-    if (!isQuestionOwner(deletingQuestion)) {
+    const perms = getContentPermissions(deletingQuestion, accessContext);
+    if (!perms.canDelete) {
       showToast('⚠️ Bạn không có quyền xóa nội dung này!', 'error');
       setDeletingQuestion(null);
       return;
@@ -650,7 +667,8 @@ export const QuestionBankModule: React.FC<QuestionBankModuleProps> = ({
   };
 
   const handleEditQuestion = (q: QuestionItem) => {
-    if (!isQuestionOwner(q)) {
+    const perms = getContentPermissions(q, accessContext);
+    if (!perms.canEdit) {
       showToast('⚠️ Bạn không có quyền chỉnh sửa câu hỏi này!', 'error');
       return;
     }
@@ -803,7 +821,10 @@ export const QuestionBankModule: React.FC<QuestionBankModuleProps> = ({
     setOrderingOptionsState({ ...orderingOptionsState, [questionId]: opts });
   };
 
-  const activeQuestionsList = internalQuestions && internalQuestions.length > 0 ? internalQuestions : (questions || []);
+  const rawQuestionsList = internalQuestions && internalQuestions.length > 0 ? internalQuestions : (questions || []);
+  const activeQuestionsList = useMemo(() => {
+    return filterAccessibleItems(rawQuestionsList, 'all', accessContext);
+  }, [rawQuestionsList, accessContext]);
 
   // Get unique list of lessons for current subject & grade filter
   const availableLessons = Array.from(
@@ -816,8 +837,8 @@ export const QuestionBankModule: React.FC<QuestionBankModuleProps> = ({
   ) as string[];
 
   const allQuestionsCount = activeQuestionsList.length;
-  const myQuestionsCount = activeQuestionsList.filter(q => q.authorType === 'my' || !q.authorType || q.authorName?.includes('Thủ') || q.authorName?.includes('Hoài') || !q.authorName).length;
-  const colleagueQuestionsCount = activeQuestionsList.filter(q => q.authorType === 'colleague' || (q.authorType !== 'my' && !!q.authorName && !q.authorName.includes('Thủ') && !q.authorName.includes('Hoài'))).length;
+  const myQuestionsCount = filterAccessibleItems(rawQuestionsList, 'my', accessContext).length;
+  const colleagueQuestionsCount = filterAccessibleItems(rawQuestionsList, 'colleague', accessContext).length;
 
   const qBankTotal = activeQuestionsList.length;
   const qBankNb = activeQuestionsList.filter(q => q.level === 'nhan_biet').length;
@@ -830,15 +851,11 @@ export const QuestionBankModule: React.FC<QuestionBankModuleProps> = ({
   const qBankVdPercent = qBankTotal > 0 ? Math.round((qBankVd / qBankTotal) * 100) : 0;
   const qBankVdcPercent = qBankTotal > 0 ? Math.round((qBankVdc / qBankTotal) * 100) : 0;
 
-  const filteredQuestions = activeQuestionsList.filter((q) => {
-    // 3 Category Tab filter
-    if (resourceTab === 'my') {
-      const isMy = q.authorType === 'my' || (!q.authorType && (q.authorName?.includes('Thủ') || q.authorName?.includes('Hoài') || !q.authorName));
-      if (!isMy) return false;
-    } else if (resourceTab === 'colleague') {
-      const isColleague = q.authorType === 'colleague' || (q.authorType !== 'my' && !!q.authorName && !q.authorName.includes('Thủ') && !q.authorName.includes('Hoài'));
-      if (!isColleague) return false;
-    }
+  const tabQuestionsList = useMemo(() => {
+    return filterAccessibleItems(rawQuestionsList, resourceTab, accessContext);
+  }, [rawQuestionsList, resourceTab, accessContext]);
+
+  const filteredQuestions = tabQuestionsList.filter((q) => {
 
     const matchesSearch =
       q.content.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -1469,46 +1486,73 @@ export const QuestionBankModule: React.FC<QuestionBankModuleProps> = ({
                   )}
                   {/* Nhãn mức độ */}
                   <CognitiveLevelBadge level={q.level} />
+                  {(() => {
+                    const perms = getContentPermissions(q, accessContext);
+                    if (perms.isShared && !perms.isOwner) {
+                      return (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold bg-purple-50 text-purple-700 border border-purple-200">
+                          <Share2 className="w-3 h-3" />
+                          <span>Chia sẻ bởi {perms.ownerName}</span>
+                        </span>
+                      );
+                    }
+                    return null;
+                  })()}
                 </div>
 
-                {/* Cụm nút thao tác nhanh - chỉ hiển thị cho chủ sở hữu hoặc admin */}
-                {isQuestionOwner(q) && (
-                  <div className="flex items-center gap-1.5 flex-shrink-0">
-                    <button
-                      title="Chỉnh sửa câu hỏi"
-                      onClick={() => handleEditQuestion(q)}
-                      className="p-1.5 rounded-lg border border-[#C7D2FE] bg-[#EEF2FF] text-[#4F46E5] hover:bg-indigo-100 transition-colors cursor-pointer"
-                    >
-                      <Edit3 className="w-4 h-4" />
-                    </button>
-                    <button
-                      title="Nhân bản câu hỏi"
-                      onClick={() => handleDuplicateQuestion(q)}
-                      className="p-1.5 rounded-lg border border-[#BAE6FD] bg-[#F0F9FF] text-[#0284C7] hover:bg-sky-100 transition-colors cursor-pointer"
-                    >
-                      <Copy className="w-4 h-4" />
-                    </button>
-                    <button
-                      title="Chia sẻ câu hỏi"
-                      onClick={() => setSharingQuestion({
-                        id: q.id,
-                        title: q.content,
-                        grade: q.grade,
-                        subject: q.subject
-                      })}
-                      className="p-1.5 rounded-lg border border-sky-200 bg-sky-50 text-sky-600 hover:bg-sky-100 transition-colors cursor-pointer"
-                    >
-                      <Share2 className="w-4 h-4" />
-                    </button>
-                    <button
-                      title="Xóa câu hỏi"
-                      onClick={() => setDeletingQuestion(q)}
-                      className="p-1.5 rounded-lg border border-[#FECACA] bg-[#FEF2F2] text-[#DC2626] hover:bg-rose-100 transition-colors cursor-pointer"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                )}
+                {/* Cụm nút thao tác nhanh - phân quyền theo RBAC */}
+                {(() => {
+                  const perms = getContentPermissions(q, accessContext);
+                  return (
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      {perms.canEdit && (
+                        <button
+                          title="Chỉnh sửa câu hỏi"
+                          onClick={() => handleEditQuestion(q)}
+                          className="p-1.5 rounded-lg border border-[#C7D2FE] bg-[#EEF2FF] text-[#4F46E5] hover:bg-indigo-100 transition-colors cursor-pointer"
+                        >
+                          <Edit3 className="w-4 h-4" />
+                        </button>
+                      )}
+                      {perms.canView && (
+                        <button
+                          title="Nhân bản câu hỏi về kho của tôi"
+                          onClick={() => handleDuplicateQuestion(q)}
+                          className="p-1.5 rounded-lg border border-[#BAE6FD] bg-[#F0F9FF] text-[#0284C7] hover:bg-sky-100 transition-colors cursor-pointer"
+                        >
+                          <Copy className="w-4 h-4" />
+                        </button>
+                      )}
+                      {perms.canShare && (
+                        <button
+                          title="Chia sẻ câu hỏi"
+                          onClick={() => setSharingQuestion({
+                            id: q.id,
+                            title: q.content,
+                            grade: q.grade,
+                            subject: q.subject,
+                            sharedWithTeachers: q.sharedWithTeachers,
+                            sharedWithGroups: q.sharedWithGroups,
+                            sharePermission: q.sharePermission,
+                            allowDeleteByShared: q.allowDeleteByShared
+                          })}
+                          className="p-1.5 rounded-lg border border-sky-200 bg-sky-50 text-sky-600 hover:bg-sky-100 transition-colors cursor-pointer"
+                        >
+                          <Share2 className="w-4 h-4" />
+                        </button>
+                      )}
+                      {perms.canDelete && (
+                        <button
+                          title="Xóa câu hỏi"
+                          onClick={() => setDeletingQuestion(q)}
+                          className="p-1.5 rounded-lg border border-[#FECACA] bg-[#FEF2F2] text-[#DC2626] hover:bg-rose-100 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Dòng nội dung câu hỏi chính - Cấp 2: 16px (text-base), font-medium */}
@@ -2052,10 +2096,34 @@ export const QuestionBankModule: React.FC<QuestionBankModuleProps> = ({
           id: sharingQuestion.id,
           title: sharingQuestion.title,
           grade: sharingQuestion.grade,
-          subject: sharingQuestion.subject
+          subject: sharingQuestion.subject,
+          sharedWithTeachers: sharingQuestion.sharedWithTeachers,
+          sharedWithGroups: sharingQuestion.sharedWithGroups,
+          sharePermission: sharingQuestion.sharePermission,
+          allowDeleteByShared: sharingQuestion.allowDeleteByShared
         } : null}
         onConfirmShare={(payload) => {
-          alert("Đã chia sẻ thành công câu hỏi: " + payload.title);
+          if (sharingQuestion?.id) {
+            setInternalQuestions(prev =>
+              prev.map(item =>
+                item.id === sharingQuestion.id
+                  ? {
+                      ...item,
+                      sharedWithTeachers: payload.sharedWithTeachers,
+                      sharedWithGroups: payload.sharedWithGroups,
+                      sharePermission: payload.sharePermission,
+                      allowDeleteByShared: payload.allowDeleteByShared
+                    }
+                  : item
+              )
+            );
+          }
+          showToast(
+            payload.revoked
+              ? 'Đã thu hồi chia sẻ câu hỏi thành công!'
+              : 'Đã chia sẻ câu hỏi thành công!',
+            'success'
+          );
           setSharingQuestion(null);
         }}
       />

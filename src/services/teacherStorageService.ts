@@ -1,10 +1,26 @@
-import { TeacherRecord, initialTeachersList } from '../components/modules/UserManagementModule';
-export type { TeacherRecord };
+import {
+  TeacherRecord,
+  initialTeachersList,
+  CANONICAL_TEACHER_DIRECTORY,
+  getCanonicalTeacherDirectory,
+  TEACHER_DEPARTMENTS,
+  DepartmentName,
+  DEPARTMENTS_METADATA,
+  normalizeDepartmentName
+} from '../constants/teacherDirectory';
+export type { TeacherRecord, DepartmentName };
+export {
+  initialTeachersList,
+  CANONICAL_TEACHER_DIRECTORY,
+  getCanonicalTeacherDirectory,
+  TEACHER_DEPARTMENTS,
+  DEPARTMENTS_METADATA,
+  normalizeDepartmentName
+};
 import { db, auth } from './firebase';
 import { doc, getDoc, getDocs, collection, query, where, setDoc } from 'firebase/firestore';
 import { trackedSetDoc, trackedDeleteDoc, trackedWriteBatch } from './firestoreWriteTracker';
 import { UserRole } from '../types';
-// import { safeStorage } from '../utils/safeStorage';
 
 export const EDUPLAY_TEACHERS_KEY = 'eduplay_teachers_database';
 export const EDUPLAY_DEPARTMENTS_KEY = 'eduplay_departments_database';
@@ -44,128 +60,6 @@ export function removeUndefined<T>(obj: T): T {
   }
   return obj;
 }
-
-export const TEACHER_DEPARTMENTS = [
-  'Tổ Ban Giám Hiệu',
-  'Tổ 1',
-  'Tổ 2',
-  'Tổ 3',
-  'Tổ 4',
-  'Tổ 5'
-] as const;
-
-export type DepartmentName = typeof TEACHER_DEPARTMENTS[number];
-
-/**
- * Normalizes old department names (e.g. 'Ban Giám Hiệu', 'Tổ 2+3', 'Tổ 4+5', 'Tổ Chuyên biệt')
- * to one of the 6 standard departments without breaking existing saved teacher data.
- */
-export function normalizeDepartmentName(dept: string = '', teacher?: Partial<TeacherRecord>): string {
-  const clean = (dept || '').trim();
-  if (!clean) return 'Tổ 1';
-
-  if (clean === 'Ban Giám Hiệu' || clean === 'Tổ Ban Giám Hiệu') return 'Tổ Ban Giám Hiệu';
-  if (clean === 'Tổ 1') return 'Tổ 1';
-  if (clean === 'Tổ 2') return 'Tổ 2';
-  if (clean === 'Tổ 3') return 'Tổ 3';
-  if (clean === 'Tổ 4') return 'Tổ 4';
-  if (clean === 'Tổ 5') return 'Tổ 5';
-
-  if (clean === 'Tổ 2+3') {
-    const isGrade3 = teacher?.homeroomClasses?.some(c => c.includes('3')) || teacher?.subject?.includes('3');
-    return isGrade3 ? 'Tổ 3' : 'Tổ 2';
-  }
-
-  if (clean === 'Tổ 4+5') {
-    const isGrade5 = teacher?.homeroomClasses?.some(c => c.includes('5')) || teacher?.subject?.includes('5');
-    return isGrade5 ? 'Tổ 5' : 'Tổ 4';
-  }
-
-  if (clean === 'Tổ Chuyên biệt') {
-    return 'Tổ Ban Giám Hiệu';
-  }
-
-  return clean;
-}
-
-export const DEPARTMENTS_METADATA: Record<string, {
-  slug: string;
-  title: string;
-  desc: string;
-  defaultSubjects: string[];
-  icon: string;
-  badge: string;
-  border: string;
-  headerBg: string;
-  statColor: string;
-}> = {
-  'Tổ Ban Giám Hiệu': {
-    slug: 'to-bgh',
-    title: 'Tổ Ban Giám Hiệu & Quản Trị Hệ Thống',
-    desc: 'Cán bộ chỉ đạo chuyên môn toàn trường & Quản trị viên hệ thống RBAC',
-    defaultSubjects: ['Quản lý giáo dục', 'Tin học & CNTT'],
-    icon: '🏛️',
-    badge: 'BGH & Admin',
-    border: 'border-amber-200',
-    headerBg: 'bg-gradient-to-r from-amber-500/10 via-amber-100/30 to-orange-50/20 text-amber-950',
-    statColor: 'bg-amber-50 border-amber-200 text-amber-900'
-  },
-  'Tổ 1': {
-    slug: 'to-1',
-    title: 'Tổ Chuyên Môn 1 (Khối Lớp 1)',
-    desc: 'Giáo viên phụ trách khối 1: Toán, Tiếng Việt & Hoạt động trải nghiệm',
-    defaultSubjects: ['Toán', 'Tiếng Việt', 'Hoạt động trải nghiệm', 'Đạo đức', 'Tự nhiên & Xã hội'],
-    icon: '📚',
-    badge: 'Tổ Chuyên Môn 1',
-    border: 'border-blue-200',
-    headerBg: 'bg-gradient-to-r from-blue-500/10 via-blue-100/30 to-indigo-50/20 text-blue-950',
-    statColor: 'bg-blue-50 border-blue-200 text-blue-900'
-  },
-  'Tổ 2': {
-    slug: 'to-2',
-    title: 'Tổ Chuyên Môn 2 (Khối Lớp 2)',
-    desc: 'Giáo viên phụ trách khối 2: Toán, Tiếng Việt, Tự nhiên & Xã hội',
-    defaultSubjects: ['Toán', 'Tiếng Việt', 'Hoạt động trải nghiệm', 'Đạo đức', 'Tự nhiên & Xã hội'],
-    icon: '📖',
-    badge: 'Tổ Chuyên Môn 2',
-    border: 'border-emerald-200',
-    headerBg: 'bg-gradient-to-r from-emerald-500/10 via-emerald-100/30 to-teal-50/20 text-emerald-950',
-    statColor: 'bg-emerald-50 border-emerald-200 text-emerald-900'
-  },
-  'Tổ 3': {
-    slug: 'to-3',
-    title: 'Tổ Chuyên Môn 3 (Khối Lớp 3)',
-    desc: 'Giáo viên phụ trách khối 3: Toán, Tiếng Việt, Tin học, Công nghệ, Tiếng Anh',
-    defaultSubjects: ['Toán', 'Tiếng Việt', 'Tin học', 'Công nghệ', 'Tự nhiên & Xã hội', 'Tiếng Anh'],
-    icon: '✏️',
-    badge: 'Tổ Chuyên Môn 3',
-    border: 'border-teal-200',
-    headerBg: 'bg-gradient-to-r from-teal-500/10 via-teal-100/30 to-cyan-50/20 text-teal-950',
-    statColor: 'bg-teal-50 border-teal-200 text-teal-900'
-  },
-  'Tổ 4': {
-    slug: 'to-4',
-    title: 'Tổ Chuyên Môn 4 (Khối Lớp 4)',
-    desc: 'Giáo viên phụ trách khối 4: Khoa học, Lịch sử & Địa lý, Tiếng Anh, Tin học',
-    defaultSubjects: ['Toán', 'Tiếng Việt', 'Khoa học', 'Lịch sử & Địa lý', 'Tiếng Anh', 'Tin học'],
-    icon: '🔬',
-    badge: 'Tổ Chuyên Môn 4',
-    border: 'border-indigo-200',
-    headerBg: 'bg-gradient-to-r from-indigo-500/10 via-indigo-100/30 to-blue-50/20 text-indigo-950',
-    statColor: 'bg-indigo-50 border-indigo-200 text-indigo-900'
-  },
-  'Tổ 5': {
-    slug: 'to-5',
-    title: 'Tổ Chuyên Môn 5 (Khối Lớp 5)',
-    desc: 'Giáo viên phụ trách khối 5: Khoa học, Lịch sử & Địa lý, Tiếng Anh, Tin học',
-    defaultSubjects: ['Toán', 'Tiếng Việt', 'Khoa học', 'Lịch sử & Địa lý', 'Tiếng Anh', 'Tin học'],
-    icon: '🎓',
-    badge: 'Tổ Chuyên Môn 5',
-    border: 'border-purple-200',
-    headerBg: 'bg-gradient-to-r from-purple-500/10 via-purple-100/30 to-violet-50/20 text-purple-950',
-    statColor: 'bg-purple-50 border-purple-200 text-purple-900'
-  }
-};
 
 /**
  * Clean and deduplicate teacher list based on ID, Email, and SĐDCN (CCCD)
@@ -297,6 +191,74 @@ export function resolveTeacherByEmail(email?: string | null, customTeachers?: Te
   return teachersList.find(t => (t.email || '').toLowerCase().trim() === cleanEmail);
 }
 
+export interface TeacherProfileResult {
+  id: string;
+  uid?: string;
+  name: string;
+  email: string;
+  role: string;
+  userRole: UserRole;
+  toChuyenMon?: string;
+  subject?: string;
+  phone?: string;
+  avatar?: string;
+  nhomGvCn?: string;
+  homeroomClasses?: string[];
+  teachingClasses?: string[];
+  lopDay?: string[];
+  lopChuNhiem?: string | string[];
+}
+
+const SESSION_PROFILE_CACHE_KEY = 'eduplay_active_teacher_profile_v2';
+let memoryProfileCache: Record<string, TeacherProfileResult> = {};
+
+function cacheResolvedProfile(email: string, profile: TeacherProfileResult): void {
+  if (!email) return;
+  const clean = email.toLowerCase().trim();
+  memoryProfileCache[clean] = profile;
+  if (typeof window !== 'undefined') {
+    try {
+      sessionStorage.setItem(`${SESSION_PROFILE_CACHE_KEY}_${clean}`, JSON.stringify(profile));
+    } catch {}
+  }
+}
+
+function getCachedResolvedProfile(email: string): TeacherProfileResult | null {
+  if (!email) return null;
+  const clean = email.toLowerCase().trim();
+  if (memoryProfileCache[clean]) return memoryProfileCache[clean];
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = sessionStorage.getItem(`${SESSION_PROFILE_CACHE_KEY}_${clean}`);
+      if (raw) {
+        const parsed = JSON.parse(raw) as TeacherProfileResult;
+        if (parsed && parsed.email) {
+          memoryProfileCache[clean] = parsed;
+          return parsed;
+        }
+      }
+    } catch {}
+  }
+  return null;
+}
+
+function normalizeClassList(input?: any): string[] {
+  if (!input) return [];
+  const rawArr = Array.isArray(input) ? input : [String(input)];
+  const result = new Set<string>();
+  for (const item of rawArr) {
+    const trimmed = String(item || '').trim();
+    if (!trimmed) continue;
+    const withoutPrefix = trimmed.replace(/^(LỚP|Lớp|lớp|C-|c-)\s*/i, '').trim().toUpperCase();
+    if (/^\d+[A-Z0-9]*$/i.test(withoutPrefix)) {
+      result.add(`Lớp ${withoutPrefix}`);
+    } else {
+      result.add(trimmed);
+    }
+  }
+  return Array.from(result);
+}
+
 /**
  * Dynamically resolve display name for teacher by looking up teacher records first
  */
@@ -307,6 +269,12 @@ export function resolveTeacherNameByEmail(
   role: string = 'teacher'
 ): string {
   const cleanEmail = (email || '').toLowerCase().trim();
+
+  // 0. Check Canonical Directory first
+  if (cleanEmail) {
+    const canonical = CANONICAL_TEACHER_DIRECTORY.find(c => c.emails.includes(cleanEmail));
+    if (canonical) return canonical.name;
+  }
 
   // 1. Priority: Dò tìm trong danh sách giáo viên thực tế (LocalStorage hoặc CustomTeachers)
   if (cleanEmail) {
@@ -355,28 +323,8 @@ export function resolveTeacherNameByEmail(
   return `Thầy/Cô ${formattedPrefix}`;
 }
 
-export interface TeacherProfileResult {
-  id: string;
-  name: string;
-  email: string;
-  role: string;
-  userRole: UserRole;
-  toChuyenMon?: string;
-  subject?: string;
-  phone?: string;
-  avatar?: string;
-  nhomGvCn?: string;
-  homeroomClasses?: string[];
-  teachingClasses?: string[];
-}
-
 /**
  * Single Source of Truth (SSOT) teacher profile lookup function.
- * Order of resolution:
- * a. Retrieve authenticated email from argument, Firebase Auth (auth.currentUser.email), or localStorage.
- * b. Search teacher in to_chuyen_mon / teachers collections and local sync.
- * c. Retrieve exact business id ('gv-XX') and canonical teacher name ('Nguyễn Thị Thu').
- * d. NEVER assign currentUser.uid (Auth UID) to teacherId!
  */
 export function resolveCurrentTeacherProfile(email?: string | null): TeacherProfileResult {
   const effectiveEmail = (
@@ -386,129 +334,122 @@ export function resolveCurrentTeacherProfile(email?: string | null): TeacherProf
     ''
   ).toLowerCase().trim();
 
-  // Known account: thuthuthtk@gmail.com -> gv-12, Nguyễn Thị Thu
-  if (effectiveEmail === 'thuthuthtk@gmail.com' || effectiveEmail.includes('thuthuthtk')) {
-    return {
-      id: 'gv-12',
-      name: 'Nguyễn Thị Thu',
-      email: 'thuthuthtk@gmail.com',
-      role: 'Quản trị viên (ADMIN)',
-      userRole: 'admin',
-      toChuyenMon: 'Tổ 3',
-      subject: 'Tin học & Công nghệ & Tin học (tự chọn)',
-      avatar: '👩‍🏫',
-      teachingClasses: [
-        'Lớp 1C', 'Lớp 1D', 'Lớp 2C', 'Lớp 2D', 'Lớp 3C',
-        'Lớp 3D', 'Lớp 4C', 'Lớp 4D', 'Lớp 5C', 'Lớp 5D'
-      ],
-      homeroomClasses: []
-    };
+  // 1. Check session/memory cache first if email is present
+  if (effectiveEmail) {
+    const cached = getCachedResolvedProfile(effectiveEmail);
+    if (cached) {
+      if (auth?.currentUser?.uid && auth.currentUser.email?.toLowerCase().trim() === effectiveEmail) {
+        cached.uid = auth.currentUser.uid;
+      }
+      return cached;
+    }
   }
 
-  // Known account: vanquan18189@gmail.com -> gv-01, THƯ NGUYỄN (Admin)
-  if (effectiveEmail === 'vanquan18189@gmail.com' || effectiveEmail.includes('vanquan')) {
-    return {
-      id: 'gv-01',
-      name: 'THƯ NGUYỄN (Admin)',
-      email: 'vanquan18189@gmail.com',
-      role: 'Quản trị viên',
-      userRole: 'admin',
-      toChuyenMon: 'Tổ 3',
-      subject: 'Tiếng Việt & Toán',
-      avatar: '👨‍🏫',
-      homeroomClasses: [],
-      teachingClasses: []
-    };
+  // 2. Check Canonical Directory (covers all 15 teachers in users & teachers collections)
+  if (effectiveEmail) {
+    const canonical = CANONICAL_TEACHER_DIRECTORY.find(c => c.emails.includes(effectiveEmail));
+    if (canonical) {
+      const teachersList = getTeachersFromLocalStorageRaw();
+      const localMatch = teachersList.find(
+        t => t.id === canonical.id || canonical.emails.includes((t.email || '').toLowerCase().trim())
+      );
+      const homeroomClasses = normalizeClassList([
+        ...canonical.homeroomClasses,
+        ...(localMatch?.homeroomClasses || []),
+        ...(localMatch?.lopChuNhiem ? [localMatch.lopChuNhiem] : [])
+      ]);
+      const teachingClasses = normalizeClassList([
+        ...canonical.teachingClasses,
+        ...(localMatch?.teachingClasses || []),
+        ...(localMatch?.lopDay || []),
+        ...homeroomClasses
+      ]);
+
+      const currentAuthUid =
+        auth?.currentUser?.email?.toLowerCase().trim() === effectiveEmail
+          ? auth.currentUser.uid
+          : undefined;
+
+      const profile: TeacherProfileResult = {
+        id: canonical.id,
+        uid: currentAuthUid || localMatch?.uid || canonical.uid,
+        name: canonical.name,
+        email: effectiveEmail,
+        role: localMatch?.role || canonical.role,
+        userRole: canonical.userRole,
+        toChuyenMon: normalizeDepartmentName(localMatch?.toChuyenMon || canonical.toChuyenMon),
+        subject: localMatch?.subject || canonical.subject,
+        avatar: localMatch?.avatar || canonical.avatar,
+        homeroomClasses,
+        teachingClasses,
+        lopDay: teachingClasses,
+        lopChuNhiem: homeroomClasses[0] || ''
+      };
+      cacheResolvedProfile(effectiveEmail, profile);
+      return profile;
+    }
   }
 
-  // Search in LocalStorage teachers list (synced from to_chuyen_mon / teachers)
-  const teachersList = getTeachersFromLocalStorage();
+  // 3. Search in LocalStorage teachers list
+  const teachersList = getTeachersFromLocalStorageRaw();
   if (effectiveEmail && teachersList.length > 0) {
     const matched = teachersList.find(t => (t.email || '').toLowerCase().trim() === effectiveEmail);
     if (matched) {
-      const isAdmin = (matched.role || '').toLowerCase().includes('quản trị') ||
-                      (matched.role || '').toLowerCase().includes('admin') ||
-                      (matched.role || '').toLowerCase().includes('hiệu trưởng');
+      const roleLower = (matched.role || '').toLowerCase();
+      const isAdmin =
+        matched.userRole === 'admin' ||
+        roleLower === 'admin' ||
+        roleLower.includes('quản trị') ||
+        roleLower.includes('hiệu trưởng');
 
-      const resolvedName = (matched.name === 'Nguyễn Thị Thủ' && (matched.email === 'thuthuthtk@gmail.com' || matched.id === 'gv-12'))
+      const resolvedName = (matched.name === 'Nguyễn Thị Thủ' && (matched.email === 'thuthuthtk@gmail.com' || matched.id === 'gv-10' || matched.id === 'gv-12'))
         ? 'Nguyễn Thị Thu'
         : (matched.name || resolveTeacherNameByEmail(effectiveEmail));
 
-      return {
+      const homeroomClasses = normalizeClassList([
+        ...(matched.homeroomClasses || []),
+        ...(matched.lopChuNhiem ? [matched.lopChuNhiem] : [])
+      ]);
+      const teachingClasses = normalizeClassList([
+        ...(matched.teachingClasses || []),
+        ...(matched.lopDay || []),
+        ...homeroomClasses
+      ]);
+
+      const profile: TeacherProfileResult = {
         id: matched.id || 'gv-01',
+        uid: (auth?.currentUser?.email?.toLowerCase().trim() === effectiveEmail ? auth?.currentUser?.uid : undefined) || matched.uid,
         name: resolvedName,
         email: matched.email || effectiveEmail,
         role: matched.role || (isAdmin ? 'Quản trị viên (ADMIN)' : 'Giáo viên bộ môn'),
         userRole: isAdmin ? 'admin' : 'teacher',
-        toChuyenMon: matched.toChuyenMon,
+        toChuyenMon: normalizeDepartmentName(matched.toChuyenMon, matched),
         subject: matched.subject,
         phone: matched.phone,
         avatar: matched.avatar || '👩‍🏫',
-        homeroomClasses: matched.homeroomClasses,
-        teachingClasses: matched.teachingClasses
+        homeroomClasses,
+        teachingClasses,
+        lopDay: teachingClasses,
+        lopChuNhiem: homeroomClasses[0] || ''
       };
+      cacheResolvedProfile(effectiveEmail, profile);
+      return profile;
     }
   }
 
-  // Check matching by displayName or stored name in teachers list
-  const currentDisplayName = (auth && auth.currentUser ? auth.currentUser.displayName : null) || '';
-  const storedTeacherName = (typeof window !== 'undefined' ? (localStorage.getItem('eduplay_teacher_name') || localStorage.getItem('user_name')) : null) || '';
-  const candidateNames = [currentDisplayName, storedTeacherName].filter(Boolean).map(n => n.trim().toLowerCase());
-
-  if (teachersList.length > 0 && candidateNames.length > 0) {
-    const matchedByName = teachersList.find(t => {
-      const tName = (t.name || '').trim().toLowerCase();
-      return candidateNames.some(cn => cn === tName || cn.includes(tName) || tName.includes(cn));
-    });
-    if (matchedByName) {
-      const isAdmin = (matchedByName.role || '').toLowerCase().includes('quản trị') ||
-                      (matchedByName.role || '').toLowerCase().includes('admin') ||
-                      (matchedByName.role || '').toLowerCase().includes('hiệu trưởng');
-      return {
-        id: matchedByName.id || 'gv-06',
-        name: matchedByName.name,
-        email: matchedByName.email || effectiveEmail,
-        role: matchedByName.role || (isAdmin ? 'Quản trị viên (ADMIN)' : 'Giáo viên bộ môn'),
-        userRole: isAdmin ? 'admin' : 'teacher',
-        toChuyenMon: matchedByName.toChuyenMon,
-        subject: matchedByName.subject,
-        phone: matchedByName.phone,
-        avatar: matchedByName.avatar || '👩‍🏫',
-        homeroomClasses: matchedByName.homeroomClasses,
-        teachingClasses: matchedByName.teachingClasses
-      };
-    }
-  }
-
-  // If no email available, check localStorage session cache
-  if (typeof window !== 'undefined') {
-    const storedName = localStorage.getItem('eduplay_teacher_name');
-    const storedId = localStorage.getItem('eduplay_teacher_id');
-    if (storedName && storedName !== 'Thầy Văn Quân' && storedName !== 'Lê Minh Anh') {
-      const matched = teachersList.find(t => (t.name || '').trim().toLowerCase() === storedName.trim().toLowerCase());
-      return {
-        id: matched?.id || ((storedId && storedId.startsWith('gv-')) ? storedId : 'gv-12'),
-        name: matched?.name || storedName,
-        email: matched?.email || effectiveEmail,
-        role: matched?.role || 'Giáo viên bộ môn',
-        userRole: 'teacher',
-        toChuyenMon: matched?.toChuyenMon,
-        subject: matched?.subject,
-        avatar: matched?.avatar || '👩‍🏫',
-        homeroomClasses: matched?.homeroomClasses,
-        teachingClasses: matched?.teachingClasses
-      };
-    }
-  }
-
-  const isAdmin = effectiveEmail.includes('admin');
+  // 4. Fallback when no email or unknown teacher email
+  const isAdmin = !effectiveEmail || effectiveEmail.includes('admin') || effectiveEmail.includes('thuthuthtk') || effectiveEmail.includes('vanquan');
   return {
-    id: effectiveEmail ? 'gv-custom' : 'gv-12',
+    id: effectiveEmail ? 'gv-custom' : 'gv-10',
+    uid: auth?.currentUser?.uid,
     name: effectiveEmail ? resolveTeacherNameByEmail(effectiveEmail) : 'Nguyễn Thị Thu',
-    email: effectiveEmail,
+    email: effectiveEmail || 'thuthuthtk@gmail.com',
     role: isAdmin ? 'Quản trị viên (ADMIN)' : 'Giáo viên bộ môn',
     userRole: isAdmin ? 'admin' : 'teacher',
-    avatar: '👩‍🏫'
+    toChuyenMon: isAdmin ? 'Tổ Ban Giám Hiệu' : 'Tổ 1',
+    avatar: '👩‍🏫',
+    homeroomClasses: [],
+    teachingClasses: []
   };
 }
 
@@ -520,8 +461,7 @@ export interface AuthorizationResult {
 
 /**
  * Strict Whitelist Authorization check for Google Sign-In and Email/Password.
- * Queries Firestore `teachers`, `users`, `to_chuyen_mon` and local verified rosters.
- * Returns authorized = true ONLY if the email belongs to an active registered teacher/admin.
+ * Queries Firestore `users`, `teachers`, `to_chuyen_mon` and canonical rosters.
  */
 export async function verifyTeacherAuthorization(email?: string | null): Promise<AuthorizationResult> {
   const cleanEmail = (email || '').toLowerCase().trim();
@@ -532,165 +472,50 @@ export async function verifyTeacherAuthorization(email?: string | null): Promise
     };
   }
 
-  // 1. Super Admin whitelist (known verified administrators)
-  if (cleanEmail === 'thuthuthtk@gmail.com' || cleanEmail.includes('thuthuthtk')) {
-    return {
-      authorized: true,
-      profile: {
-        id: 'gv-12',
-        name: 'Nguyễn Thị Thu',
-        email: 'thuthuthtk@gmail.com',
-        role: 'Quản trị viên (ADMIN)',
-        userRole: 'admin',
-        toChuyenMon: 'Tổ 3',
-        subject: 'Tin học & Công nghệ & Tin học (tự chọn)',
-        avatar: '👩‍🏫',
-        teachingClasses: ['Lớp 1C', 'Lớp 1D', 'Lớp 2C', 'Lớp 2D', 'Lớp 3C', 'Lớp 3D', 'Lớp 4C', 'Lớp 4D', 'Lớp 5C', 'Lớp 5D'],
-        homeroomClasses: []
-      }
-    };
-  }
-
-  if (cleanEmail === 'vanquan18189@gmail.com' || cleanEmail.includes('vanquan18189')) {
-    return {
-      authorized: true,
-      profile: {
-        id: 'gv-01',
-        name: 'THƯ NGUYỄN (Admin)',
-        email: 'vanquan18189@gmail.com',
-        role: 'Quản trị viên (ADMIN)',
-        userRole: 'admin',
-        toChuyenMon: 'Tổ Ban Giám Hiệu',
-        subject: 'Tin học & Khoa học',
-        avatar: '👨‍🏫',
-        teachingClasses: [],
-        homeroomClasses: []
-      }
-    };
-  }
-
-  // 2. Query Firestore `teachers` collection
+  // Fetch directly via fetchCurrentTeacherProfile which queries users -> teachers -> to_chuyen_mon -> canonical
   if (db) {
     try {
-      const qTeachers = query(collection(db, 'teachers'), where('email', '==', cleanEmail));
-      const snapTeachers = await getDocs(qTeachers);
-      if (!snapTeachers.empty) {
-        const docSnap = snapTeachers.docs[0];
-        const data = docSnap.data() as TeacherRecord;
-        if (data.status === 'locked' || (data.status as string) === 'inactive') {
+      const usersSnap = await getDocs(query(collection(db, 'users'), where('email', '==', cleanEmail)));
+      if (!usersSnap.empty) {
+        const docSnap = usersSnap.docs[0];
+        const data = docSnap.data() as any;
+        if (data.status === 'locked' || data.status === 'inactive') {
           return {
             authorized: false,
             reason: 'Tài khoản giáo viên này đang ở trạng thái tạm khóa. Vui lòng liên hệ quản trị viên.'
           };
         }
-        const isAdmin = (data.role || '').toLowerCase().includes('quản trị') ||
-                        (data.role || '').toLowerCase().includes('admin') ||
-                        (data.role || '').toLowerCase().includes('hiệu trưởng');
-        return {
-          authorized: true,
-          profile: {
-            id: docSnap.id || data.id,
-            name: data.name,
-            email: data.email || cleanEmail,
-            role: data.role || (isAdmin ? 'Quản trị viên (ADMIN)' : 'Giáo viên bộ môn'),
-            userRole: isAdmin ? 'admin' : 'teacher',
-            toChuyenMon: data.toChuyenMon,
-            subject: data.subject,
-            phone: data.phone,
-            avatar: data.avatar || '👩‍🏫',
-            homeroomClasses: data.homeroomClasses,
-            teachingClasses: data.teachingClasses
-          }
-        };
+        const profile = await fetchCurrentTeacherProfile(cleanEmail);
+        return { authorized: true, profile };
       }
-    } catch (err) {
-      console.warn('Tra cứu collection teachers trong Firestore thất bại, tiếp tục kiểm tra các nguồn khác:', err);
-    }
 
-    // 3. Query Firestore `users` collection
-    try {
-      const qUsers = query(collection(db, 'users'), where('email', '==', cleanEmail));
-      const snapUsers = await getDocs(qUsers);
-      if (!snapUsers.empty) {
-        const docSnap = snapUsers.docs[0];
+      const teachersSnap = await getDocs(query(collection(db, 'teachers'), where('email', '==', cleanEmail)));
+      if (!teachersSnap.empty) {
+        const docSnap = teachersSnap.docs[0];
         const data = docSnap.data() as any;
-        if (data.status === 'inactive') {
+        if (data.status === 'locked' || data.status === 'inactive') {
           return {
             authorized: false,
-            reason: 'Tài khoản này đang ở trạng thái tạm khóa. Vui lòng liên hệ quản trị viên.'
+            reason: 'Tài khoản giáo viên này đang ở trạng thái tạm khóa. Vui lòng liên hệ quản trị viên.'
           };
         }
-        const isAdmin = (data.role || '').toLowerCase().includes('quản trị') ||
-                        (data.role || '').toLowerCase().includes('admin');
-        return {
-          authorized: true,
-          profile: {
-            id: docSnap.id || data.id,
-            name: data.name,
-            email: data.email || cleanEmail,
-            role: data.role || (isAdmin ? 'Quản trị viên (ADMIN)' : 'Giáo viên bộ môn'),
-            userRole: isAdmin ? 'admin' : 'teacher',
-            toChuyenMon: data.toChuyenMon,
-            subject: data.subject,
-            phone: data.phone,
-            avatar: data.avatar || '👩‍🏫',
-            homeroomClasses: data.homeroomClasses,
-            teachingClasses: data.teachingClasses
-          }
-        };
+        const profile = await fetchCurrentTeacherProfile(cleanEmail);
+        return { authorized: true, profile };
       }
     } catch (err) {
-      console.warn('Tra cứu collection users trong Firestore thất bại:', err);
-    }
-
-    // 4. Query Firestore `to_chuyen_mon` collection
-    try {
-      const toSnap = await getDocs(collection(db, 'to_chuyen_mon'));
-      for (const toDoc of toSnap.docs) {
-        const toData = toDoc.data();
-        if (Array.isArray(toData.teachers)) {
-          const matched = toData.teachers.find(
-            (t: any) => (t.email || '').toLowerCase().trim() === cleanEmail
-          );
-          if (matched) {
-            if (matched.status === 'inactive') {
-              return {
-                authorized: false,
-                reason: 'Tài khoản giáo viên này đang ở trạng thái tạm khóa. Vui lòng liên hệ quản trị viên.'
-              };
-            }
-            const isAdmin = (matched.role || '').toLowerCase().includes('quản trị') ||
-                            (matched.role || '').toLowerCase().includes('admin') ||
-                            (matched.role || '').toLowerCase().includes('hiệu trưởng');
-            return {
-              authorized: true,
-              profile: {
-                id: matched.id || 'gv-whitelisted',
-                name: matched.name,
-                email: matched.email || cleanEmail,
-                role: matched.role || (isAdmin ? 'Quản trị viên (ADMIN)' : 'Giáo viên bộ môn'),
-                userRole: isAdmin ? 'admin' : 'teacher',
-                toChuyenMon: matched.toChuyenMon || toData.name || toDoc.id,
-                subject: matched.subject,
-                phone: matched.phone,
-                avatar: matched.avatar || '👩‍🏫',
-                homeroomClasses: matched.homeroomClasses,
-                teachingClasses: matched.teachingClasses
-              }
-            };
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('Tra cứu to_chuyen_mon thất bại:', err);
+      console.warn('Tra cứu Firestore trong verifyTeacherAuthorization thất bại:', err);
     }
   }
 
-  // 5. Query LocalStorage / initialTeachersList
-  const teachersList = getTeachersFromLocalStorage();
-  const matchedLocal = teachersList.find(
-    (t) => (t.email || '').toLowerCase().trim() === cleanEmail
-  );
+  // Canonical directory & LocalStorage fallback
+  const canonical = CANONICAL_TEACHER_DIRECTORY.find(c => c.emails.includes(cleanEmail));
+  if (canonical) {
+    const profile = resolveCurrentTeacherProfile(cleanEmail);
+    return { authorized: true, profile };
+  }
+
+  const teachersList = getTeachersFromLocalStorageRaw();
+  const matchedLocal = teachersList.find(t => (t.email || '').toLowerCase().trim() === cleanEmail);
   if (matchedLocal) {
     if (matchedLocal.status === 'locked' || (matchedLocal.status as string) === 'inactive') {
       return {
@@ -698,28 +523,10 @@ export async function verifyTeacherAuthorization(email?: string | null): Promise
         reason: 'Tài khoản giáo viên này đang ở trạng thái tạm khóa. Vui lòng liên hệ quản trị viên.'
       };
     }
-    const isAdmin = (matchedLocal.role || '').toLowerCase().includes('quản trị') ||
-                    (matchedLocal.role || '').toLowerCase().includes('admin') ||
-                    (matchedLocal.role || '').toLowerCase().includes('hiệu trưởng');
-    return {
-      authorized: true,
-      profile: {
-        id: matchedLocal.id,
-        name: matchedLocal.name,
-        email: matchedLocal.email || cleanEmail,
-        role: matchedLocal.role || (isAdmin ? 'Quản trị viên (ADMIN)' : 'Giáo viên bộ môn'),
-        userRole: isAdmin ? 'admin' : 'teacher',
-        toChuyenMon: matchedLocal.toChuyenMon,
-        subject: matchedLocal.subject,
-        phone: matchedLocal.phone,
-        avatar: matchedLocal.avatar || '👩‍🏫',
-        homeroomClasses: matchedLocal.homeroomClasses,
-        teachingClasses: matchedLocal.teachingClasses
-      }
-    };
+    const profile = resolveCurrentTeacherProfile(cleanEmail);
+    return { authorized: true, profile };
   }
 
-  // Not in whitelist
   return {
     authorized: false,
     reason: 'Tài khoản Google này chưa được đăng ký trong hệ thống. Vui lòng liên hệ quản trị viên.'
@@ -728,14 +535,14 @@ export async function verifyTeacherAuthorization(email?: string | null): Promise
 
 /**
  * Single Source of Truth (SSOT) teacher profile lookup by email.
- * Delegates to resolveCurrentTeacherProfile for unified SSOT enforcement.
  */
 export function getCurrentTeacherProfile(email?: string | null): TeacherProfileResult {
   return resolveCurrentTeacherProfile(email);
 }
 
 /**
- * Asynchronously fetch teacher profile directly from Firestore `to_chuyen_mon` & `teachers` collections (SSOT).
+ * Asynchronously fetch teacher profile directly from Firestore `users`, `teachers`, & `to_chuyen_mon` collections (SSOT).
+ * Reads once per session and caches in memory + sessionStorage.
  */
 export async function fetchCurrentTeacherProfile(email?: string | null): Promise<TeacherProfileResult> {
   const effectiveEmail = (
@@ -745,52 +552,75 @@ export async function fetchCurrentTeacherProfile(email?: string | null): Promise
     ''
   ).toLowerCase().trim();
 
-  // Known account: thuthuthtk@gmail.com
-  if (effectiveEmail === 'thuthuthtk@gmail.com' || effectiveEmail.includes('thuthuthtk')) {
-    return {
-      id: 'gv-12',
-      name: 'Nguyễn Thị Thu',
-      email: 'thuthuthtk@gmail.com',
-      role: 'Quản trị viên (ADMIN)',
-      userRole: 'admin',
-      toChuyenMon: 'Tổ 3',
-      subject: 'Tin học & Công nghệ & Tin học (tự chọn)',
-      avatar: '👩‍🏫'
-    };
+  if (!effectiveEmail) {
+    return resolveCurrentTeacherProfile(effectiveEmail);
   }
+
+  const cached = getCachedResolvedProfile(effectiveEmail);
+  if (cached && cached.name && !cached.name.startsWith('Thầy/Cô ')) {
+    return cached;
+  }
+
+  const canonical = CANONICAL_TEACHER_DIRECTORY.find(c => c.emails.includes(effectiveEmail));
 
   if (db && effectiveEmail) {
     try {
-      // 1. Tra cứu trong collection users (nơi tài liệu có ID kiểu gv-01, gv-02...) theo email
+      // 1. Tra cứu trong collection users theo email
       const usersQuery = query(collection(db, 'users'), where('email', '==', effectiveEmail));
       const usersSnap = await getDocs(usersQuery);
       if (!usersSnap.empty) {
         const docSnap = usersSnap.docs[0];
         const data = docSnap.data();
 
-        if (auth?.currentUser?.uid && !data.uid) {
-          setDoc(docSnap.ref, { uid: auth.currentUser.uid }, { merge: true }).catch(() => {});
+        const currentAuthUid = auth?.currentUser?.email?.toLowerCase().trim() === effectiveEmail
+          ? auth.currentUser.uid
+          : undefined;
+
+        if (currentAuthUid && !data.uid) {
+          setDoc(docSnap.ref, { uid: currentAuthUid }, { merge: true }).catch(() => {});
         }
 
         const roleStr = (data.role || '').toLowerCase();
-        const isAdmin = roleStr.includes('admin') || roleStr.includes('quản trị') || roleStr.includes('hiệu trưởng') || roleStr.includes('quản trị viên');
-        const resolvedName = (data.name === 'Nguyễn Thị Thủ' && (effectiveEmail === 'thuthuthtk@gmail.com' || docSnap.id === 'gv-12'))
-          ? 'Nguyễn Thị Thu'
-          : (data.name || resolveTeacherNameByEmail(effectiveEmail));
+        const isAdmin =
+          canonical?.userRole === 'admin' ||
+          roleStr === 'admin' ||
+          roleStr.includes('admin') ||
+          roleStr.includes('quản trị') ||
+          roleStr.includes('hiệu trưởng');
 
-        return {
-          id: docSnap.id || data.id || 'gv-01',
+        const resolvedName = (data.name === 'Nguyễn Thị Thủ' && effectiveEmail === 'thuthuthtk@gmail.com')
+          ? 'Nguyễn Thị Thu'
+          : (data.name || canonical?.name || resolveTeacherNameByEmail(effectiveEmail));
+
+        const homeroomClasses = normalizeClassList([
+          ...(canonical?.homeroomClasses || []),
+          ...(data.homeroomClasses || []),
+          ...(data.lopChuNhiem ? (Array.isArray(data.lopChuNhiem) ? data.lopChuNhiem : [data.lopChuNhiem]) : [])
+        ]);
+        const teachingClasses = normalizeClassList([
+          ...(canonical?.teachingClasses || []),
+          ...(data.teachingClasses || []),
+          ...(data.lopDay || []),
+          ...homeroomClasses
+        ]);
+
+        const profile: TeacherProfileResult = {
+          id: docSnap.id || data.id || canonical?.id || 'gv-01',
+          uid: currentAuthUid || data.uid || canonical?.uid,
           name: resolvedName,
           email: data.email || effectiveEmail,
-          role: data.role || (isAdmin ? 'Quản trị viên (ADMIN)' : 'Giáo viên bộ môn'),
+          role: data.role === 'teacher' ? (canonical?.role || 'Giáo viên bộ môn') : (data.role || canonical?.role || (isAdmin ? 'Quản trị viên (ADMIN)' : 'Giáo viên bộ môn')),
           userRole: isAdmin ? 'admin' : 'teacher',
-          toChuyenMon: data.toChuyenMon,
-          subject: data.subject,
-          phone: data.phone,
-          avatar: data.avatar || '👩‍🏫',
-          homeroomClasses: data.homeroomClasses,
-          teachingClasses: data.teachingClasses
+          toChuyenMon: normalizeDepartmentName(data.toChuyenMon || canonical?.toChuyenMon || 'Tổ 1'),
+          subject: data.subject || canonical?.subject,
+          avatar: data.avatar || canonical?.avatar || '👩‍🏫',
+          homeroomClasses,
+          teachingClasses,
+          lopDay: teachingClasses,
+          lopChuNhiem: homeroomClasses[0] || ''
         };
+        cacheResolvedProfile(effectiveEmail, profile);
+        return profile;
       }
 
       // 2. Tra cứu trong collection teachers theo email
@@ -798,60 +628,57 @@ export async function fetchCurrentTeacherProfile(email?: string | null): Promise
       const teachersSnap = await getDocs(teachersQuery);
       if (!teachersSnap.empty) {
         const docSnap = teachersSnap.docs[0];
-        const data = docSnap.data() as TeacherRecord;
+        const data = docSnap.data() as any;
 
-        if (auth?.currentUser?.uid && !(data as any).uid) {
-          setDoc(docSnap.ref, { uid: auth.currentUser.uid }, { merge: true }).catch(() => {});
+        const currentAuthUid = auth?.currentUser?.email?.toLowerCase().trim() === effectiveEmail
+          ? auth.currentUser.uid
+          : undefined;
+
+        if (currentAuthUid && !data.uid) {
+          setDoc(docSnap.ref, { uid: currentAuthUid }, { merge: true }).catch(() => {});
         }
 
         const roleStr = (data.role || '').toLowerCase();
-        const isAdmin = roleStr.includes('admin') || roleStr.includes('quản trị') || roleStr.includes('hiệu trưởng') || roleStr.includes('quản trị viên');
-        const resolvedName = (data.name === 'Nguyễn Thị Thủ' && (effectiveEmail === 'thuthuthtk@gmail.com' || docSnap.id === 'gv-12'))
-          ? 'Nguyễn Thị Thu'
-          : (data.name || resolveTeacherNameByEmail(effectiveEmail));
+        const isAdmin =
+          canonical?.userRole === 'admin' ||
+          roleStr === 'admin' ||
+          roleStr.includes('admin') ||
+          roleStr.includes('quản trị') ||
+          roleStr.includes('hiệu trưởng');
 
-        return {
-          id: docSnap.id || data.id || 'gv-01',
+        const resolvedName = (data.name === 'Nguyễn Thị Thủ' && effectiveEmail === 'thuthuthtk@gmail.com')
+          ? 'Nguyễn Thị Thu'
+          : (data.name || canonical?.name || resolveTeacherNameByEmail(effectiveEmail));
+
+        const homeroomClasses = normalizeClassList([
+          ...(canonical?.homeroomClasses || []),
+          ...(data.homeroomClasses || []),
+          ...(data.lopChuNhiem ? (Array.isArray(data.lopChuNhiem) ? data.lopChuNhiem : [data.lopChuNhiem]) : [])
+        ]);
+        const teachingClasses = normalizeClassList([
+          ...(canonical?.teachingClasses || []),
+          ...(data.teachingClasses || []),
+          ...(data.lopDay || []),
+          ...homeroomClasses
+        ]);
+
+        const profile: TeacherProfileResult = {
+          id: docSnap.id || data.id || canonical?.id || 'gv-01',
+          uid: currentAuthUid || data.uid || canonical?.uid,
           name: resolvedName,
           email: data.email || effectiveEmail,
-          role: data.role || (isAdmin ? 'Quản trị viên (ADMIN)' : 'Giáo viên bộ môn'),
+          role: data.role || canonical?.role || (isAdmin ? 'Quản trị viên (ADMIN)' : 'Giáo viên bộ môn'),
           userRole: isAdmin ? 'admin' : 'teacher',
-          toChuyenMon: data.toChuyenMon,
-          subject: data.subject,
-          phone: data.phone,
-          avatar: data.avatar || '👩‍🏫',
-          homeroomClasses: data.homeroomClasses,
-          teachingClasses: data.teachingClasses
+          toChuyenMon: normalizeDepartmentName(data.toChuyenMon || canonical?.toChuyenMon || 'Tổ 1'),
+          subject: data.subject || canonical?.subject,
+          avatar: data.avatar || canonical?.avatar || '👩‍🏫',
+          homeroomClasses,
+          teachingClasses,
+          lopDay: teachingClasses,
+          lopChuNhiem: homeroomClasses[0] || ''
         };
-      }
-
-      // 3. Duyệt qua collection to_chuyen_mon
-      const toSnap = await getDocs(collection(db, 'to_chuyen_mon'));
-      for (const toDoc of toSnap.docs) {
-        const toData = toDoc.data();
-        if (Array.isArray(toData.teachers)) {
-          const matched = toData.teachers.find(
-            (t: any) => (t.email || '').toLowerCase().trim() === effectiveEmail
-          );
-          if (matched) {
-            const isAdmin = (matched.role || '').toLowerCase().includes('quản trị') ||
-                            (matched.role || '').toLowerCase().includes('admin') ||
-                            (matched.role || '').toLowerCase().includes('hiệu trưởng');
-            return {
-              id: matched.id || 'gv-12',
-              name: (matched.name === 'Nguyễn Thị Thủ' || matched.id === 'gv-12') ? 'Nguyễn Thị Thu' : matched.name,
-              email: matched.email || effectiveEmail,
-              role: matched.role || (isAdmin ? 'Quản trị viên (ADMIN)' : 'Giáo viên bộ môn'),
-              userRole: isAdmin ? 'admin' : 'teacher',
-              toChuyenMon: matched.toChuyenMon || toData.name || toDoc.id,
-              subject: matched.subject,
-              phone: matched.phone,
-              avatar: matched.avatar || '👩‍🏫',
-              homeroomClasses: matched.homeroomClasses,
-              teachingClasses: matched.teachingClasses
-            };
-          }
-        }
+        cacheResolvedProfile(effectiveEmail, profile);
+        return profile;
       }
     } catch (e) {
       console.warn('Lỗi khi truy vấn hồ sơ giáo viên từ Firestore:', e);
@@ -861,10 +688,7 @@ export async function fetchCurrentTeacherProfile(email?: string | null): Promise
   return resolveCurrentTeacherProfile(effectiveEmail);
 }
 
-/**
- * Get all teachers from LocalStorage with deduplication fallback
- */
-export function getTeachersFromLocalStorage(): TeacherRecord[] {
+function getTeachersFromLocalStorageRaw(): TeacherRecord[] {
   if (typeof window === 'undefined') return initialTeachersList;
 
   try {
@@ -879,10 +703,66 @@ export function getTeachersFromLocalStorage(): TeacherRecord[] {
     console.error('Lỗi khi đọc danh sách giáo viên từ LocalStorage:', err);
   }
 
-  // Fallback to deduplicated initial default list
   const defaultDeduped = deduplicateTeachers(initialTeachersList);
   saveTeachersToLocalStorage(defaultDeduped);
   return defaultDeduped;
+}
+
+/**
+ * Get all teachers from LocalStorage with deduplication fallback.
+ * Enforces RBAC privacy: if the active user is a non-admin teacher or student,
+ * strips sensitive PII (phone, dob, sddcn) from other teachers' records.
+ */
+export function getTeachersFromLocalStorage(): TeacherRecord[] {
+  const list = getTeachersFromLocalStorageRaw();
+  if (typeof window === 'undefined') return list;
+
+  // Merge canonical emails/UIDs so sharing dropdowns have accurate emails & departments
+  const enriched = list.map(t => {
+    const canonical = CANONICAL_TEACHER_DIRECTORY.find(
+      c => c.id === t.id || c.emails.includes((t.email || '').toLowerCase().trim()) || c.name.toLowerCase() === (t.name || '').toLowerCase().trim()
+    );
+    if (!canonical) return t;
+    return {
+      ...t,
+      uid: t.uid || canonical.uid,
+      email: canonical.emails[0] || t.email,
+      toChuyenMon: normalizeDepartmentName(t.toChuyenMon || canonical.toChuyenMon, t),
+      userRole: canonical.userRole
+    };
+  });
+
+  const activeEmail = (
+    (auth && auth.currentUser ? auth.currentUser.email : null) ||
+    localStorage.getItem('eduplay_teacher_email') ||
+    ''
+  ).toLowerCase().trim();
+
+  if (!activeEmail) return enriched;
+
+  const canonicalActive = CANONICAL_TEACHER_DIRECTORY.find(c => c.emails.includes(activeEmail));
+  const isAdmin =
+    canonicalActive?.userRole === 'admin' ||
+    activeEmail === 'thuthuthtk@gmail.com' ||
+    activeEmail === 'vanquan18189@gmail.com' ||
+    activeEmail === 'dangtanhung@gmail.com' ||
+    activeEmail === 'dongtam79tk@gmail.com';
+
+  if (isAdmin) return enriched;
+
+  // For regular teachers: strip sensitive PII (phone, dob, sddcn) of other teachers
+  return enriched.map(t => {
+    const isSelf =
+      (t.email || '').toLowerCase().trim() === activeEmail ||
+      (canonicalActive && t.id === canonicalActive.id);
+    if (isSelf) return t;
+    return {
+      ...t,
+      phone: '',
+      dob: '',
+      sddcn: ''
+    };
+  });
 }
 
 /**

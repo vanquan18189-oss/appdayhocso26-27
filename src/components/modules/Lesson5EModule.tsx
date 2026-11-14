@@ -34,6 +34,13 @@ import { getSubjectColorStyles } from '../../utils/subjectColors';
 import { Lesson5EPlan, UserRole } from '../../types';
 import { generate5ELessonAI } from '../../services/geminiService';
 import { resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
+import {
+  getCurrentAccessContext,
+  getContentPermissions,
+  filterAccessibleItems,
+  isContentOwner,
+  isContentSharedWithTeacher
+} from '../../services/permissionService';
 import { auth } from '../../services/firebase';
 import { Lesson5EModal } from './Lesson5EModal';
 import { ShareContentModal } from './ShareContentModal';
@@ -56,17 +63,17 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
   userRole
 }) => {
   const authEmail = (typeof window !== 'undefined' ? (auth?.currentUser?.email || localStorage.getItem('eduplay_teacher_email')) : null);
-  const activeTeacherProfile = useMemo(() => resolveCurrentTeacherProfile(authEmail), [authEmail]);
-  const isAdmin = userRole === 'admin' || activeTeacherProfile.userRole === 'admin' || (activeTeacherProfile.role || '').toLowerCase().includes('admin');
+  const accessContext = useMemo(() => getCurrentAccessContext(userRole, authEmail), [userRole, authEmail]);
+  const activeTeacherProfile = accessContext.teacherProfile;
+  const isAdmin = accessContext.isAdmin;
 
   const isLessonOwner = useCallback((lesson: Lesson5EPlan): boolean => {
-    if (isAdmin) return true;
-    const currentId = activeTeacherProfile.id; // e.g. 'gv-06', 'gv-12'
-    if ((lesson as any).teacherId && (lesson as any).teacherId === currentId) return true;
-    if ((lesson as any).createdBy && (lesson as any).createdBy === currentId) return true;
-    if (lesson.authorName && (lesson.authorName.includes(activeTeacherProfile.name) || activeTeacherProfile.name.includes(lesson.authorName))) return true;
-    return false;
-  }, [isAdmin, activeTeacherProfile.id, activeTeacherProfile.name]);
+    return isContentOwner(lesson, accessContext);
+  }, [accessContext]);
+
+  const accessibleLessons = useMemo(() => {
+    return filterAccessibleItems(lessons || [], 'all', accessContext);
+  }, [lessons, accessContext]);
 
   const [activeTab, setActiveTab] = useState<'list' | 'editor' | 'viewer'>('list');
   const [selectedLesson, setSelectedLesson] = useState<Lesson5EPlan | null>(null);
@@ -79,9 +86,9 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
   const [assignedToast, setAssignedToast] = useState<string | null>(null);
   const [openDropdown, setOpenDropdown] = useState<{ lessonId: string; type: 'status' | 'approval' } | null>(null);
 
-  const totalLessons = (lessons || []).length;
+  const totalLessons = accessibleLessons.length;
   
-  const publishedAndApprovedCount = (lessons || []).filter(lesson => {
+  const publishedAndApprovedCount = accessibleLessons.filter(lesson => {
     const isPublished = (lesson as any).status !== 'draft';
     const isApproved = (lesson as any).isApproved !== false;
     return isPublished && isApproved;
@@ -91,12 +98,12 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
     ? Math.round((publishedAndApprovedCount / totalLessons) * 100) 
     : 0;
 
-  const totalViews = (lessons || []).reduce((acc, lesson) => {
+  const totalViews = accessibleLessons.reduce((acc, lesson) => {
     return acc + ((lesson as any).viewsCount || 0);
   }, 0);
 
-  // Permission check for content approval (Admin or Teacher / Department head)
-  const canReviewContent = userRole === 'admin' || userRole === 'teacher';
+  // Permission check for content approval (Admin or Owner)
+  const canReviewContent = isAdmin;
 
   // Handle clicking outside to close any open dropdown
   useEffect(() => {
@@ -171,12 +178,11 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [currentPage, setCurrentPage] = useState<number>(1);
 
-  const filteredLessons = (lessons || []).filter(lesson => {
-    // Main tab filter
-    const authorType = (lesson as any).authorType || 'all';
-    if (mainTab === 'my' && authorType !== 'my' && lesson.authorName !== 'ThS. Nguyễn Văn Hoài') return false;
-    if (mainTab === 'colleague' && authorType !== 'colleague' && lesson.authorName === 'ThS. Nguyễn Văn Hoài') return false;
+  const tabFilteredLessons = useMemo(() => {
+    return filterAccessibleItems(lessons || [], mainTab, accessContext);
+  }, [lessons, mainTab, accessContext]);
 
+  const filteredLessons = tabFilteredLessons.filter(lesson => {
     // Grade filter
     if (filterGrade !== 'Tất cả khối' && filterGrade !== 'Tất cả các khối' && lesson.grade !== filterGrade) return false;
     
@@ -481,6 +487,7 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
                 const codeStr = (lesson as any).code || `TIN${idx+1}-C2-T${idx+1}`;
                 const viewsCount = (lesson as any).viewsCount || 0;
                 const subjColor = getSubjectColorStyles(lesson.subject);
+                const perms = getContentPermissions(lesson, accessContext);
 
                 return (
                   <div
@@ -648,10 +655,32 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
                           </div>
                         </div>
 
-                        {/* Title */}
-                        <h3 className={`text-base font-extrabold group-hover:text-blue-600 transition-colors font-heading leading-snug ${isApproved ? 'text-blue-700' : 'text-slate-900'}`}>
-                          {lesson.title}
-                        </h3>
+                        {/* Title & Shared Badge */}
+                        <div className="space-y-1.5">
+                          {perms.isShared && !perms.isOwner && (
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-purple-50 text-purple-700 border border-purple-200 text-[10px] font-bold">
+                              <Share2 className="w-3 h-3" />
+                              <span>Chia sẻ bởi {perms.ownerName}</span>
+                              <span className="text-purple-400">•</span>
+                              <span>
+                                {perms.sharePermission === 'assign'
+                                  ? 'Xem, sửa & giao'
+                                  : perms.sharePermission === 'edit'
+                                    ? 'Xem & sửa'
+                                    : 'Chỉ xem'}
+                              </span>
+                            </div>
+                          )}
+                          <h3
+                            onClick={() => {
+                              setSelectedLesson(lesson);
+                              setActiveTab('viewer');
+                            }}
+                            className={`text-base font-extrabold group-hover:text-blue-600 transition-colors font-heading leading-snug cursor-pointer ${isApproved ? 'text-blue-700' : 'text-slate-900'}`}
+                          >
+                            {lesson.title}
+                          </h3>
+                        </div>
 
                         {/* Short description */}
                         <p className="text-xs text-slate-500 line-clamp-2 leading-relaxed">
@@ -678,88 +707,98 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
                       <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
                         {/* Left & Right Action Toolbar */}
                         <div className="flex items-center gap-1.5">
-                          {/* Giao bài */}
-                          <div className="relative group/btn">
-                            <button
-                              type="button"
-                              onClick={() => setAssigningLesson(lesson)}
-                              className="p-2 rounded-xl bg-blue-50/80 hover:bg-blue-600 text-blue-600 hover:text-white transition-all cursor-pointer shadow-2xs hover:shadow-xs flex items-center justify-center"
-                              title="Giao bài"
-                            >
-                              <Play className="w-4 h-4 fill-current" />
-                            </button>
-                            <span className="pointer-events-none absolute -top-8 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-slate-900 text-white text-[10px] font-bold rounded-md opacity-0 group-hover/btn:opacity-100 transition-opacity whitespace-nowrap z-30 shadow-md">
-                              Giao bài
-                            </span>
-                          </div>
+                          {/* Giao bài - chỉ hiện khi có quyền canAssign */}
+                          {perms.canAssign && (
+                            <div className="relative group/btn">
+                              <button
+                                type="button"
+                                onClick={() => setAssigningLesson(lesson)}
+                                className="p-2 rounded-xl bg-blue-50/80 hover:bg-blue-600 text-blue-600 hover:text-white transition-all cursor-pointer shadow-2xs hover:shadow-xs flex items-center justify-center"
+                                title="Giao bài"
+                              >
+                                <Play className="w-4 h-4 fill-current" />
+                              </button>
+                              <span className="pointer-events-none absolute -top-8 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-slate-900 text-white text-[10px] font-bold rounded-md opacity-0 group-hover/btn:opacity-100 transition-opacity whitespace-nowrap z-30 shadow-md">
+                                Giao bài
+                              </span>
+                            </div>
+                          )}
 
                           {/* Thống kê */}
-                          <div className="relative group/btn">
-                            <button
-                              type="button"
-                              onClick={() => setStatsLesson(lesson)}
-                              className="p-2 rounded-xl bg-indigo-50/80 hover:bg-indigo-600 text-indigo-600 hover:text-white transition-all cursor-pointer shadow-2xs hover:shadow-xs flex items-center justify-center"
-                              title="Thống kê"
-                            >
-                              <BarChart2 className="w-4 h-4" />
-                            </button>
-                            <span className="pointer-events-none absolute -top-8 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-slate-900 text-white text-[10px] font-bold rounded-md opacity-0 group-hover/btn:opacity-100 transition-opacity whitespace-nowrap z-30 shadow-md">
-                              Thống kê
-                            </span>
-                          </div>
+                          {perms.canView && (
+                            <div className="relative group/btn">
+                              <button
+                                type="button"
+                                onClick={() => setStatsLesson(lesson)}
+                                className="p-2 rounded-xl bg-indigo-50/80 hover:bg-indigo-600 text-indigo-600 hover:text-white transition-all cursor-pointer shadow-2xs hover:shadow-xs flex items-center justify-center"
+                                title="Thống kê"
+                              >
+                                <BarChart2 className="w-4 h-4" />
+                              </button>
+                              <span className="pointer-events-none absolute -top-8 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-slate-900 text-white text-[10px] font-bold rounded-md opacity-0 group-hover/btn:opacity-100 transition-opacity whitespace-nowrap z-30 shadow-md">
+                                Thống kê
+                              </span>
+                            </div>
+                          )}
                         </div>
 
                         {/* Right: small action icons (Edit, Share, Delete) */}
                         <div className="flex items-center gap-1.5">
-                          {userRole !== 'student' && isLessonOwner(lesson) && (
+                          {userRole !== 'student' && (
                             <>
                               {/* Sửa bài giảng */}
-                              <div className="relative group/btn">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setEditingLesson(lesson);
-                                    setIsModalOpen(true);
-                                  }}
-                                  className="p-2 rounded-xl bg-slate-50 hover:bg-amber-50 text-slate-500 hover:text-amber-600 transition-all cursor-pointer shadow-2xs hover:shadow-xs flex items-center justify-center border border-slate-100"
-                                  title="Chỉnh sửa bài giảng"
-                                >
-                                  <Edit3 className="w-4 h-4" />
-                                </button>
-                                <span className="pointer-events-none absolute -top-8 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-slate-900 text-white text-[10px] font-bold rounded-md opacity-0 group-hover/btn:opacity-100 transition-opacity whitespace-nowrap z-30 shadow-md">
-                                  Chỉnh sửa
-                                </span>
-                              </div>
+                              {perms.canEdit && (
+                                <div className="relative group/btn">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingLesson(lesson);
+                                      setIsModalOpen(true);
+                                    }}
+                                    className="p-2 rounded-xl bg-slate-50 hover:bg-amber-50 text-slate-500 hover:text-amber-600 transition-all cursor-pointer shadow-2xs hover:shadow-xs flex items-center justify-center border border-slate-100"
+                                    title="Chỉnh sửa bài giảng"
+                                  >
+                                    <Edit3 className="w-4 h-4" />
+                                  </button>
+                                  <span className="pointer-events-none absolute -top-8 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-slate-900 text-white text-[10px] font-bold rounded-md opacity-0 group-hover/btn:opacity-100 transition-opacity whitespace-nowrap z-30 shadow-md">
+                                    Chỉnh sửa
+                                  </span>
+                                </div>
+                              )}
 
                               {/* Chia sẻ */}
-                              <div className="relative group/btn">
-                                <button
-                                  type="button"
-                                  onClick={() => setSharingLesson(lesson)}
-                                  className="p-2 rounded-xl bg-slate-50 hover:bg-emerald-50 text-slate-500 hover:text-emerald-600 transition-all cursor-pointer shadow-2xs hover:shadow-xs flex items-center justify-center border border-slate-100"
-                                  title="Chia sẻ bài giảng"
-                                >
-                                  <Share2 className="w-4 h-4" />
-                                </button>
-                                <span className="pointer-events-none absolute -top-8 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-slate-900 text-white text-[10px] font-bold rounded-md opacity-0 group-hover/btn:opacity-100 transition-opacity whitespace-nowrap z-30 shadow-md">
-                                  Chia sẻ
-                                </span>
-                              </div>
+                              {perms.canShare && (
+                                <div className="relative group/btn">
+                                  <button
+                                    type="button"
+                                    onClick={() => setSharingLesson(lesson)}
+                                    className="p-2 rounded-xl bg-slate-50 hover:bg-emerald-50 text-slate-500 hover:text-emerald-600 transition-all cursor-pointer shadow-2xs hover:shadow-xs flex items-center justify-center border border-slate-100"
+                                    title="Chia sẻ bài giảng"
+                                  >
+                                    <Share2 className="w-4 h-4" />
+                                  </button>
+                                  <span className="pointer-events-none absolute -top-8 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-slate-900 text-white text-[10px] font-bold rounded-md opacity-0 group-hover/btn:opacity-100 transition-opacity whitespace-nowrap z-30 shadow-md">
+                                    Chia sẻ
+                                  </span>
+                                </div>
+                              )}
 
                               {/* Xóa */}
-                              <div className="relative group/btn">
-                                <button
-                                  type="button"
-                                  onClick={() => setDeletingLesson(lesson)}
-                                  className="p-2 rounded-xl bg-slate-50 hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition-all cursor-pointer shadow-2xs hover:shadow-xs flex items-center justify-center border border-slate-100"
-                                  title="Xóa bài giảng"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                                <span className="pointer-events-none absolute -top-8 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-slate-900 text-white text-[10px] font-bold rounded-md opacity-0 group-hover/btn:opacity-100 transition-opacity whitespace-nowrap z-30 shadow-md">
-                                  Xóa
-                                </span>
-                              </div>
+                              {perms.canDelete && (
+                                <div className="relative group/btn">
+                                  <button
+                                    type="button"
+                                    onClick={() => setDeletingLesson(lesson)}
+                                    className="p-2 rounded-xl bg-slate-50 hover:bg-rose-50 text-slate-400 hover:text-rose-600 transition-all cursor-pointer shadow-2xs hover:shadow-xs flex items-center justify-center border border-slate-100"
+                                    title="Xóa bài giảng"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                  <span className="pointer-events-none absolute -top-8 left-1/2 -translate-x-1/2 px-2 py-0.5 bg-slate-900 text-white text-[10px] font-bold rounded-md opacity-0 group-hover/btn:opacity-100 transition-opacity whitespace-nowrap z-30 shadow-md">
+                                    Xóa
+                                  </span>
+                                </div>
+                              )}
                             </>
                           )}
                         </div>
@@ -1208,7 +1247,28 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
       )}
 
       {/* VIEWER: Full Pedagogical 5E Lesson Document View */}
-      {activeTab === 'viewer' && selectedLesson && (
+      {activeTab === 'viewer' && selectedLesson && !getContentPermissions(selectedLesson, accessContext).canView && (
+        <div className="bg-white rounded-2xl p-12 border border-rose-200 shadow-sm text-center max-w-xl mx-auto space-y-4">
+          <div className="w-12 h-12 rounded-2xl bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center mx-auto font-black text-lg">
+            !
+          </div>
+          <h3 className="text-lg font-extrabold text-slate-900">Bạn không có quyền xem nội dung này</h3>
+          <p className="text-xs text-slate-500">
+            Bài giảng này thuộc sở hữu của giáo viên khác và chưa được chia sẻ cho bạn hoặc tổ chuyên môn của bạn.
+          </p>
+          <button
+            onClick={() => {
+              setSelectedLesson(null);
+              setActiveTab('list');
+            }}
+            className="px-5 py-2.5 rounded-xl bg-slate-900 text-white text-xs font-bold hover:bg-slate-800 cursor-pointer"
+          >
+            Quay về danh sách
+          </button>
+        </div>
+      )}
+
+      {activeTab === 'viewer' && selectedLesson && getContentPermissions(selectedLesson, accessContext).canView && (
         <div className="bg-white rounded-2xl p-8 border border-slate-200 shadow-md space-y-6 max-w-4xl mx-auto print:shadow-none print:border-none print:p-0">
           
           <div className="flex items-center justify-between border-b border-slate-200 pb-4 print:hidden">
@@ -1436,9 +1496,27 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
           title: sharingLesson.title,
           grade: sharingLesson.grade,
           subject: sharingLesson.subject,
+          sharedWithTeachers: sharingLesson.sharedWithTeachers,
+          sharedWithGroups: sharingLesson.sharedWithGroups,
+          sharePermission: sharingLesson.sharePermission,
+          allowDeleteByShared: sharingLesson.allowDeleteByShared
         } : null}
         onConfirmShare={(payload) => {
-          alert("Đã chia sẻ thành công bài giảng: " + payload.title);
+          if (sharingLesson) {
+            onSaveLesson({
+              ...sharingLesson,
+              sharedWithTeachers: payload.sharedWithTeachers,
+              sharedWithGroups: payload.sharedWithGroups,
+              sharePermission: payload.sharePermission,
+              allowDeleteByShared: payload.allowDeleteByShared
+            });
+          }
+          setAssignedToast(
+            payload.revoked
+              ? `Đã thu hồi chia sẻ bài giảng "${payload.title}"!`
+              : `Đã chia sẻ bài giảng "${payload.title}" thành công!`
+          );
+          setTimeout(() => setAssignedToast(null), 3500);
           setSharingLesson(null);
         }}
       />
@@ -1467,8 +1545,10 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
         onClose={() => setDeletingLesson(null)}
         onConfirm={() => {
           if (deletingLesson) {
-            if (!isLessonOwner(deletingLesson)) {
-              alert('Bạn không có quyền xóa nội dung này!');
+            const perms = getContentPermissions(deletingLesson, accessContext);
+            if (!perms.canDelete) {
+              setAssignedToast('Bạn không có quyền xóa nội dung này!');
+              setTimeout(() => setAssignedToast(null), 3500);
               setDeletingLesson(null);
               return;
             }

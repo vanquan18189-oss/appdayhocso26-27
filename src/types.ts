@@ -46,7 +46,20 @@ export interface FeedbackBlockConfig {
   teacherName: string;
 }
 
-export interface Lesson5EPlan {
+export type SharePermissionLevel = 'view' | 'edit' | 'assign';
+
+export interface ContentOwnershipMetadata {
+  ownerId?: string;
+  ownerEmail?: string;
+  ownerName?: string;
+  toChuyenMon?: string;
+  sharedWithTeachers?: string[];
+  sharedWithGroups?: string[];
+  sharePermission?: SharePermissionLevel;
+  allowDeleteByShared?: boolean;
+}
+
+export interface Lesson5EPlan extends ContentOwnershipMetadata {
   id: string;
   title: string;
   subject: string;
@@ -117,7 +130,7 @@ export interface ClassificationItem {
   group: string; // group name or index
 }
 
-export interface QuestionItem {
+export interface QuestionItem extends ContentOwnershipMetadata {
   id: string;
   code: string;
   subject: string;
@@ -154,7 +167,7 @@ export interface ExamMatrix {
   vanDungCao: number;
 }
 
-export interface ExamPaper {
+export interface ExamPaper extends ContentOwnershipMetadata {
   id: string;
   title: string;
   subject: string;
@@ -208,7 +221,7 @@ export interface AssignmentSubmission {
   status: 'pending' | 'graded' | 'submitted';
 }
 
-export interface HomeworkAssignment {
+export interface HomeworkAssignment extends ContentOwnershipMetadata {
   id: string;
   title: string;
   subject: string;
@@ -252,7 +265,7 @@ export interface HomeworkAssignment {
 
 export type GameType = 'golden_bell' | 'speed_quiz' | 'lucky_wheel' | 'flashcards';
 
-export interface GameItem {
+export interface GameItem extends ContentOwnershipMetadata {
   id: string;
   title: string;
   type: GameType;
@@ -312,6 +325,7 @@ export interface LatencyTestResult {
 
 export interface TeacherRecord {
   id: string;
+  uid?: string;
   name: string;
   email: string;
   role: string;
@@ -380,7 +394,7 @@ export interface StudentEnrollmentRecord {
   homeroomTeacherId?: string;
 }
 
-export interface QuizziGameItem {
+export interface QuizziGameItem extends ContentOwnershipMetadata {
   id: number | string;
   originalGameId?: string;
   subject: string;

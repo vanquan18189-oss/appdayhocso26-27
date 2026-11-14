@@ -887,6 +887,7 @@ export const Lesson5EModal: React.FC<Lesson5EModalProps> = ({
         code: lessonCode,
         period: period,
         status: status,
+        isApproved: (targetLesson as any)?.isApproved !== false,
         selectedClasses,
         shareWithColleagues,
         isApplyReportEnabled: isEvaluateReportEnabled,

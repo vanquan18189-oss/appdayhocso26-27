@@ -18,6 +18,7 @@ import { StudentAssignmentModule } from './components/modules/StudentAssignmentM
 import { StudentExamModule } from './components/modules/StudentExamModule';
 import { StudentLessonModule } from './components/modules/StudentLessonModule';
 import { StudentELearning } from './components/modules/StudentELearning';
+import { PublicLessonPlayerView } from './components/modules/PublicLessonPlayerView';
 import { UseQuestionBankModal } from './components/modules/UseQuestionBankModal';
 import { GameRoomConfigModal } from './components/modules/GameRoomConfigModal';
 
@@ -67,13 +68,15 @@ import {
   saveLessonToFirestore,
   deleteLessonFromFirestore,
   subscribeToLessonsFromFirestore,
-  getLocalCachedLessons
+  getLocalCachedLessons,
+  extractLessonIdFromPath
 } from './services/lessonStorageService';
 import { CheckCircle2, AlertCircle, Info, Sparkles, X } from 'lucide-react';
 import { RewardToastNotification } from './components/common/RewardToastNotification';
 
 export function App() {
-  const [showPortal, setShowPortal] = useState<boolean>(true);
+  const [publicLessonId, setPublicLessonId] = useState<string | null>(() => extractLessonIdFromPath());
+  const [showPortal, setShowPortal] = useState<boolean>(() => !extractLessonIdFromPath());
   const [activeModule, setActiveModule] = useState<ModuleType>('dashboard');
   const [userRole, setUserRole] = useState<UserRole>('teacher');
   const [gameInitialTab, setGameInitialTab] = useState<'games' | 'store'>('games');
@@ -136,8 +139,24 @@ export function App() {
     type: 'success' | 'info' | 'error';
   } | null>(null);
 
-  // Initialize and Sync all Firebase collections on mount
+  // Sync browser back/forward navigation for /lesson/[id] routes
   useEffect(() => {
+    const handlePopState = () => {
+      const nextLessonId = extractLessonIdFromPath();
+      setPublicLessonId(nextLessonId);
+      if (nextLessonId) {
+        setShowPortal(false);
+      } else {
+        setShowPortal(true);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  // Initialize and Sync all Firebase collections on mount (skipped during public guest route)
+  useEffect(() => {
+    if (publicLessonId) return;
     initializeAndSyncAllCollections().then(res => {
       if (res.success) {
         console.log('Firebase collections sync status:', res.message);
@@ -145,10 +164,11 @@ export function App() {
     }).catch(err => {
       console.warn('Firebase collections init warning:', err);
     });
-  }, []);
+  }, [publicLessonId]);
 
-  // Sync QuestionBank with Firestore Real-time listener
+  // Sync QuestionBank with Firestore Real-time listener (teachers/admin only, skipped on guest/portal/student views)
   useEffect(() => {
+    if (publicLessonId || showPortal || userRole === 'student') return;
     const unsubscribe = subscribeToQuestionsFromFirestore(
       (loadedQuestions) => {
         if (loadedQuestions && loadedQuestions.length > 0) {
@@ -162,10 +182,11 @@ export function App() {
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [publicLessonId, showPortal, userRole]);
 
   // Sync ExamPapers with Firestore Real-time listener
   useEffect(() => {
+    if (publicLessonId || showPortal) return;
     const unsubscribe = subscribeToExamsFromFirestore(
       (loadedExams) => {
         if (loadedExams && loadedExams.length > 0) {
@@ -179,10 +200,11 @@ export function App() {
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [publicLessonId, showPortal]);
 
   // Sync HomeworkAssignments with Firestore Real-time listener
   useEffect(() => {
+    if (publicLessonId || showPortal) return;
     const unsubscribe = subscribeToAssignmentsFromFirestore(
       (loadedAssignments) => {
         if (loadedAssignments && loadedAssignments.length > 0) {
@@ -196,10 +218,11 @@ export function App() {
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [publicLessonId, showPortal]);
 
   // Sync Games with Firestore Real-time listener
   useEffect(() => {
+    if (publicLessonId || showPortal) return;
     const unsubscribe = subscribeToGamesFromFirestore(
       (loadedGames) => {
         if (loadedGames && loadedGames.length > 0) {
@@ -212,10 +235,11 @@ export function App() {
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [publicLessonId, showPortal]);
 
   // Sync Lessons with Firestore Real-time listener
   useEffect(() => {
+    if (publicLessonId || showPortal) return;
     const unsubscribe = subscribeToLessonsFromFirestore(
       (loadedLessons) => {
         if (loadedLessons && loadedLessons.length > 0) {
@@ -228,7 +252,7 @@ export function App() {
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [publicLessonId, showPortal]);
 
   // Global Toast Notification Listener
   useEffect(() => {
@@ -262,7 +286,7 @@ export function App() {
     }
   }, [userRole, activeModule]);
 
-  // Sync Firebase Auth state with Teacher session only (never override student session)
+  // Sync Firebase Auth state with Teacher session only (never override student or anonymous guest sessions)
   useEffect(() => {
     if (!auth) return;
     const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -272,8 +296,8 @@ export function App() {
         const resolvedName = resolveTeacherNameByEmail(user.email, user.displayName);
         setTeacherName(resolvedName);
         localStorage.setItem('eduplay_teacher_name', resolvedName);
-      } else {
-        // Clear cached stale user profile on logout
+      } else if (!user) {
+        // Clear cached stale user profile on explicit logout
         const defaultEmail = 'vanquan18189@gmail.com';
         const defaultName = resolveTeacherNameByEmail(defaultEmail);
         setTeacherEmail(defaultEmail);
@@ -565,6 +589,30 @@ export function App() {
     window.addEventListener('eduplay_logout', handleLogoutEvent);
     return () => window.removeEventListener('eduplay_logout', handleLogoutEvent);
   }, []);
+
+  const handleExitPublicLesson = async () => {
+    if (typeof window !== 'undefined') {
+      window.history.pushState({}, '', '/');
+    }
+    if (auth?.currentUser?.isAnonymous) {
+      try {
+        await signOut(auth);
+      } catch {}
+    }
+    setPublicLessonId(null);
+    setShowPortal(true);
+  };
+
+  if (publicLessonId) {
+    return (
+      <ErrorBoundary fallbackTitle="Không thể mở bài giảng công khai">
+        <PublicLessonPlayerView
+          lessonId={publicLessonId}
+          onGoHome={handleExitPublicLesson}
+        />
+      </ErrorBoundary>
+    );
+  }
 
   if (showPortal) {
     return <PortalView onSelectPortal={handleSelectPortal} />;
