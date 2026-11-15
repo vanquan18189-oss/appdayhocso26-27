@@ -82,8 +82,23 @@ import { UseQuestionBankModal } from './UseQuestionBankModal';
 import { ShareContentModal } from './ShareContentModal';
 import { ExamListExportModal } from './ExamListExportModal';
 import { AIMatrixExamModal } from '../exam/AIMatrixExamModal';
-import { GeneratedAIExamPackage } from '../../types/aiMatrixExam';
-import { buildExamPublicUrl } from '../../utils/examExportUtils';
+import {
+  GeneratedAIExamPackage,
+  MonHocChamDiem,
+  SavedAIMatrixExamRecord,
+  ThoiDiemKiemTra,
+} from '../../types/aiMatrixExam';
+import {
+  deleteAIMatrixPackage,
+  getAllAIMatrixPackages,
+  getCachedAIMatrixPackagesSync,
+  saveAIMatrixPackage,
+} from '../../services/aiMatrixExamService';
+import { exportAIExamToWord } from '../../utils/aiExamWordExport';
+import {
+  buildExamPublicUrl,
+  convertAIMatrixRecordToCatalogExam,
+} from '../../utils/examExportUtils';
 import { DateTimePicker } from '../common/DateTimePicker';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { getLocalCachedQuestions, QUESTIONS_CACHE_KEY, saveQuestionsBatchToFirestore } from '../../services/questionStorageService';
@@ -214,6 +229,78 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const [isBankExamModalOpen, setIsBankExamModalOpen] = useState(false);
   const [isAIMatrixModalOpen, setIsAIMatrixModalOpen] = useState(false);
 
+  // Chuyển đổi 2 Tab lớn: Tab 1 (Đề Kiểm Tra & Thi Trực Tuyến) | Tab 2 (Kho Hồ Sơ Ma Trận & Đề AI - Thông tư 27)
+  const [mainSectionTab, setMainSectionTab] = useState<'online_exams' | 'ai_matrix_repo'>('online_exams');
+  const [aiMatrixRecordsMap, setAiMatrixRecordsMap] = useState<Record<string, SavedAIMatrixExamRecord>>(
+    () => getCachedAIMatrixPackagesSync()
+  );
+  const [editingAIMatrixPkg, setEditingAIMatrixPkg] = useState<GeneratedAIExamPackage | null>(null);
+  const [editingAIMatrixId, setEditingAIMatrixId] = useState<string | null>(null);
+  const [matrixSearchQuery, setMatrixSearchQuery] = useState('');
+  const [matrixFilterGrade, setMatrixFilterGrade] = useState('Tất cả các khối');
+  const [matrixFilterSubject, setMatrixFilterSubject] = useState('Tất cả các môn');
+  const [matrixFilterPeriod, setMatrixFilterPeriod] = useState('Tất cả kỳ');
+  const [exportingMatrixRecordId, setExportingMatrixRecordId] = useState<string | null>(null);
+  const [deletingMatrixRecord, setDeletingMatrixRecord] = useState<SavedAIMatrixExamRecord | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    getAllAIMatrixPackages()
+      .then((records) => {
+        if (isMounted && records) {
+          setAiMatrixRecordsMap(records);
+        }
+      })
+      .catch((err) => {
+        console.warn('Không thể đồng bộ danh sách Hồ sơ Ma trận AI:', err);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const savedMatrixRecordsList = useMemo<SavedAIMatrixExamRecord[]>(() => {
+    return Object.values(aiMatrixRecordsMap || {}).sort((a, b) => {
+      const tA = new Date(a.createdAt || 0).getTime() || 0;
+      const tB = new Date(b.createdAt || 0).getTime() || 0;
+      return tB - tA;
+    });
+  }, [aiMatrixRecordsMap]);
+
+  const filteredMatrixRecords = useMemo<SavedAIMatrixExamRecord[]>(() => {
+    const q = matrixSearchQuery.trim().toLowerCase();
+    return savedMatrixRecordsList.filter((rec) => {
+      const cfg = rec.packageData?.config;
+      if (!cfg) return false;
+
+      if (matrixFilterGrade !== 'Tất cả các khối') {
+        const expectedGradeDigit = matrixFilterGrade.replace(/[^0-9]/g, '');
+        if (String(cfg.khoiLop) !== expectedGradeDigit) return false;
+      }
+
+      if (matrixFilterSubject !== 'Tất cả các môn' && cfg.monHoc !== matrixFilterSubject) {
+        return false;
+      }
+
+      if (matrixFilterPeriod !== 'Tất cả kỳ' && cfg.thoiDiemKiemTra !== matrixFilterPeriod) {
+        return false;
+      }
+
+      if (q) {
+        const haystack = `${rec.title || ''} ${cfg.chuDeKienThuc || ''} ${cfg.monHoc || ''} Khối ${cfg.khoiLop || ''} ${cfg.boSachGiaoKhoa || ''}`.toLowerCase();
+        if (!haystack.includes(q)) return false;
+      }
+
+      return true;
+    });
+  }, [
+    savedMatrixRecordsList,
+    matrixSearchQuery,
+    matrixFilterGrade,
+    matrixFilterSubject,
+    matrixFilterPeriod,
+  ]);
+
   // Exam Catalog & QR Export Modal state
   const [examExportModalState, setExamExportModalState] = useState<{
     isOpen: boolean;
@@ -331,115 +418,203 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     }
   };
 
-  const handleSaveAIMatrixExamToSystem = (pkg: GeneratedAIExamPackage) => {
-    try {
-      const gradeLabel = `Khối ${pkg.config.khoiLop}`;
-      const periodToExamType: Record<string, string> = {
-        'Giữa học kì I': 'Giữa kỳ 1',
-        'Cuối học kì I': 'Cuối kỳ 1',
-        'Giữa học kì II': 'Giữa kỳ 2',
-        'Cuối năm học': 'Cuối kỳ 2',
-      };
-      const resolvedExamType = periodToExamType[pkg.config.thoiDiemKiemTra] || pkg.config.thoiDiemKiemTra;
+  const buildOnlineExamPaperFromAIMatrixPkg = (
+    pkg: GeneratedAIExamPackage,
+    customTitle?: string
+  ): ExamPaper => {
+    const gradeLabel = `Khối ${pkg.config.khoiLop}`;
+    const periodToExamType: Record<string, string> = {
+      'Giữa học kì I': 'Giữa kỳ 1',
+      'Cuối học kì I': 'Cuối kỳ 1',
+      'Giữa học kì II': 'Giữa kỳ 2',
+      'Cuối năm học': 'Cuối kỳ 2',
+    };
+    const resolvedExamType =
+      periodToExamType[pkg.config.thoiDiemKiemTra] || pkg.config.thoiDiemKiemTra;
 
-      const mappedQuestions: QuestionItem[] = (pkg.questions || []).map((q, idx) => {
-        const level: QuestionItem['level'] =
-          q.mucDo === 'Mức 1'
-            ? 'nhan_biet'
-            : q.mucDo === 'Mức 2'
-            ? 'thong_hieu'
-            : 'van_dung';
+    const mappedQuestions: QuestionItem[] = (pkg.questions || []).map((q, idx) => {
+      const level: QuestionItem['level'] =
+        q.mucDo === 'Mức 1'
+          ? 'nhan_biet'
+          : q.mucDo === 'Mức 2'
+          ? 'thong_hieu'
+          : 'van_dung';
 
-        let qType: QuestionItem['type'] = 'multiple_choice';
-        if (q.phan === 'TU_LUAN' || q.hinhThuc === 'Tự luận') {
-          qType = 'essay';
-        } else if (q.hinhThuc === 'Nối') {
-          qType = 'matching';
-        } else if (q.hinhThuc === 'Điền khuyết') {
-          qType = 'fill_blank';
-        } else if (q.hinhThuc === 'Đúng - Sai') {
-          qType = 'true_false';
+      let qType: QuestionItem['type'] = 'multiple_choice';
+      if (q.phan === 'TU_LUAN' || q.hinhThuc === 'Tự luận') {
+        qType = 'essay';
+      } else if (q.hinhThuc === 'Nối') {
+        qType = 'matching';
+      } else if (q.hinhThuc === 'Điền khuyết') {
+        qType = 'fill_blank';
+      } else if (q.hinhThuc === 'Đúng - Sai') {
+        qType = 'true_false';
+      }
+
+      const matchingPairs =
+        qType === 'matching' && Array.isArray(q.cotA) && Array.isArray(q.cotB)
+          ? q.cotA.map((leftItem, pIdx) => ({
+              left: leftItem,
+              right: q.cotB?.[pIdx] || '',
+            }))
+          : undefined;
+
+      let normalizedCorrect = String(q.dapAnChinhXac || '').trim();
+      if (qType === 'multiple_choice') {
+        const letterMatch = normalizedCorrect.match(/^([A-D])(?:[\.\:\)\s]|$)/i);
+        if (letterMatch) {
+          normalizedCorrect = letterMatch[1].toUpperCase();
         }
+      }
 
-        const matchingPairs =
-          qType === 'matching' && Array.isArray(q.cotA) && Array.isArray(q.cotB)
-            ? q.cotA.map((leftItem, pIdx) => ({
-                left: leftItem,
-                right: q.cotB?.[pIdx] || '',
-              }))
-            : undefined;
-
-        let normalizedCorrect = String(q.dapAnChinhXac || '').trim();
-        if (qType === 'multiple_choice') {
-          const letterMatch = normalizedCorrect.match(/^([A-D])(?:[\.\:\)\s]|$)/i);
-          if (letterMatch) {
-            normalizedCorrect = letterMatch[1].toUpperCase();
-          }
-        }
-
-        return {
-          id: `q-aimat-${Date.now()}-${idx}`,
-          code: `TT27-K${pkg.config.khoiLop}-${idx + 1}`,
-          subject: pkg.config.monHoc,
-          grade: gradeLabel,
-          topic: pkg.config.chuDeKienThuc.split('\n')[0] || pkg.config.thoiDiemKiemTra,
-          level,
-          type: qType,
-          content: q.noiDungCauHoi,
-          options: qType === 'multiple_choice' ? q.luaChon : undefined,
-          matchingPairs,
-          correctAnswer: normalizedCorrect,
-          explanation: q.huongDanCham,
-          points: q.diem,
-        };
-      });
-
-      const nhanBietCount = mappedQuestions.filter((q) => q.level === 'nhan_biet').length;
-      const thongHieuCount = mappedQuestions.filter((q) => q.level === 'thong_hieu').length;
-      const vanDungCount = mappedQuestions.filter((q) => q.level === 'van_dung').length;
-
-      const rootId = `ex-aimat-${Date.now()}`;
-      const newExam: ExamPaper = {
-        id: rootId,
-        originalExamId: rootId,
-        title: `Đề kiểm tra ${pkg.config.thoiDiemKiemTra} - Môn ${pkg.config.monHoc} (${gradeLabel})`,
+      return {
+        id: `q-aimat-${Date.now()}-${idx}`,
+        code: `TT27-K${pkg.config.khoiLop}-${idx + 1}`,
         subject: pkg.config.monHoc,
         grade: gradeLabel,
-        durationMinutes: pkg.config.thoiGianLamBai,
-        examType: resolvedExamType,
-        targetClass: filterClass !== 'Tất cả các lớp' ? filterClass : 'Tất cả',
-        matrix: {
-          nhanBiet: nhanBietCount,
-          thongHieu: thongHieuCount,
-          vanDung: vanDungCount,
-          vanDungCao: 0,
-        },
-        questions: mappedQuestions,
-        teacherId: activeTeacherProfile.id,
-        teacherName: activeTeacherProfile.name,
-        teacherEmail: activeTeacherProfile.email,
-        createdBy: activeTeacherProfile.id,
-        authorName: activeTeacherProfile.name,
-        createdAt: new Date().toLocaleDateString('vi-VN'),
-        isShuffled: false,
-        status: 'published',
-        authorType: 'my',
-        submissionsCount: 0,
-        totalStudents: 35,
+        topic: pkg.config.chuDeKienThuc.split('\n')[0] || pkg.config.thoiDiemKiemTra,
+        level,
+        type: qType,
+        content: q.noiDungCauHoi,
+        options: qType === 'multiple_choice' ? q.luaChon : undefined,
+        matchingPairs,
+        correctAnswer: normalizedCorrect,
+        explanation: q.huongDanCham,
+        points: q.diem,
       };
+    });
 
-      onSaveExam(newExam);
+    const nhanBietCount = mappedQuestions.filter((q) => q.level === 'nhan_biet').length;
+    const thongHieuCount = mappedQuestions.filter((q) => q.level === 'thong_hieu').length;
+    const vanDungCount = mappedQuestions.filter((q) => q.level === 'van_dung').length;
+
+    const rootId = `ex-aimat-${Date.now()}`;
+    return {
+      id: rootId,
+      originalExamId: rootId,
+      title:
+        customTitle ||
+        `Đề kiểm tra ${pkg.config.thoiDiemKiemTra} - Môn ${pkg.config.monHoc} (${gradeLabel})`,
+      subject: pkg.config.monHoc,
+      grade: gradeLabel,
+      durationMinutes: pkg.config.thoiGianLamBai,
+      examType: resolvedExamType,
+      targetClass: filterClass !== 'Tất cả các lớp' ? filterClass : 'Tất cả',
+      matrix: {
+        nhanBiet: nhanBietCount,
+        thongHieu: thongHieuCount,
+        vanDung: vanDungCount,
+        vanDungCao: 0,
+      },
+      questions: mappedQuestions,
+      teacherId: activeTeacherProfile.id,
+      teacherName: activeTeacherProfile.name,
+      teacherEmail: activeTeacherProfile.email,
+      createdBy: activeTeacherProfile.id,
+      authorName: activeTeacherProfile.name,
+      createdAt: new Date().toLocaleDateString('vi-VN'),
+      isShuffled: false,
+      status: 'published',
+      authorType: 'my',
+      submissionsCount: 0,
+      totalStudents: 35,
+    };
+  };
+
+  const handleSaveAIMatrixExamToSystem = async (
+    pkg: GeneratedAIExamPackage,
+    editingId?: string | null
+  ) => {
+    try {
+      const recordId = editingId || `aimat-${Date.now()}`;
+      const recordTitle = `Đề kiểm tra ${pkg.config.thoiDiemKiemTra} - Môn ${pkg.config.monHoc} (Khối ${pkg.config.khoiLop})`;
+
+      const savedRecord = await saveAIMatrixPackage(recordId, pkg, recordTitle);
+      setAiMatrixRecordsMap((prev) => ({
+        ...prev,
+        [savedRecord.id]: savedRecord,
+      }));
+
       setSelectedExam(null);
       setActiveTab('list');
-      setCurrentPage(1);
+      setMainSectionTab('ai_matrix_repo');
       setIsAIMatrixModalOpen(false);
+      setEditingAIMatrixPkg(null);
+      setEditingAIMatrixId(null);
+
       showToast(
-        `Đã lưu "${newExam.title}" (${mappedQuestions.length} câu – 10,0 điểm) vào danh sách đề kiểm tra!`,
+        'Đã lưu bộ Hồ sơ Ma trận, Bản đặc tả & Đề kiểm tra vào Tab Kho Hồ Sơ Ma Trận & Đề AI!',
         'success'
       );
     } catch (err) {
-      console.error('Lỗi khi lưu đề ma trận AI vào hệ thống:', err);
-      showToast('Không thể lưu đề kiểm tra vào hệ thống. Vui lòng thử lại!', 'error');
+      console.error('Lỗi khi lưu hồ sơ ma trận AI vào hệ thống:', err);
+      showToast('Không thể lưu bộ Hồ sơ Ma trận & Đề kiểm tra. Vui lòng thử lại!', 'error');
+    }
+  };
+
+  const handleOpenCreateAIMatrixModal = () => {
+    setEditingAIMatrixPkg(null);
+    setEditingAIMatrixId(null);
+    setIsAIMatrixModalOpen(true);
+  };
+
+  const handleViewOrEditAIMatrixRecord = (record: SavedAIMatrixExamRecord) => {
+    setEditingAIMatrixPkg(record.packageData);
+    setEditingAIMatrixId(record.id);
+    setIsAIMatrixModalOpen(true);
+  };
+
+  const handleExportAIMatrixRecordWord = async (record: SavedAIMatrixExamRecord) => {
+    if (!record?.packageData) return;
+    setExportingMatrixRecordId(record.id);
+    try {
+      await exportAIExamToWord(record.packageData);
+      showToast(`Đã xuất file Word (.docx) 4 phần cho "${record.title}"!`, 'success');
+    } catch (err) {
+      console.error('Lỗi xuất Word bộ hồ sơ Ma trận AI:', err);
+      showToast('Không thể xuất file Word (.docx). Vui lòng thử lại!', 'error');
+    } finally {
+      setExportingMatrixRecordId(null);
+    }
+  };
+
+  const handlePushAIMatrixRecordToOnlineExam = (record: SavedAIMatrixExamRecord) => {
+    try {
+      const newOnlineExam = buildOnlineExamPaperFromAIMatrixPkg(
+        record.packageData,
+        record.title
+      );
+      onSaveExam(newOnlineExam);
+      setSelectedExam(null);
+      setActiveTab('list');
+      setMainSectionTab('online_exams');
+      setCurrentPage(1);
+      showToast(
+        `Đã đẩy "${newOnlineExam.title}" (${newOnlineExam.questions.length} câu) sang Tab Đề Kiểm Tra & Thi Trực Tuyến để giao cho lớp!`,
+        'success'
+      );
+    } catch (err) {
+      console.error('Lỗi đẩy đề sang Giao thi trực tuyến:', err);
+      showToast('Không thể đẩy bộ đề sang danh sách Giao thi trực tuyến!', 'error');
+    }
+  };
+
+  const handleConfirmDeleteAIMatrixRecord = async () => {
+    if (!deletingMatrixRecord) return;
+    const targetId = deletingMatrixRecord.id;
+    const targetTitle = deletingMatrixRecord.title;
+    try {
+      await deleteAIMatrixPackage(targetId);
+      setAiMatrixRecordsMap((prev) => {
+        const next = { ...prev };
+        delete next[targetId];
+        return next;
+      });
+      setDeletingMatrixRecord(null);
+      showToast(`Đã xóa bộ hồ sơ "${targetTitle}" khỏi Kho Hồ Sơ Ma Trận & Đề AI!`, 'success');
+    } catch (err) {
+      console.error('Lỗi khi xóa bộ hồ sơ Ma trận AI:', err);
+      showToast('Không thể xóa bộ hồ sơ. Vui lòng thử lại!', 'error');
     }
   };
 
@@ -3177,8 +3352,55 @@ return (
         />
       </div>
 
-      {/* VIEW: Exam List */}
+      {/* Thanh chuyển đổi 2 Tab lớn ngay phía trên khu vực danh sách */}
       {activeTab === 'list' && (
+        <div className="bg-white p-2 rounded-2xl border border-slate-200/90 shadow-xs flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setMainSectionTab('online_exams')}
+            className={`flex-1 py-3 px-4 rounded-xl text-xs sm:text-sm font-extrabold transition-all flex items-center justify-center gap-2.5 cursor-pointer ${
+              mainSectionTab === 'online_exams'
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/20'
+                : 'bg-slate-50 hover:bg-slate-100 text-slate-700'
+            }`}
+          >
+            <span>🖥️ Đề Kiểm Tra &amp; Thi Trực Tuyến</span>
+            <span
+              className={`px-2.5 py-0.5 rounded-full text-xs font-black ${
+                mainSectionTab === 'online_exams'
+                  ? 'bg-white/20 text-white'
+                  : 'bg-indigo-100 text-indigo-700'
+              }`}
+            >
+              {normalizedExams.length}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setMainSectionTab('ai_matrix_repo')}
+            className={`flex-1 py-3 px-4 rounded-xl text-xs sm:text-sm font-extrabold transition-all flex items-center justify-center gap-2.5 cursor-pointer ${
+              mainSectionTab === 'ai_matrix_repo'
+                ? 'bg-gradient-to-r from-teal-600 to-emerald-600 text-white shadow-md shadow-emerald-500/20'
+                : 'bg-slate-50 hover:bg-slate-100 text-slate-700'
+            }`}
+          >
+            <span>📑 Kho Hồ Sơ Ma Trận &amp; Đề AI (Thông tư 27)</span>
+            <span
+              className={`px-2.5 py-0.5 rounded-full text-xs font-black ${
+                mainSectionTab === 'ai_matrix_repo'
+                  ? 'bg-white/20 text-white'
+                  : 'bg-emerald-100 text-emerald-700'
+              }`}
+            >
+              {savedMatrixRecordsList.length}
+            </span>
+          </button>
+        </div>
+      )}
+
+      {/* VIEW TAB 1: Đề Kiểm Tra & Thi Trực Tuyến */}
+      {activeTab === 'list' && mainSectionTab === 'online_exams' && (
         <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs flex flex-col">
           {/* 3 Resource Tabs & Action Buttons Bar */}
           <div className="p-4 border-b border-slate-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
@@ -3228,7 +3450,7 @@ return (
                       titleContext: `Danh mục đề kiểm tra đang lọc (${filterGrade} • ${filterSubject} • ${filterType})`,
                     })
                   }
-                  className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-md shadow-sky-200/50 flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
+                  className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-md shadow-sky-200/50 flex items-center gap-1.5 transition-all cursor-pointer shrink-0 whitespace-nowrap"
                   title="Xuất danh mục đề kiểm tra đang lọc ra file Word (.docx) kèm Mã QR và tải ảnh QR"
                 >
                   <QrCode className="w-4 h-4" />
@@ -3236,18 +3458,8 @@ return (
                 </button>
 
                 <button
-                  type="button"
-                  onClick={() => setIsAIMatrixModalOpen(true)}
-                  className="px-4 py-2 bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-600 hover:to-emerald-700 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-md shadow-emerald-200/60 flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
-                  title="Tạo Ma trận, Bản đặc tả & Đề kiểm tra định kì bằng AI chuẩn Thông tư 27"
-                >
-                  <Sparkles className="w-4 h-4" />
-                  <span>✨ Ma trận đề bằng AI</span>
-                </button>
-
-                <button
                   onClick={() => setIsBankExamModalOpen(true)}
-                  className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-md shadow-amber-200/50 flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
+                  className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-md shadow-amber-200/50 flex items-center gap-1.5 transition-all cursor-pointer shrink-0 whitespace-nowrap"
                 >
                   <Database className="w-4 h-4" />
                   <span>Chọn từ Ngân hàng câu hỏi</span>
@@ -3255,7 +3467,7 @@ return (
 
                 <button
                   onClick={() => setIsManualExamModalOpen(true)}
-                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-md shadow-indigo-200/50 flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-md shadow-indigo-200/50 flex items-center gap-1.5 transition-all cursor-pointer shrink-0 whitespace-nowrap"
                 >
                   <Plus className="w-4 h-4" />
                   <span>Tạo câu hỏi thủ công</span>
@@ -3745,6 +3957,332 @@ return (
                 Tiếp theo
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* VIEW TAB 2: 📑 Kho Hồ Sơ Ma Trận & Đề AI (Thông tư 27) */}
+      {activeTab === 'list' && mainSectionTab === 'ai_matrix_repo' && (
+        <div className="bg-white rounded-2xl border border-slate-200/80 shadow-xs flex flex-col overflow-hidden">
+          {/* Thanh bộ lọc & công cụ phía trên */}
+          <div className="p-4 sm:p-5 border-b border-slate-200 bg-gradient-to-r from-teal-50/50 via-white to-emerald-50/40 space-y-4">
+            <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm sm:text-base font-extrabold text-slate-900 flex items-center gap-2">
+                  <span>📑 Kho Hồ Sơ Ma Trận, Bản Đặc Tả &amp; Đề Kiểm Tra AI (Thông tư 27/2020/TT-BGDĐT)</span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Lưu trữ trọn bộ 4 thành phần: Ma trận 17 cột • Bản đặc tả chi tiết • Đề kiểm tra chính thức • Đáp án &amp; Hướng dẫn chấm (Thang điểm 10,0)
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setExamExportModalState({
+                      isOpen: true,
+                      exams: filteredMatrixRecords.map(convertAIMatrixRecordToCatalogExam),
+                      titleContext: `Danh mục Hồ sơ Ma trận & Đề AI đang lọc (${matrixFilterGrade} • ${matrixFilterSubject} • ${matrixFilterPeriod})`,
+                    })
+                  }
+                  className="px-4 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs sm:text-sm font-extrabold shadow-sm flex items-center justify-center gap-2 transition-all cursor-pointer shrink-0"
+                  title="Xuất danh mục bộ hồ sơ Ma trận & Đề AI đang lọc ra file Word (.docx) 5 cột kèm Mã QR và tải ảnh QR"
+                >
+                  <QrCode className="w-4 h-4" />
+                  <span>Xuất danh mục &amp; Mã QR</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleOpenCreateAIMatrixModal}
+                  className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white text-xs sm:text-sm font-extrabold shadow-md shadow-emerald-200/70 flex items-center justify-center gap-2 transition-all cursor-pointer shrink-0"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  <span>✨ Tạo Ma Trận &amp; Đề Bằng AI</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3">
+              {/* Ô tìm kiếm theo tên đề / chủ đề */}
+              <div className="lg:col-span-5">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                  Tìm kiếm theo tên đề / chủ đề
+                </label>
+                <input
+                  type="text"
+                  value={matrixSearchQuery}
+                  onChange={(e) => setMatrixSearchQuery(e.target.value)}
+                  placeholder="Nhập tên đề, chủ đề mạch kiến thức hoặc bộ sách..."
+                  className="w-full px-3.5 py-2 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-800 outline-none focus:border-teal-500"
+                />
+              </div>
+
+              {/* Dropdown lọc Khối lớp */}
+              <div className="lg:col-span-2">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                  Khối lớp
+                </label>
+                <select
+                  value={matrixFilterGrade}
+                  onChange={(e) => setMatrixFilterGrade(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-800 outline-none focus:border-teal-500 cursor-pointer"
+                >
+                  <option value="Tất cả các khối">Tất cả các khối</option>
+                  <option value="Khối 1">Khối 1</option>
+                  <option value="Khối 2">Khối 2</option>
+                  <option value="Khối 3">Khối 3</option>
+                  <option value="Khối 4">Khối 4</option>
+                  <option value="Khối 5">Khối 5</option>
+                </select>
+              </div>
+
+              {/* Dropdown lọc Môn học chấm điểm */}
+              <div className="lg:col-span-3">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                  Môn học chấm điểm (TT27)
+                </label>
+                <select
+                  value={matrixFilterSubject}
+                  onChange={(e) => setMatrixFilterSubject(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-800 outline-none focus:border-teal-500 cursor-pointer"
+                >
+                  <option value="Tất cả các môn">Tất cả các môn chấm điểm</option>
+                  {(
+                    [
+                      'Toán',
+                      'Tiếng Việt',
+                      'Tiếng Anh',
+                      'Tin học',
+                      'Công nghệ',
+                      'Khoa học',
+                      'Lịch sử và Địa lí',
+                    ] as MonHocChamDiem[]
+                  ).map((subj) => (
+                    <option key={subj} value={subj}>
+                      {subj}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Dropdown lọc Kỳ kiểm tra */}
+              <div className="lg:col-span-2">
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                  Kỳ kiểm tra
+                </label>
+                <select
+                  value={matrixFilterPeriod}
+                  onChange={(e) => setMatrixFilterPeriod(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-800 outline-none focus:border-teal-500 cursor-pointer"
+                >
+                  <option value="Tất cả kỳ">Tất cả kỳ</option>
+                  {(
+                    [
+                      'Giữa học kì I',
+                      'Cuối học kì I',
+                      'Giữa học kì II',
+                      'Cuối năm học',
+                    ] as ThoiDiemKiemTra[]
+                  ).map((period) => (
+                    <option key={period} value={period}>
+                      {period}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Bảng danh sách các bộ Hồ sơ Ma trận & Đề AI đã lưu */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200 text-[11px] font-extrabold text-slate-600 uppercase tracking-wider">
+                  <th className="py-3.5 px-4">Tên bộ đề &amp; Chủ đề</th>
+                  <th className="py-3.5 px-4">Môn học &amp; Khối lớp</th>
+                  <th className="py-3.5 px-4">Kỳ kiểm tra &amp; Thời lượng</th>
+                  <th className="py-3.5 px-4">Cấu trúc (TN/TL &amp; Tỷ lệ Mức 1-2-3)</th>
+                  <th className="py-3.5 px-4">Ngày lưu</th>
+                  <th className="py-3.5 px-4 text-right">Thao tác</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 text-xs">
+                {filteredMatrixRecords.length > 0 ? (
+                  filteredMatrixRecords.map((rec) => {
+                    const cfg = rec.packageData?.config;
+                    const questions = rec.packageData?.questions || [];
+                    const tnCount = questions.filter((q) => q.phan === 'TRAC_NGHIEM').length;
+                    const tlCount = questions.filter((q) => q.phan === 'TU_LUAN').length;
+                    const formattedDate = rec.createdAt
+                      ? new Date(rec.createdAt).toLocaleString('vi-VN', {
+                          day: '2-digit',
+                          month: '2-digit',
+                          year: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })
+                      : 'Vừa lưu';
+
+                    return (
+                      <tr
+                        key={rec.id}
+                        className="hover:bg-teal-50/30 transition-colors align-top"
+                      >
+                        {/* Cột 1: Tên bộ đề & Chủ đề */}
+                        <td className="py-4 px-4 max-w-md">
+                          <div className="font-extrabold text-slate-900 text-sm leading-snug">
+                            {rec.title}
+                          </div>
+                          {cfg?.boSachGiaoKhoa && (
+                            <div className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 text-[11px] font-semibold">
+                              📘 Bộ sách: {cfg.boSachGiaoKhoa}
+                            </div>
+                          )}
+                          {cfg?.chuDeKienThuc && (
+                            <div className="mt-1.5 text-[11px] text-slate-500 line-clamp-2 leading-relaxed">
+                              <strong className="text-slate-700">Mạch kiến thức:</strong>{' '}
+                              {cfg.chuDeKienThuc.split('\n').filter(Boolean).join(' • ')}
+                            </div>
+                          )}
+                        </td>
+
+                        {/* Cột 2: Môn học & Khối lớp */}
+                        <td className="py-4 px-4 whitespace-nowrap">
+                          <div className="flex flex-col items-start gap-1.5">
+                            <span className="px-2.5 py-1 rounded-lg bg-teal-50 border border-teal-200 text-teal-800 font-extrabold text-xs">
+                              {cfg?.monHoc || 'Môn chấm điểm'}
+                            </span>
+                            <span className="px-2.5 py-0.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 font-bold text-[11px]">
+                              Khối {cfg?.khoiLop || '5'}
+                            </span>
+                          </div>
+                        </td>
+
+                        {/* Cột 3: Kỳ kiểm tra & Thời lượng */}
+                        <td className="py-4 px-4 whitespace-nowrap">
+                          <div className="font-extrabold text-indigo-900">
+                            {cfg?.thoiDiemKiemTra || 'Định kì'}
+                          </div>
+                          <div className="mt-1 inline-flex items-center gap-1 text-slate-600 font-semibold text-[11px]">
+                            <Clock className="w-3.5 h-3.5 text-orange-500" />
+                            <span>{cfg?.thoiGianLamBai || 35} phút • Thang điểm 10,0</span>
+                          </div>
+                        </td>
+
+                        {/* Cột 4: Cấu trúc (Số câu TN / TL & Tỷ lệ Mức 1-2-3) */}
+                        <td className="py-4 px-4">
+                          <div className="font-extrabold text-slate-800">
+                            Tổng {questions.length} câu ({tnCount} TN • {tlCount} TL)
+                          </div>
+                          <div className="mt-1.5 flex flex-wrap items-center gap-1 text-[11px] font-bold">
+                            <span className="px-2 py-0.5 rounded bg-sky-50 text-sky-800 border border-sky-200">
+                              Mức 1: {cfg?.muc1_NhanBiet ?? 40}%
+                            </span>
+                            <span className="px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200">
+                              Mức 2: {cfg?.muc2_KetNoi ?? 40}%
+                            </span>
+                            <span className="px-2 py-0.5 rounded bg-purple-50 text-purple-800 border border-purple-200">
+                              Mức 3: {cfg?.muc3_VanDung ?? 20}%
+                            </span>
+                          </div>
+                        </td>
+
+                        {/* Cột 5: Ngày lưu */}
+                        <td className="py-4 px-4 whitespace-nowrap text-slate-600 font-semibold">
+                          {formattedDate}
+                        </td>
+
+                        {/* Cột 6: Các nút thao tác */}
+                        <td className="py-4 px-4 text-right">
+                          <div className="flex flex-wrap items-center justify-end gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExamExportModalState({
+                                  isOpen: true,
+                                  exams: [convertAIMatrixRecordToCatalogExam(rec)],
+                                  titleContext: `Phiếu đề & Mã QR: ${rec.title}`,
+                                })
+                              }
+                              className="px-2.5 py-1.5 rounded-xl bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 font-extrabold text-[11px] inline-flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
+                              title="Xuất phiếu Word (.docx) 5 cột kèm Mã QR & Tải ảnh Mã QR cho bộ đề này"
+                            >
+                              <QrCode className="w-3.5 h-3.5" />
+                              <span>Mã QR</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleViewOrEditAIMatrixRecord(rec)}
+                              className="px-2.5 py-1.5 rounded-xl bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 font-extrabold text-[11px] transition-colors cursor-pointer whitespace-nowrap"
+                              title="Mở cửa sổ 4 Tab để xem lại Ma trận 17 cột, Bản đặc tả, sửa câu hỏi hoặc đáp án"
+                            >
+                              👁️ Xem &amp; Sửa (4 Tab)
+                            </button>
+
+                            <button
+                              type="button"
+                              disabled={exportingMatrixRecordId === rec.id}
+                              onClick={() => handleExportAIMatrixRecordWord(rec)}
+                              className="px-2.5 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 font-extrabold text-[11px] transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                              title="Tải ngay file Word (.docx) 4 phần chuẩn Thông tư 27"
+                            >
+                              {exportingMatrixRecordId === rec.id
+                                ? '⏳ Đang xuất...'
+                                : '📥 Xuất Word (.docx)'}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handlePushAIMatrixRecordToOnlineExam(rec)}
+                              className="px-2.5 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 font-extrabold text-[11px] transition-colors cursor-pointer whitespace-nowrap"
+                              title="Chuyển bộ đề này sang Tab Đề Kiểm Tra & Thi Trực Tuyến để giao cho học sinh làm bài"
+                            >
+                              🚀 Đẩy sang Giao thi
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => setDeletingMatrixRecord(rec)}
+                              className="px-2.5 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-extrabold text-[11px] transition-colors cursor-pointer whitespace-nowrap"
+                              title="Xóa bộ hồ sơ khỏi kho"
+                            >
+                              🗑️ Xóa
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={6} className="px-6 py-14 text-center">
+                      <div className="max-w-md mx-auto space-y-3">
+                        <div className="w-12 h-12 rounded-2xl bg-teal-50 text-teal-600 flex items-center justify-center mx-auto">
+                          <Sparkles className="w-6 h-6" />
+                        </div>
+                        <div className="text-sm font-extrabold text-slate-800">
+                          Chưa có bộ Hồ sơ Ma trận &amp; Đề kiểm tra AI nào trong kho
+                        </div>
+                        <p className="text-xs text-slate-500 leading-relaxed">
+                          Thầy/Cô hãy bấm nút <strong>"✨ Tạo Ma Trận &amp; Đề Bằng AI"</strong> để thiết lập Ma trận 17 cột, Bản đặc tả, Đề kiểm tra và Hướng dẫn chấm chuẩn Thông tư 27 rồi bấm <strong>"Lưu vào hệ thống"</strong>.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={handleOpenCreateAIMatrixModal}
+                          className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-extrabold shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Sparkles className="w-4 h-4" />
+                          <span>✨ Tạo Ma Trận &amp; Đề Bằng AI ngay</span>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
@@ -6637,9 +7175,62 @@ return (
       {/* Cửa sổ Tạo Ma Trận, Bản Đặc Tả & Đề Kiểm Tra Định Kì Bằng AI (Thông tư 27) */}
       <AIMatrixExamModal
         isOpen={isAIMatrixModalOpen}
-        onClose={() => setIsAIMatrixModalOpen(false)}
+        onClose={() => {
+          setIsAIMatrixModalOpen(false);
+          setEditingAIMatrixPkg(null);
+          setEditingAIMatrixId(null);
+        }}
         onSaveToSystem={handleSaveAIMatrixExamToSystem}
+        initialPackage={editingAIMatrixPkg}
+        editingExamId={editingAIMatrixId}
       />
+
+      {/* Hộp thoại xác nhận xóa bộ Hồ sơ Ma trận & Đề AI */}
+      {deletingMatrixRecord && (
+        <div className="fixed inset-0 z-[90] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-rose-50 border border-rose-200 text-rose-600 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="text-base font-extrabold text-slate-900">
+                  Xác nhận xóa Hồ sơ Ma trận &amp; Đề AI
+                </h4>
+                <p className="text-xs text-slate-500">
+                  Thao tác này sẽ xóa bộ hồ sơ khỏi Kho Hồ Sơ Ma Trận &amp; Đề AI.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 text-xs space-y-1">
+              <div className="font-extrabold text-slate-900">{deletingMatrixRecord.title}</div>
+              <div className="text-slate-500">
+                Môn {deletingMatrixRecord.packageData?.config?.monHoc} • Khối{' '}
+                {deletingMatrixRecord.packageData?.config?.khoiLop} •{' '}
+                {deletingMatrixRecord.packageData?.config?.thoiDiemKiemTra}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setDeletingMatrixRecord(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold cursor-pointer"
+              >
+                Hủy
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteAIMatrixRecord}
+                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-extrabold shadow-xs cursor-pointer"
+              >
+                🗑️ Xác nhận xóa
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

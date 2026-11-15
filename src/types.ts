@@ -8,7 +8,8 @@ export type ActiveModule =
   | 'question_bank'
   | 'interactive_games'
   | 'user_management'
-  | 'hoc_ba_so';
+  | 'hoc_ba_so'
+  | 'digital_resource_portal';
 
 export type ModuleType = ActiveModule;
 

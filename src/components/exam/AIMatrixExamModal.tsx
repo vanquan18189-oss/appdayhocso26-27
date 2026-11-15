@@ -34,7 +34,9 @@ import { exportAIExamToWord } from '../../utils/aiExamWordExport';
 export interface AIMatrixExamModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSaveToSystem?: (pkg: GeneratedAIExamPackage) => void;
+  onSaveToSystem?: (pkg: GeneratedAIExamPackage, editingExamId?: string | null) => void;
+  initialPackage?: GeneratedAIExamPackage | null;
+  editingExamId?: string | null;
 }
 
 type ResultTabKey = 'matrix' | 'spec' | 'exam' | 'answers';
@@ -137,6 +139,8 @@ export const AIMatrixExamModal: React.FC<AIMatrixExamModalProps> = ({
   isOpen,
   onClose,
   onSaveToSystem,
+  initialPackage = null,
+  editingExamId = null,
 }) => {
   const [khoiLop, setKhoiLop] = useState<KhoiLopTieuHoc>('5');
   const [monHoc, setMonHoc] = useState<MonHocChamDiem>('Tin học');
@@ -173,15 +177,69 @@ export const AIMatrixExamModal: React.FC<AIMatrixExamModalProps> = ({
     [khoiLop]
   );
 
-  // Tự động lọc môn học hợp lệ khi đổi Khối lớp và cập nhật gợi ý mạch kiến thức
+  // Khi mở Modal với `initialPackage` (xem lại đề đã lưu), tự động nạp toàn bộ cấu hình & 4 Tab
   useEffect(() => {
-    let nextSubject = monHoc;
-    if (!availableSubjects.includes(monHoc)) {
-      nextSubject = availableSubjects[0];
+    if (!isOpen) return;
+
+    setErrorMessage(null);
+    setEditingQuestionIdx(null);
+
+    if (initialPackage && initialPackage.config) {
+      const cfg = initialPackage.config;
+      const validGrade: KhoiLopTieuHoc =
+        cfg.khoiLop && SUBJECTS_BY_GRADE[cfg.khoiLop] ? cfg.khoiLop : '5';
+      const gradeSubjects = SUBJECTS_BY_GRADE[validGrade] || ['Toán', 'Tiếng Việt'];
+      const validSubject: MonHocChamDiem = gradeSubjects.includes(cfg.monHoc)
+        ? cfg.monHoc
+        : gradeSubjects[0];
+
+      setKhoiLop(validGrade);
+      setMonHoc(validSubject);
+      setThoiDiemKiemTra(cfg.thoiDiemKiemTra || 'Giữa học kì I');
+      setThoiGianLamBai(cfg.thoiGianLamBai === 40 ? 40 : 35);
+      setBoSachGiaoKhoa(cfg.boSachGiaoKhoa || 'Kết nối tri thức với cuộc sống');
+      setSoCauTracNghiem(
+        typeof cfg.soCauTracNghiem === 'number'
+          ? cfg.soCauTracNghiem
+          : (initialPackage.questions || []).filter((q) => q.phan === 'TRAC_NGHIEM').length
+      );
+      setSoCauTuLuan(
+        typeof cfg.soCauTuLuan === 'number'
+          ? cfg.soCauTuLuan
+          : (initialPackage.questions || []).filter((q) => q.phan === 'TU_LUAN').length
+      );
+      setDangCauHoiTracNghiem(
+        Array.isArray(cfg.dangCauHoiTracNghiem) && cfg.dangCauHoiTracNghiem.length > 0
+          ? cfg.dangCauHoiTracNghiem
+          : ['multiple_choice']
+      );
+      setChuDeKienThuc(
+        cfg.chuDeKienThuc || getSuggestedTopics(validSubject, validGrade)
+      );
+      setMuc1_NhanBiet(typeof cfg.muc1_NhanBiet === 'number' ? cfg.muc1_NhanBiet : 40);
+      setMuc2_KetNoi(typeof cfg.muc2_KetNoi === 'number' ? cfg.muc2_KetNoi : 40);
+      setMuc3_VanDung(typeof cfg.muc3_VanDung === 'number' ? cfg.muc3_VanDung : 20);
+      setGhiChuThem(cfg.ghiChuThem || '');
+
+      setGeneratedPkg(initialPackage);
+      setActiveTab('matrix');
+      setStatusMessage(
+        'Đã nạp sẵn hồ sơ Ma trận, Bản đặc tả, Đề kiểm tra và Hướng dẫn chấm đã lưu. Thầy/Cô có thể xem, chỉnh sửa hoặc tải file Word (.docx).'
+      );
+    } else {
+      setStatusMessage(null);
+    }
+  }, [isOpen, initialPackage, editingExamId]);
+
+  const handleGradeChange = (nextKhoiLop: KhoiLopTieuHoc) => {
+    setKhoiLop(nextKhoiLop);
+    const nextAllowed = SUBJECTS_BY_GRADE[nextKhoiLop] || ['Toán', 'Tiếng Việt'];
+    const nextSubject = nextAllowed.includes(monHoc) ? monHoc : nextAllowed[0];
+    if (nextSubject !== monHoc) {
       setMonHoc(nextSubject);
     }
-    setChuDeKienThuc(getSuggestedTopics(nextSubject, khoiLop));
-  }, [khoiLop, availableSubjects]);
+    setChuDeKienThuc(getSuggestedTopics(nextSubject, nextKhoiLop));
+  };
 
   const handleSubjectChange = (nextMonHoc: MonHocChamDiem) => {
     setMonHoc(nextMonHoc);
@@ -275,7 +333,7 @@ export const AIMatrixExamModal: React.FC<AIMatrixExamModalProps> = ({
 
   const handleSavePkgToSystem = () => {
     if (!generatedPkg || !onSaveToSystem) return;
-    onSaveToSystem(generatedPkg);
+    onSaveToSystem(generatedPkg, editingExamId);
     setStatusMessage('Đã lưu đề kiểm tra kèm ma trận vào hệ thống thành công!');
   };
 
@@ -405,7 +463,7 @@ export const AIMatrixExamModal: React.FC<AIMatrixExamModalProps> = ({
                 </label>
                 <select
                   value={khoiLop}
-                  onChange={(e) => setKhoiLop(e.target.value as KhoiLopTieuHoc)}
+                  onChange={(e) => handleGradeChange(e.target.value as KhoiLopTieuHoc)}
                   className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-slate-50/70 focus:bg-white focus:border-teal-500 text-xs sm:text-sm font-bold text-slate-800 outline-none cursor-pointer"
                 >
                   {KHOI_LOP_OPTIONS.map((opt) => (

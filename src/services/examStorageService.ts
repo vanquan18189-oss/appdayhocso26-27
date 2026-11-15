@@ -3,6 +3,9 @@ import { collection, doc, getDocs, getDoc, getDocFromServer } from 'firebase/fir
 import { ensureAnonymousGuestAuth } from './lessonStorageService';
 import { trackedSetDoc, trackedDeleteDoc, trackedWriteBatch, extractFirestoreErrorDetails } from './firestoreWriteTracker';
 import { ExamPaper } from '../types';
+import { SavedAIMatrixExamRecord } from '../types/aiMatrixExam';
+import { getCachedAIMatrixPackagesSync } from './aiMatrixExamService';
+import { convertAIMatrixRecordToCatalogExam } from '../utils/examExportUtils';
 import { removeUndefined } from './teacherStorageService';
 import { waitForWriteConfirmation, updateCollectionCacheStatus } from './firestoreWriteVerificationService';
 import { normalizeClassKey } from './studentStorageService';
@@ -617,6 +620,27 @@ export async function fetchPublicExamById(examId: string): Promise<PublicExamFet
           return { status: 'ok', exam };
         }
       }
+
+      // Thử tìm trong kho Hồ sơ Ma trận & Đề AI (collection ai_matrix_exams)
+      const aiMatrixRef = doc(db, 'ai_matrix_exams', cleanId);
+      let aiMatrixSnap;
+      try {
+        aiMatrixSnap = await getDocFromServer(aiMatrixRef);
+      } catch {
+        aiMatrixSnap = await getDoc(aiMatrixRef);
+      }
+      if (aiMatrixSnap && aiMatrixSnap.exists()) {
+        const aiRec = {
+          id: aiMatrixSnap.id,
+          ...aiMatrixSnap.data(),
+        } as SavedAIMatrixExamRecord;
+        if (aiRec.packageData) {
+          return {
+            status: 'ok',
+            exam: convertAIMatrixRecordToCatalogExam(aiRec),
+          };
+        }
+      }
     } catch (err: any) {
       console.warn('Lỗi tải đề kiểm tra từ Firestore, chuyển sang dự phòng cache:', err);
       const cached = getRawCachedExams().find(
@@ -624,6 +648,13 @@ export async function fetchPublicExamById(examId: string): Promise<PublicExamFet
       );
       if (cached) {
         return { status: 'ok', exam: cached };
+      }
+      const cachedMatrix = getCachedAIMatrixPackagesSync()[cleanId];
+      if (cachedMatrix) {
+        return {
+          status: 'ok',
+          exam: convertAIMatrixRecordToCatalogExam(cachedMatrix),
+        };
       }
       return {
         status: 'error',
@@ -637,6 +668,14 @@ export async function fetchPublicExamById(examId: string): Promise<PublicExamFet
   );
   if (cached) {
     return { status: 'ok', exam: cached };
+  }
+
+  const cachedMatrix = getCachedAIMatrixPackagesSync()[cleanId];
+  if (cachedMatrix) {
+    return {
+      status: 'ok',
+      exam: convertAIMatrixRecordToCatalogExam(cachedMatrix),
+    };
   }
 
   return { status: 'not_found' };

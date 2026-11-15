@@ -344,6 +344,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
       roles: ['admin', 'teacher']
     },
     {
+      id: 'digital_resource_portal' as ActiveModule,
+      label: 'Kho Học Liệu Số',
+      shortLabel: 'Kho học liệu số',
+      icon: Sparkles,
+      description: 'PPT AI, Ma trận đề & Học liệu',
+      badge: 'AI',
+      roles: ['admin', 'teacher']
+    },
+    {
       id: 'user_management' as ActiveModule,
       label: 'Quản Lý Người Dùng',
       shortLabel: 'Người dùng',
@@ -901,7 +910,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           {/* Menu Section Title */}
           <div className="px-3 pt-2">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-indigo-300">
-              PHÂN HỆ CHỨC NĂNG (8 MODULES)
+              PHÂN HỆ CHỨC NĂNG ({visibleItems.length} MODULES)
             </div>
             <p className="text-[11px] text-slate-400 mt-0.5">
               Chọn phân hệ làm việc nhanh
@@ -1087,7 +1096,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             className="px-2.5 py-1.5 rounded-xl bg-[#334155] hover:bg-[#475569] text-white text-[11px] font-bold flex items-center gap-1 shrink-0 cursor-pointer"
           >
             <Menu className="w-3.5 h-3.5" />
-            <span>Menu (8)</span>
+            <span>Menu ({visibleItems.length})</span>
           </button>
         </div>
 
@@ -1124,7 +1133,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div className="relative w-[85vw] max-w-[320px] bg-[#1E293B] text-white h-full shadow-2xl flex flex-col justify-between p-4 z-10 overflow-y-auto animate-in slide-in-from-left duration-200">
             <div className="space-y-4">
               <div className="flex items-center justify-between pb-3 border-b border-[#334155]">
-                <span className="font-bold text-sm text-indigo-300">PHÂN HỆ CHỨC NĂNG (8)</span>
+                <span className="font-bold text-sm text-indigo-300">PHÂN HỆ CHỨC NĂNG ({visibleItems.length})</span>
                 <button
                   onClick={() => setIsMobileDrawerOpen(false)}
                   className="p-1.5 rounded-xl bg-[#334155] hover:bg-[#475569] text-white cursor-pointer"

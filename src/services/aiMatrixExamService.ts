@@ -1,3 +1,5 @@
+import { collection, deleteDoc, doc, getDoc, getDocs, setDoc } from 'firebase/firestore';
+import { db } from './firebase';
 import { callGeminiApi } from './geminiService';
 import {
   AIExamConfig,
@@ -8,9 +10,13 @@ import {
   MatrixRow,
   MucDoNhanThucTT27,
   PhanCauHoi,
+  SavedAIMatrixExamRecord,
   SpecificationRow,
   SUBJECTS_BY_GRADE,
 } from '../types/aiMatrixExam';
+
+export const AI_MATRIX_STORAGE_KEY = 'pk_truc_khang_ai_matrix_packages';
+export const AI_MATRIX_FIRESTORE_COLLECTION = 'ai_matrix_exams';
 
 const QUESTION_TYPE_LABEL_MAP: Record<DangCauHoiTracNghiem, HinhThucCauHoi> = {
   multiple_choice: 'Trắc nghiệm 4 lựa chọn',
@@ -646,3 +652,181 @@ YÊU CẦU KỸ THUẬT BẮT BUỘC:
   const parsed = parseJsonResponseSafely(rawResponseText);
   return normalizeAIExamPackage(parsed, config);
 }
+
+/**
+ * Loại bỏ các trường undefined đệ quy trước khi lưu lên Firestore
+ */
+function stripUndefinedDeep<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+/**
+ * Đọc danh sách gói Ma trận + Đặc tả AI từ localStorage (đồng bộ)
+ */
+export function getCachedAIMatrixPackagesSync(): Record<string, SavedAIMatrixExamRecord> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(AI_MATRIX_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, SavedAIMatrixExamRecord>;
+    }
+    return {};
+  } catch (err) {
+    console.warn('Không thể đọc bộ nhớ đệm gói Ma trận AI từ localStorage:', err);
+    return {};
+  }
+}
+
+/**
+ * Ghi danh sách gói Ma trận + Đặc tả AI vào localStorage
+ */
+function saveCachedAIMatrixPackagesSync(records: Record<string, SavedAIMatrixExamRecord>): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(AI_MATRIX_STORAGE_KEY, JSON.stringify(records));
+  } catch (err) {
+    console.warn('Không thể lưu bộ nhớ đệm gói Ma trận AI vào localStorage:', err);
+  }
+}
+
+/**
+ * Lưu gói Ma trận + Bản đặc tả AI gắn với ID đề kiểm tra (đồng bộ localStorage & Firestore collection `ai_matrix_exams`)
+ */
+export async function saveAIMatrixPackage(
+  examId: string,
+  pkg: GeneratedAIExamPackage,
+  title?: string
+): Promise<SavedAIMatrixExamRecord> {
+  const cleanId = String(examId || '').trim();
+  if (!cleanId) {
+    throw new Error('examId không hợp lệ khi lưu hồ sơ Ma trận & Bản đặc tả AI.');
+  }
+
+  const resolvedTitle =
+    (title && title.trim()) ||
+    `Đề kiểm tra ${pkg.config.thoiDiemKiemTra} - Môn ${pkg.config.monHoc} (Khối ${pkg.config.khoiLop})`;
+
+  const existingMap = getCachedAIMatrixPackagesSync();
+  const record: SavedAIMatrixExamRecord = stripUndefinedDeep({
+    id: cleanId,
+    title: resolvedTitle,
+    createdAt: existingMap[cleanId]?.createdAt || new Date().toISOString(),
+    packageData: pkg,
+  });
+
+  // 1. Lưu ngay vào localStorage
+  existingMap[cleanId] = record;
+  saveCachedAIMatrixPackagesSync(existingMap);
+
+  // 2. Đồng bộ lên Firestore collection `ai_matrix_exams`
+  if (db) {
+    try {
+      await setDoc(doc(db, AI_MATRIX_FIRESTORE_COLLECTION, cleanId), record, { merge: true });
+    } catch (err) {
+      console.warn(`Không thể đồng bộ gói Ma trận AI (${cleanId}) lên Firestore:`, err);
+    }
+  }
+
+  return record;
+}
+
+/**
+ * Truy xuất gói Ma trận + Bản đặc tả AI theo ID đề kiểm tra
+ */
+export async function getAIMatrixPackageByExamId(
+  examId: string
+): Promise<SavedAIMatrixExamRecord | null> {
+  const cleanId = String(examId || '').trim();
+  if (!cleanId) return null;
+
+  const localMap = getCachedAIMatrixPackagesSync();
+  if (localMap[cleanId]?.packageData) {
+    return localMap[cleanId];
+  }
+
+  if (db) {
+    try {
+      const snap = await getDoc(doc(db, AI_MATRIX_FIRESTORE_COLLECTION, cleanId));
+      if (snap.exists()) {
+        const data = snap.data() as SavedAIMatrixExamRecord;
+        if (data && data.packageData) {
+          const normalizedRecord: SavedAIMatrixExamRecord = {
+            id: data.id || cleanId,
+            title:
+              data.title ||
+              `Đề kiểm tra ${data.packageData.config?.thoiDiemKiemTra || ''} - Môn ${data.packageData.config?.monHoc || ''}`,
+            createdAt: data.createdAt || new Date().toISOString(),
+            packageData: data.packageData,
+          };
+          const updatedMap = getCachedAIMatrixPackagesSync();
+          updatedMap[cleanId] = normalizedRecord;
+          saveCachedAIMatrixPackagesSync(updatedMap);
+          return normalizedRecord;
+        }
+      }
+    } catch (err) {
+      console.warn(`Không thể tải gói Ma trận AI (${cleanId}) từ Firestore:`, err);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Lấy toàn bộ danh sách gói Ma trận + Bản đặc tả AI (hợp nhất Firestore `ai_matrix_exams` & `localStorage`)
+ */
+export async function getAllAIMatrixPackages(): Promise<Record<string, SavedAIMatrixExamRecord>> {
+  const mergedMap: Record<string, SavedAIMatrixExamRecord> = {
+    ...getCachedAIMatrixPackagesSync(),
+  };
+
+  if (db) {
+    try {
+      const snap = await getDocs(collection(db, AI_MATRIX_FIRESTORE_COLLECTION));
+      snap.forEach((docSnap) => {
+        const data = docSnap.data() as SavedAIMatrixExamRecord;
+        if (data && data.packageData) {
+          const id = data.id || docSnap.id;
+          mergedMap[id] = {
+            id,
+            title:
+              data.title ||
+              `Đề kiểm tra ${data.packageData.config?.thoiDiemKiemTra || ''} - Môn ${data.packageData.config?.monHoc || ''}`,
+            createdAt: data.createdAt || new Date().toISOString(),
+            packageData: data.packageData,
+          };
+        }
+      });
+      saveCachedAIMatrixPackagesSync(mergedMap);
+    } catch (err) {
+      console.warn('Không thể tải danh sách gói Ma trận AI từ Firestore:', err);
+    }
+  }
+
+  return mergedMap;
+}
+
+/**
+ * Xóa gói Ma trận + Bản đặc tả AI theo ID đề kiểm tra khỏi localStorage và Firestore
+ */
+export async function deleteAIMatrixPackage(examId: string): Promise<void> {
+  const cleanId = String(examId || '').trim();
+  if (!cleanId) return;
+
+  const existingMap = getCachedAIMatrixPackagesSync();
+  if (existingMap[cleanId]) {
+    delete existingMap[cleanId];
+    saveCachedAIMatrixPackagesSync(existingMap);
+  }
+
+  if (db) {
+    try {
+      await deleteDoc(doc(db, AI_MATRIX_FIRESTORE_COLLECTION, cleanId));
+    } catch (err) {
+      console.warn(`Không thể xóa gói Ma trận AI (${cleanId}) trên Firestore:`, err);
+    }
+  }
+}
+

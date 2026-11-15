@@ -114,6 +114,11 @@ service cloud.firestore {
       allow read, write: if !isAnonymousAuth();
     }
 
+    match /ai_matrix_exams/{examId} {
+      allow get: if true;
+      allow list, write: if !isAnonymousAuth();
+    }
+
     match /exam_progress/{progressId} {
       allow read, write: if !isAnonymousAuth();
     }

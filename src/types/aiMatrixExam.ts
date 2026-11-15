@@ -141,3 +141,11 @@ export interface GeneratedAIExamPackage {
   specificationRows: SpecificationRow[];
   questions: AIExamQuestion[];
 }
+
+export interface SavedAIMatrixExamRecord {
+  id: string;
+  title: string;
+  createdAt: string;
+  packageData: GeneratedAIExamPackage;
+}
+

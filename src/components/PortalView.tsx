@@ -26,6 +26,12 @@ import { APP_NAME, APP_FULL_TITLE } from '../config/appConfig';
 import { getStudentAvatarSource } from './common/AnimalAvatars';
 import { extractPublicRouteFromPath } from '../services/publicGuestService';
 import { PublicGuestRouter } from './PublicGuestRouter';
+import {
+  checkInitialSsoAutoLogin,
+  cleanSsoParamsFromUrl,
+  decodeUtf8Base64,
+  persistSsoTeacherSession,
+} from '../services/ssoAutoLoginService';
 
 interface PortalViewProps {
   onSelectPortal: (
@@ -303,6 +309,49 @@ export function PortalView({ onSelectPortal }: PortalViewProps) {
   const [teacherName, setTeacherName] = useState<string>('');
   const [authError, setAuthError] = useState<string | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(false);
+
+  // Tự động kiểm tra SSO ngay khi PortalView khởi tạo (dự phòng trường hợp truy cập qua URL hoặc iframe postMessage)
+  useEffect(() => {
+    const sso = checkInitialSsoAutoLogin();
+    if (sso && sso.authenticated) {
+      onSelectPortal(sso.role, 'Khối 3', 'Lớp 3A', {
+        email: sso.email,
+        name: sso.name,
+      });
+      return;
+    }
+
+    const handleSsoMessage = (event: MessageEvent) => {
+      const data = event?.data;
+      if (!data || typeof data !== 'object' || data.type !== 'PK_TRUC_KHANG_SSO_LOGIN') {
+        return;
+      }
+      const userObj = data.user && typeof data.user === 'object' ? data.user : {};
+      let email = String(userObj.email || data.email || '').trim();
+      let name = String(userObj.name || userObj.displayName || data.name || '').trim();
+      let role = String(userObj.role || data.role || '').trim();
+
+      if (!email && typeof data.ssoToken === 'string') {
+        const decoded = decodeUtf8Base64(data.ssoToken);
+        if (decoded) {
+          email = String(decoded.email || '').trim();
+          name = name || String(decoded.name || '').trim();
+          role = role || String(decoded.role || '').trim();
+        }
+      }
+
+      if (!email) return;
+      const res = persistSsoTeacherSession({ email, name, role });
+      cleanSsoParamsFromUrl();
+      onSelectPortal(res.role, 'Khối 3', 'Lớp 3A', {
+        email: res.email,
+        name: res.name,
+      });
+    };
+
+    window.addEventListener('message', handleSsoMessage);
+    return () => window.removeEventListener('message', handleSsoMessage);
+  }, [onSelectPortal]);
 
   const grades = useMemo(() => {
     const allGrades = ['Khối 1', 'Khối 2', 'Khối 3', 'Khối 4', 'Khối 5'];

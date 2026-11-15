@@ -169,16 +169,16 @@ export const ExamListExportModal: React.FC<ExamListExportModalProps> = ({
                         STT
                       </th>
                       <th className="border border-slate-500 px-3 py-2.5 text-left font-bold">
-                        Tiêu đề đề kiểm tra
+                        Tiêu đề bộ đề &amp; chủ đề
                       </th>
                       <th className="border border-slate-500 px-3 py-2.5 text-center font-bold w-40">
-                        Loại đề / Kỳ kiểm tra
+                        Kỳ kiểm tra / Loại đề
                       </th>
                       <th className="border border-slate-500 px-3 py-2.5 text-left font-bold">
-                        Đường dẫn đề kiểm tra
+                        Đường dẫn truy cập
                       </th>
                       <th className="border border-slate-500 px-2.5 py-2.5 text-center font-bold w-32">
-                        Mã QR của đề kiểm tra
+                        Mã QR
                       </th>
                     </tr>
                   </thead>

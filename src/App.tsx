@@ -22,6 +22,7 @@ import { PublicLessonPlayerView } from './components/modules/PublicLessonPlayerV
 import { PublicGamePlayerView } from './components/modules/PublicGamePlayerView';
 import { UseQuestionBankModal } from './components/modules/UseQuestionBankModal';
 import { GameRoomConfigModal } from './components/modules/GameRoomConfigModal';
+import { DigitalResourcePortal } from './components/portal/DigitalResourcePortal';
 
 import { ModuleType, UserRole, Lesson5EPlan, ExamPaper, HomeworkAssignment, QuestionItem, GameItem, UserAccount, ActivityLog, StudentRecord } from './types';
 import {
@@ -75,18 +76,38 @@ import {
 } from './services/lessonStorageService';
 import { CheckCircle2, AlertCircle, Info, Sparkles, X } from 'lucide-react';
 import { RewardToastNotification } from './components/common/RewardToastNotification';
+import {
+  checkInitialSsoAutoLogin,
+  cleanSsoParamsFromUrl,
+  clearSsoSession,
+  decodeUtf8Base64,
+  persistSsoTeacherSession,
+} from './services/ssoAutoLoginService';
 
 export function App() {
+  const initialSso = React.useMemo(() => checkInitialSsoAutoLogin(), []);
   const [publicLessonId, setPublicLessonId] = useState<string | null>(() => extractLessonIdFromPath());
   const [publicGameId, setPublicGameId] = useState<string | null>(() => extractGameIdFromPath());
-  const [showPortal, setShowPortal] = useState<boolean>(() => !extractLessonIdFromPath() && !extractGameIdFromPath());
-  const [activeModule, setActiveModule] = useState<ModuleType>('dashboard');
-  const [userRole, setUserRole] = useState<UserRole>('teacher');
+  const [showPortal, setShowPortal] = useState<boolean>(
+    () => !extractLessonIdFromPath() && !extractGameIdFromPath() && !initialSso?.authenticated
+  );
+  const [activeModule, setActiveModule] = useState<ModuleType>(
+    () => initialSso?.targetModule || 'dashboard'
+  );
+  const [userRole, setUserRole] = useState<UserRole>(
+    () => initialSso?.role || 'teacher'
+  );
   const [gameInitialTab, setGameInitialTab] = useState<'games' | 'store'>('games');
   
   // Isolated Teacher Session State
-  const [teacherEmail, setTeacherEmail] = useState<string>(() => (typeof window !== 'undefined' ? localStorage.getItem('eduplay_teacher_email') : null) || 'vanquan18189@gmail.com');
+  const [teacherEmail, setTeacherEmail] = useState<string>(
+    () =>
+      initialSso?.email ||
+      (typeof window !== 'undefined' ? localStorage.getItem('eduplay_teacher_email') : null) ||
+      'vanquan18189@gmail.com'
+  );
   const [teacherName, setTeacherName] = useState<string>(() => {
+    if (initialSso?.name) return initialSso.name;
     if (typeof window !== 'undefined') {
       const email = localStorage.getItem('eduplay_teacher_email') || 'vanquan18189@gmail.com';
       const saved = localStorage.getItem('eduplay_teacher_name');
@@ -156,6 +177,63 @@ export function App() {
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  // Lắng nghe sự kiện postMessage 'PK_TRUC_KHANG_SSO_LOGIN' để tự động đăng nhập liên thông ngay lập tức
+  useEffect(() => {
+    const handleSsoPostMessage = (event: MessageEvent) => {
+      const data = event?.data;
+      if (!data || typeof data !== 'object' || data.type !== 'PK_TRUC_KHANG_SSO_LOGIN') {
+        return;
+      }
+
+      const userObj = data.user && typeof data.user === 'object' ? data.user : {};
+      let email = String(userObj.email || data.email || '').trim();
+      let name = String(userObj.name || userObj.displayName || data.name || '').trim();
+      let role = String(userObj.role || data.role || '').trim();
+      const rawTab =
+        String(data.tab || data.module || '').trim() ||
+        new URLSearchParams(window.location.search).get('tab') ||
+        new URLSearchParams(window.location.search).get('module');
+
+      if (!email && typeof data.ssoToken === 'string') {
+        const decoded = decodeUtf8Base64(data.ssoToken);
+        if (decoded) {
+          email = String(decoded.email || '').trim();
+          name = name || String(decoded.name || '').trim();
+          role = role || String(decoded.role || '').trim();
+        }
+      }
+
+      if (!email) return;
+
+      const ssoRes = persistSsoTeacherSession({
+        email,
+        name,
+        role,
+        rawTab,
+      });
+
+      setTeacherEmail(ssoRes.email);
+      setTeacherName(ssoRes.name);
+      setUserRole(ssoRes.role);
+      if (ssoRes.targetModule) {
+        setActiveModule(ssoRes.targetModule);
+      }
+      setShowPortal(false);
+      cleanSsoParamsFromUrl();
+    };
+
+    window.addEventListener('message', handleSsoPostMessage);
+
+    // Nếu ứng dụng đang chạy bên trong iframe của cổng Dạy và Học Số, chủ động gửi tín hiệu sẵn sàng nhận SSO
+    if (typeof window !== 'undefined' && window.parent && window.parent !== window) {
+      try {
+        window.parent.postMessage({ type: 'PK_TRUC_KHANG_REQUEST_SSO' }, '*');
+      } catch {}
+    }
+
+    return () => window.removeEventListener('message', handleSsoPostMessage);
   }, []);
 
   // Initialize and Sync all Firebase collections on mount (skipped during public guest routes)
@@ -574,6 +652,7 @@ export function App() {
     localStorage.removeItem('eduplay_teacher_name');
     localStorage.removeItem('eduplay_teacher_profile');
     localStorage.removeItem('eduplay_student_session');
+    clearSsoSession();
 
     setTeacherEmail('vanquan18189@gmail.com');
     setTeacherName(resolveTeacherNameByEmail('vanquan18189@gmail.com'));
@@ -806,6 +885,20 @@ export function App() {
                     lessons={lessons5E}
                     games={games}
                     currentStudent={currentStudent}
+                  />
+                );
+              }
+
+              if (safeModule === 'digital_resource_portal') {
+                return (
+                  <DigitalResourcePortal
+                    currentUser={{
+                      email: teacherEmail,
+                      name: teacherName,
+                      displayName: teacherName,
+                      role: userRole,
+                      uid: auth?.currentUser?.uid || teacherEmail,
+                    }}
                   />
                 );
               }

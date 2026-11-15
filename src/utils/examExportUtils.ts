@@ -15,7 +15,8 @@ import {
   ImageRun,
   ExternalHyperlink,
 } from 'docx';
-import { ExamPaper } from '../types';
+import { ExamPaper, QuestionItem } from '../types';
+import { SavedAIMatrixExamRecord } from '../types/aiMatrixExam';
 import { extractGradeDigit } from '../lib/constants';
 
 export const EXAM_HEADER_LINE_1 = 'PHIẾU DANH MỤC ĐỀ KIỂM TRA KÈM MÃ QR';
@@ -34,8 +35,111 @@ export function buildExamPublicUrl(examId: string): string {
 }
 
 /**
- * Định dạng dòng phụ hiển thị Môn, Khối (và Lớp giao nếu có) cho đề kiểm tra.
- * Ví dụ: "Môn: Công nghệ • Khối 5" hoặc "Môn: Công nghệ • Khối 5 • Lớp 5D"
+ * Chuyển đổi một bản ghi Hồ sơ Ma trận & Đề kiểm tra AI (Thông tư 27) sang cấu trúc ExamPaper
+ * để sử dụng đồng bộ với cửa sổ xem trước & xuất phiếu Word 5 cột kèm Mã QR (ExamListExportModal).
+ */
+export function convertAIMatrixRecordToCatalogExam(
+  rec: SavedAIMatrixExamRecord
+): ExamPaper {
+  const cfg = rec.packageData?.config;
+  const khoi = cfg?.khoiLop || '5';
+  const gradeLabel = `Khối ${khoi}`;
+  const monHoc = cfg?.monHoc || 'Tin học';
+  const thoiDiem = cfg?.thoiDiemKiemTra || 'Giữa học kì I';
+  const thoiGian = cfg?.thoiGianLamBai || 35;
+  const boSach = cfg?.boSachGiaoKhoa || 'Kết nối tri thức với cuộc sống';
+  const rawTopics = (cfg?.chuDeKienThuc || '')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join(' • ');
+
+  const rawQuestions = rec.packageData?.questions || [];
+  const mappedQuestions: QuestionItem[] = rawQuestions.map((q, idx) => {
+    const level: QuestionItem['level'] =
+      q.mucDo === 'Mức 1'
+        ? 'nhan_biet'
+        : q.mucDo === 'Mức 2'
+        ? 'thong_hieu'
+        : 'van_dung';
+
+    let qType: QuestionItem['type'] = 'multiple_choice';
+    if (q.phan === 'TU_LUAN' || q.hinhThuc === 'Tự luận') {
+      qType = 'essay';
+    } else if (q.hinhThuc === 'Nối') {
+      qType = 'matching';
+    } else if (q.hinhThuc === 'Điền khuyết') {
+      qType = 'fill_blank';
+    } else if (q.hinhThuc === 'Đúng - Sai') {
+      qType = 'true_false';
+    }
+
+    const matchingPairs =
+      qType === 'matching' && Array.isArray(q.cotA) && Array.isArray(q.cotB)
+        ? q.cotA.map((leftItem, pIdx) => ({
+            left: leftItem,
+            right: q.cotB?.[pIdx] || '',
+          }))
+        : undefined;
+
+    let normalizedCorrect = String(q.dapAnChinhXac || '').trim();
+    if (qType === 'multiple_choice') {
+      const letterMatch = normalizedCorrect.match(/^([A-D])(?:[\.\:\)\s]|$)/i);
+      if (letterMatch) {
+        normalizedCorrect = letterMatch[1].toUpperCase();
+      }
+    }
+
+    return {
+      id: `q-${rec.id}-${idx}`,
+      code: `TT27-K${khoi}-${idx + 1}`,
+      subject: monHoc,
+      grade: gradeLabel,
+      lessonName: rawTopics || thoiDiem,
+      level,
+      type: qType,
+      content: q.noiDungCauHoi,
+      options: qType === 'multiple_choice' ? q.luaChon : undefined,
+      matchingPairs,
+      correctAnswer: normalizedCorrect,
+      explanation: q.huongDanCham,
+    };
+  });
+
+  const nhanBiet = mappedQuestions.filter((q) => q.level === 'nhan_biet').length;
+  const thongHieu = mappedQuestions.filter((q) => q.level === 'thong_hieu').length;
+  const vanDung = mappedQuestions.filter((q) => q.level === 'van_dung').length;
+
+  const examObj: ExamPaper & { topicSummary?: string; boSachGiaoKhoa?: string } = {
+    id: rec.id,
+    originalExamId: rec.id,
+    title:
+      rec.title ||
+      `Đề kiểm tra ${thoiDiem} - Môn ${monHoc} (${gradeLabel})`,
+    subject: monHoc,
+    grade: gradeLabel,
+    durationMinutes: thoiGian,
+    examType: `${thoiDiem} (Đề chuẩn TT27 • ${thoiGian} phút)`,
+    matrix: {
+      nhanBiet,
+      thongHieu,
+      vanDung,
+      vanDungCao: 0,
+    },
+    questions: mappedQuestions,
+    createdBy: 'ai_matrix_tt27',
+    createdAt: rec.createdAt || new Date().toISOString(),
+    status: 'published',
+    topicSummary: rawTopics,
+    boSachGiaoKhoa: boSach,
+  };
+
+  return examObj;
+}
+
+/**
+ * Định dạng dòng phụ hiển thị Môn, Khối (kèm Lớp giao hoặc Chủ đề/Bộ sách nếu là Hồ sơ Ma trận & Đề AI).
+ * Ví dụ: "Môn: Công nghệ • Khối 5 • Lớp 5D" hoặc "Môn: Tin học • Khối 5 • Bộ sách: Kết nối tri thức... • Chủ đề: ..."
  */
 export function formatExamSubjectAndGrade(exam: ExamPaper): string {
   const subjectText = (exam.subject || 'Chưa phân môn').trim();
@@ -48,6 +152,26 @@ export function formatExamSubjectAndGrade(exam: ExamPaper): string {
     gradeText = classDigit ? `Khối ${classDigit}` : 'Khối 3';
   } else if (!gradeText.toLowerCase().startsWith('khối')) {
     gradeText = `Khối ${gradeText}`;
+  }
+
+  const extExam = exam as ExamPaper & {
+    topicSummary?: string;
+    boSachGiaoKhoa?: string;
+  };
+
+  if (extExam.topicSummary || extExam.boSachGiaoKhoa) {
+    const parts = [`Môn: ${subjectText}`, gradeText];
+    if (extExam.boSachGiaoKhoa) {
+      parts.push(`Sách: ${extExam.boSachGiaoKhoa}`);
+    }
+    if (extExam.topicSummary) {
+      const shortTopic =
+        extExam.topicSummary.length > 110
+          ? `${extExam.topicSummary.slice(0, 107)}...`
+          : extExam.topicSummary;
+      parts.push(`Chủ đề: ${shortTopic}`);
+    }
+    return parts.join(' • ');
   }
 
   if (rawClass && rawClass !== '---') {
@@ -211,7 +335,7 @@ export async function exportExamCatalogToDocx(
             alignment: AlignmentType.LEFT,
             children: [
               new TextRun({
-                text: 'Tiêu đề đề kiểm tra',
+                text: 'Tiêu đề bộ đề & chủ đề',
                 bold: true,
                 size: 22,
                 font: 'Times New Roman',
@@ -231,7 +355,7 @@ export async function exportExamCatalogToDocx(
             alignment: AlignmentType.CENTER,
             children: [
               new TextRun({
-                text: 'Loại đề / Kỳ kiểm tra',
+                text: 'Kỳ kiểm tra / Loại đề',
                 bold: true,
                 size: 22,
                 font: 'Times New Roman',
@@ -251,7 +375,7 @@ export async function exportExamCatalogToDocx(
             alignment: AlignmentType.LEFT,
             children: [
               new TextRun({
-                text: 'Đường dẫn đề kiểm tra',
+                text: 'Đường dẫn truy cập',
                 bold: true,
                 size: 22,
                 font: 'Times New Roman',
@@ -271,7 +395,7 @@ export async function exportExamCatalogToDocx(
             alignment: AlignmentType.CENTER,
             children: [
               new TextRun({
-                text: 'Mã QR của đề kiểm tra',
+                text: 'Mã QR',
                 bold: true,
                 size: 22,
                 font: 'Times New Roman',
