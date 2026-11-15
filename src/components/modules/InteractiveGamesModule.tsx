@@ -78,6 +78,7 @@ import {
 import { auth } from '../../services/firebase';
 import { resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
 import {
+  attachOwnershipOnCreate,
   getCurrentAccessContext,
   getContentPermissions,
   filterAccessibleItems,

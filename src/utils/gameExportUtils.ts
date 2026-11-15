@@ -31,6 +31,8 @@ export function getExportableGameId(item: ExportableGame): string {
   return String(item.id);
 }
 
+export const PUBLIC_VERCEL_DOMAIN = 'https://appdayhocso26-27.vercel.app';
+
 export function buildGamePublicUrl(item: ExportableGame): string {
   const rawExternal =
     (item as QuizziGameItem).embedUrl ||
@@ -43,12 +45,7 @@ export function buildGamePublicUrl(item: ExportableGame): string {
     return rawExternal.trim();
   }
 
-  const origin =
-    typeof window !== 'undefined' && window.location?.origin
-      ? window.location.origin
-      : 'https://appdayhocso26-27.vercel.app';
-
-  return `${origin}/game/${encodeURIComponent(getExportableGameId(item))}`;
+  return `${PUBLIC_VERCEL_DOMAIN}/game/${encodeURIComponent(getExportableGameId(item))}`;
 }
 
 export function getGameFormatOrType(item: ExportableGame): string {

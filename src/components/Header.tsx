@@ -652,41 +652,41 @@ export const Header: React.FC<HeaderProps> = ({
       {isKeyModalOpen && createPortal(
         <div className="fixed inset-0 z-[9999] bg-gray-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-gray-200 overflow-hidden my-auto animate-in fade-in zoom-in-95 duration-200">
-            <div className="bg-[#4F46E5] px-6 py-4 text-white flex items-center justify-between">
-              <div className="flex items-center gap-2 font-semibold text-base font-heading">
-                <Sliders className="w-5 h-5 text-amber-300" /> Cấu Hình & Kiểm Tra Kết Nối AI
+            <div className="bg-[#0F172A] px-6 py-4 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-emerald-500/20 border border-emerald-400/30 flex items-center justify-center text-emerald-400 shrink-0">
+                  <Sparkles className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="font-bold text-base font-heading leading-tight">
+                    Cấu Hình Hệ Thống Google Gemini AI
+                  </div>
+                  <div className="text-xs text-slate-400 mt-0.5">
+                    Quản lý mô hình AI và kiểm tra kết nối toàn trường
+                  </div>
+                </div>
               </div>
               <button
                 onClick={() => setIsKeyModalOpen(false)}
-                className="text-white/80 hover:text-white p-1 rounded-lg hover:bg-white/10 transition-all cursor-pointer"
+                className="text-white/70 hover:text-white p-1 rounded-lg hover:bg-white/10 transition-all cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="p-6 space-y-4">
-              <div className="p-3.5 rounded-xl bg-indigo-50/70 border border-indigo-200/80 flex items-start gap-3">
-                <div className="w-8 h-8 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0 mt-0.5">
-                  <Server className="w-4 h-4" />
-                </div>
-                <div className="text-xs text-slate-700 leading-relaxed space-y-1">
-                  <p className="font-semibold text-indigo-950">
-                    Xử lý Gemini AI tập trung trên máy chủ
-                  </p>
-                  <p className="text-slate-600">
-                    Mọi yêu cầu AI (soạn giáo án 5E, tạo đề thi, chấm bài tự luận, trợ lý sư phạm, Live API và tạo trò chơi) đều được kết nối trực tiếp qua máy chủ. Giáo viên và học sinh mở ứng dụng là dùng được ngay.
-                  </p>
-                </div>
+            <div className="p-6 space-y-5">
+              <div className="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200/90 text-xs text-slate-700 leading-relaxed">
+                Hệ thống tự động kết nối Google Gemini thông qua cấu hình máy chủ AI Studio (**Settings &gt; Secrets**). Quản trị viên có thể chọn mô hình AI ưu tiên và kiểm tra độ trễ trực tiếp dưới đây.
               </div>
 
               {/* Admin Model Selection */}
               <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-xs font-medium text-gray-700 flex items-center gap-1.5">
-                    ⚙️ Mô hình AI (Quản trị viên chọn thủ công):
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-600" /> Mô hình AI (Quản trị viên chọn thủ công):
                   </label>
-                  <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full font-semibold border border-indigo-200">
-                    Hiện tại: {activeModelInfo.sourceLabel} ({activeModelInfo.modelName})
+                  <span className="text-[11px] text-slate-500 font-medium">
+                    Hiện tại: {activeModelInfo.sourceLabel}
                   </span>
                 </div>
                 <select
@@ -697,16 +697,16 @@ export const Header: React.FC<HeaderProps> = ({
                     setAdminSelectedModel(val);
                   }}
                   disabled={activeRole !== 'admin'}
-                  className="w-full px-3 py-2 text-xs rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-gray-50 text-gray-900 font-mono disabled:opacity-75 disabled:cursor-not-allowed"
+                  className="w-full px-3.5 py-2.5 text-xs rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white text-slate-900 font-semibold disabled:opacity-75 disabled:cursor-not-allowed"
                 >
-                  <option value="">Tự động ưu tiên (Mặc định: {DEFAULT_MODEL})</option>
+                  <option value="">Tự động ưu tiên (Mặc định: gemini-2.5-flash / Đã nhớ)</option>
                   <option value="gemini-4-hydrogen">gemini-4-hydrogen (Mặc định - Nhanh, thông minh & ổn định)</option>
                   <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Flash Lite siêu tốc & tiết kiệm)</option>
                   <option value="gemini-2.5-flash">gemini-2.5-flash (Flash đa nhiệm ổn định)</option>
                 </select>
-                <p className="text-[11px] text-gray-400 mt-1">
+                <p className="text-[11px] text-slate-500 mt-1.5">
                   {activeRole === 'admin'
-                    ? 'Chỉ danh sách các mô hình sinh văn bản được hỗ trợ. Lựa chọn này áp dụng cho toàn bộ tính năng AI.'
+                    ? 'Chỉ danh sách các mô hình sinh văn bản mới nhất. Lựa chọn này áp dụng cho toàn bộ tính năng AI.'
                     : 'Chỉ tài khoản Quản trị viên mới có thể thay đổi mô hình mặc định.'}
                 </p>
               </div>
@@ -723,7 +723,7 @@ export const Header: React.FC<HeaderProps> = ({
                         onClick={handleSaveModelFirestore}
                         disabled={isSavingFirestore}
                         className="px-3 py-1.5 bg-slate-700 hover:bg-slate-800 text-white rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer shadow-xs"
-                        title="Đồng bộ lựa chọn mô hình lên Firestore"
+                        title="Lưu cấu hình mô hình AI dùng chung lên Cloud Firestore"
                       >
                         {isSavingFirestore ? (
                           <>
@@ -731,7 +731,7 @@ export const Header: React.FC<HeaderProps> = ({
                           </>
                         ) : (
                           <>
-                            🌐 Lưu đồng bộ
+                            🌐 Lưu Global Firestore
                           </>
                         )}
                       </button>
@@ -847,7 +847,7 @@ export const Header: React.FC<HeaderProps> = ({
                 onClick={() => setIsKeyModalOpen(false)}
                 className="px-4 py-2 rounded-lg text-xs font-medium text-gray-600 hover:bg-gray-200 transition-all cursor-pointer"
               >
-                Đóng
+                Hủy
               </button>
               <button
                 onClick={handleSaveAiConfig}

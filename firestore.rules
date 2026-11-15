@@ -131,24 +131,20 @@ service cloud.firestore {
       allow read, write: if !isAnonymousAuth();
     }
 
-    // Games & Quizzis collections
+    // Games & Quizzis collections (public read-only get by ID for /game/[id] QR sharing; writes restricted)
     match /games/{gameId} {
-      allow read, write: if !isAnonymousAuth();
+      allow get: if true;
+      allow list, write: if !isAnonymousAuth();
     }
 
     match /quizzis/{quizId} {
-      allow read, write: if !isAnonymousAuth();
+      allow get: if true;
+      allow list, write: if !isAnonymousAuth();
     }
 
     match /quizzi_games/{quizId} {
-      allow get: if isNonAnonymousSignedIn() ||
-        resource == null ||
-        (
-          resource.data.get('isFreeAiGame', false) == true &&
-          resource.data.get('isPublicShareEnabled', true) == true
-        );
-      allow list: if isNonAnonymousSignedIn();
-      allow write: if isNonAnonymousSignedIn();
+      allow get: if true;
+      allow list, write: if isNonAnonymousSignedIn();
     }
 
     match /ai_game_quotas/{quotaId} {

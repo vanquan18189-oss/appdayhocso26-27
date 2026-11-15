@@ -416,56 +416,71 @@ export async function fetchPublicGameForGuest(
   const cleanId = (gameId || '').trim();
   if (!cleanId) return { status: 'not_found' };
 
+  const baseId = cleanId.replace(/-class-[a-z0-9_-]+$/i, '').trim();
+  const candidateIds = Array.from(new Set([cleanId, baseId].filter(Boolean)));
+
   await ensurePublicGuestAuth();
 
   if (db) {
-    // 1. Kiểm tra collection 'games' (Phòng thi đấu Rung Chuông Vàng, Đua Thuyền, Flashcards...)
-    try {
-      const gameRef = doc(db, 'games', cleanId);
-      let gameSnap;
+    // 1. Kiểm tra collection 'games' (Phòng thi đấu Rung Chuông Vàng, Đua Thuyền, Flashcards...) theo exact ID và base ID
+    for (const candidateId of candidateIds) {
       try {
-        gameSnap = await getDocFromServer(gameRef);
-      } catch {
-        gameSnap = await getDoc(gameRef);
-      }
+        const gameRef = doc(db, 'games', candidateId);
+        let gameSnap;
+        try {
+          gameSnap = await getDocFromServer(gameRef);
+        } catch {
+          gameSnap = await getDoc(gameRef);
+        }
 
-      if (gameSnap && gameSnap.exists()) {
-        const game = { id: gameSnap.id, ...gameSnap.data() } as GameItem;
-        return { status: 'ok', data: { kind: 'arena', game } };
+        if (gameSnap && gameSnap.exists()) {
+          const game = { id: cleanId, ...gameSnap.data() } as GameItem;
+          return { status: 'ok', data: { kind: 'arena', game } };
+        }
+      } catch (err) {
+        console.warn('Firestore games check fallback:', err);
       }
-    } catch (err) {
-      console.warn('Firestore games check fallback:', err);
     }
 
-    // 2. Kiểm tra collection 'quizzi_games' (Trò chơi Quizzi / HTML tự chứa)
-    try {
-      const quizziRef = doc(db, QUIZZI_COLLECTION, cleanId);
-      let quizziSnap;
-      try {
-        quizziSnap = await getDocFromServer(quizziRef);
-      } catch {
-        quizziSnap = await getDoc(quizziRef);
-      }
+    // 2. Kiểm tra collection 'quizzi_games' và 'quizzis' (Trò chơi Quizzi / HTML tự chứa)
+    for (const candidateId of candidateIds) {
+      for (const colName of [QUIZZI_COLLECTION, 'quizzis']) {
+        try {
+          const quizziRef = doc(db, colName, candidateId);
+          let quizziSnap;
+          try {
+            quizziSnap = await getDocFromServer(quizziRef);
+          } catch {
+            quizziSnap = await getDoc(quizziRef);
+          }
 
-      if (quizziSnap && quizziSnap.exists()) {
-        const quizzi = { id: quizziSnap.id, ...quizziSnap.data() } as QuizziGameItem;
-        return { status: 'ok', data: { kind: 'quizzi', quizzi } };
+          if (quizziSnap && quizziSnap.exists()) {
+            const quizzi = { id: quizziSnap.id, ...quizziSnap.data() } as QuizziGameItem;
+            return { status: 'ok', data: { kind: 'quizzi', quizzi } };
+          }
+        } catch (err) {
+          console.warn(`Firestore ${colName} check fallback:`, err);
+        }
       }
-    } catch (err) {
-      console.warn('Firestore quizzi_games check fallback:', err);
     }
 
-    // 3. Quét tìm kiếm dự phòng theo ID không phân biệt hoa thường
+    // 3. Quét tìm kiếm dự phòng theo ID không phân biệt hoa thường (nếu được phép list)
     try {
       const allGamesSnap = await getDocs(collection(db, 'games'));
       let matchedArena: GameItem | null = null;
       const lowerClean = cleanId.toLowerCase();
+      const lowerBase = baseId.toLowerCase();
       allGamesSnap.forEach((docSnap) => {
         if (matchedArena) return;
         const data = docSnap.data();
+        const docIdLower = docSnap.id.toLowerCase();
+        const docBaseLower = docIdLower.replace(/-class-[a-z0-9_-]+$/i, '');
+        const origIdLower = String(data.originalGameId || '').toLowerCase();
         if (
-          docSnap.id.toLowerCase() === lowerClean ||
-          String(data.originalGameId || '').toLowerCase() === lowerClean
+          docIdLower === lowerClean ||
+          docIdLower === lowerBase ||
+          docBaseLower === lowerBase ||
+          (origIdLower && (origIdLower === lowerClean || origIdLower === lowerBase))
         ) {
           matchedArena = { id: docSnap.id, ...data } as GameItem;
         }
@@ -479,20 +494,29 @@ export async function fetchPublicGameForGuest(
   // 4. Fallback sang bộ nhớ cục bộ
   const localArenaPool = [...getLocalCachedGames(), ...INITIAL_GAMES];
   const lowerClean = cleanId.toLowerCase();
-  const foundArena = localArenaPool.find(
-    (g) =>
-      g?.id &&
-      (g.id.toLowerCase() === lowerClean ||
-        String(g.originalGameId || '').toLowerCase() === lowerClean)
-  );
+  const lowerBase = baseId.toLowerCase();
+  const foundArena = localArenaPool.find((g) => {
+    if (!g?.id) return false;
+    const gIdLower = g.id.toLowerCase();
+    const gBaseLower = gIdLower.replace(/-class-[a-z0-9_-]+$/i, '');
+    const gOrigLower = String(g.originalGameId || '').toLowerCase();
+    return (
+      gIdLower === lowerClean ||
+      gIdLower === lowerBase ||
+      gBaseLower === lowerBase ||
+      (gOrigLower && (gOrigLower === lowerClean || gOrigLower === lowerBase))
+    );
+  });
   if (foundArena) {
     return { status: 'ok', data: { kind: 'arena', game: foundArena } };
   }
 
   const localQuizziPool = getLocalCachedQuizziGames();
-  const foundQuizzi = localQuizziPool.find(
-    (q) => q?.id && String(q.id).toLowerCase() === lowerClean
-  );
+  const foundQuizzi = localQuizziPool.find((q) => {
+    if (!q?.id) return false;
+    const qIdLower = String(q.id).toLowerCase();
+    return qIdLower === lowerClean || qIdLower === lowerBase;
+  });
   if (foundQuizzi) {
     return { status: 'ok', data: { kind: 'quizzi', quizzi: foundQuizzi } };
   }

@@ -81,6 +81,8 @@ import { ManualQuestionBankModal } from './ManualQuestionBankModal';
 import { UseQuestionBankModal } from './UseQuestionBankModal';
 import { ShareContentModal } from './ShareContentModal';
 import { ExamListExportModal } from './ExamListExportModal';
+import { AIMatrixExamModal } from '../exam/AIMatrixExamModal';
+import { GeneratedAIExamPackage } from '../../types/aiMatrixExam';
 import { buildExamPublicUrl } from '../../utils/examExportUtils';
 import { DateTimePicker } from '../common/DateTimePicker';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
@@ -210,6 +212,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const [deletingExam, setDeletingExam] = useState<ExamPaper | null>(null);
   const [isManualExamModalOpen, setIsManualExamModalOpen] = useState(false);
   const [isBankExamModalOpen, setIsBankExamModalOpen] = useState(false);
+  const [isAIMatrixModalOpen, setIsAIMatrixModalOpen] = useState(false);
 
   // Exam Catalog & QR Export Modal state
   const [examExportModalState, setExamExportModalState] = useState<{
@@ -325,6 +328,118 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       );
     } catch (err) {
       showToast("Lưu thất bại, vui lòng kiểm tra lại!", "error");
+    }
+  };
+
+  const handleSaveAIMatrixExamToSystem = (pkg: GeneratedAIExamPackage) => {
+    try {
+      const gradeLabel = `Khối ${pkg.config.khoiLop}`;
+      const periodToExamType: Record<string, string> = {
+        'Giữa học kì I': 'Giữa kỳ 1',
+        'Cuối học kì I': 'Cuối kỳ 1',
+        'Giữa học kì II': 'Giữa kỳ 2',
+        'Cuối năm học': 'Cuối kỳ 2',
+      };
+      const resolvedExamType = periodToExamType[pkg.config.thoiDiemKiemTra] || pkg.config.thoiDiemKiemTra;
+
+      const mappedQuestions: QuestionItem[] = (pkg.questions || []).map((q, idx) => {
+        const level: QuestionItem['level'] =
+          q.mucDo === 'Mức 1'
+            ? 'nhan_biet'
+            : q.mucDo === 'Mức 2'
+            ? 'thong_hieu'
+            : 'van_dung';
+
+        let qType: QuestionItem['type'] = 'multiple_choice';
+        if (q.phan === 'TU_LUAN' || q.hinhThuc === 'Tự luận') {
+          qType = 'essay';
+        } else if (q.hinhThuc === 'Nối') {
+          qType = 'matching';
+        } else if (q.hinhThuc === 'Điền khuyết') {
+          qType = 'fill_blank';
+        } else if (q.hinhThuc === 'Đúng - Sai') {
+          qType = 'true_false';
+        }
+
+        const matchingPairs =
+          qType === 'matching' && Array.isArray(q.cotA) && Array.isArray(q.cotB)
+            ? q.cotA.map((leftItem, pIdx) => ({
+                left: leftItem,
+                right: q.cotB?.[pIdx] || '',
+              }))
+            : undefined;
+
+        let normalizedCorrect = String(q.dapAnChinhXac || '').trim();
+        if (qType === 'multiple_choice') {
+          const letterMatch = normalizedCorrect.match(/^([A-D])(?:[\.\:\)\s]|$)/i);
+          if (letterMatch) {
+            normalizedCorrect = letterMatch[1].toUpperCase();
+          }
+        }
+
+        return {
+          id: `q-aimat-${Date.now()}-${idx}`,
+          code: `TT27-K${pkg.config.khoiLop}-${idx + 1}`,
+          subject: pkg.config.monHoc,
+          grade: gradeLabel,
+          topic: pkg.config.chuDeKienThuc.split('\n')[0] || pkg.config.thoiDiemKiemTra,
+          level,
+          type: qType,
+          content: q.noiDungCauHoi,
+          options: qType === 'multiple_choice' ? q.luaChon : undefined,
+          matchingPairs,
+          correctAnswer: normalizedCorrect,
+          explanation: q.huongDanCham,
+          points: q.diem,
+        };
+      });
+
+      const nhanBietCount = mappedQuestions.filter((q) => q.level === 'nhan_biet').length;
+      const thongHieuCount = mappedQuestions.filter((q) => q.level === 'thong_hieu').length;
+      const vanDungCount = mappedQuestions.filter((q) => q.level === 'van_dung').length;
+
+      const rootId = `ex-aimat-${Date.now()}`;
+      const newExam: ExamPaper = {
+        id: rootId,
+        originalExamId: rootId,
+        title: `Đề kiểm tra ${pkg.config.thoiDiemKiemTra} - Môn ${pkg.config.monHoc} (${gradeLabel})`,
+        subject: pkg.config.monHoc,
+        grade: gradeLabel,
+        durationMinutes: pkg.config.thoiGianLamBai,
+        examType: resolvedExamType,
+        targetClass: filterClass !== 'Tất cả các lớp' ? filterClass : 'Tất cả',
+        matrix: {
+          nhanBiet: nhanBietCount,
+          thongHieu: thongHieuCount,
+          vanDung: vanDungCount,
+          vanDungCao: 0,
+        },
+        questions: mappedQuestions,
+        teacherId: activeTeacherProfile.id,
+        teacherName: activeTeacherProfile.name,
+        teacherEmail: activeTeacherProfile.email,
+        createdBy: activeTeacherProfile.id,
+        authorName: activeTeacherProfile.name,
+        createdAt: new Date().toLocaleDateString('vi-VN'),
+        isShuffled: false,
+        status: 'published',
+        authorType: 'my',
+        submissionsCount: 0,
+        totalStudents: 35,
+      };
+
+      onSaveExam(newExam);
+      setSelectedExam(null);
+      setActiveTab('list');
+      setCurrentPage(1);
+      setIsAIMatrixModalOpen(false);
+      showToast(
+        `Đã lưu "${newExam.title}" (${mappedQuestions.length} câu – 10,0 điểm) vào danh sách đề kiểm tra!`,
+        'success'
+      );
+    } catch (err) {
+      console.error('Lỗi khi lưu đề ma trận AI vào hệ thống:', err);
+      showToast('Không thể lưu đề kiểm tra vào hệ thống. Vui lòng thử lại!', 'error');
     }
   };
 
@@ -3118,6 +3233,16 @@ return (
                 >
                   <QrCode className="w-4 h-4" />
                   <span>Xuất danh mục & Mã QR</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsAIMatrixModalOpen(true)}
+                  className="px-4 py-2 bg-gradient-to-r from-teal-500 to-emerald-600 hover:from-teal-600 hover:to-emerald-700 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-md shadow-emerald-200/60 flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
+                  title="Tạo Ma trận, Bản đặc tả & Đề kiểm tra định kì bằng AI chuẩn Thông tư 27"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  <span>✨ Ma trận đề bằng AI</span>
                 </button>
 
                 <button
@@ -6507,6 +6632,13 @@ return (
         }
         exams={examExportModalState.exams}
         titleContext={examExportModalState.titleContext}
+      />
+
+      {/* Cửa sổ Tạo Ma Trận, Bản Đặc Tả & Đề Kiểm Tra Định Kì Bằng AI (Thông tư 27) */}
+      <AIMatrixExamModal
+        isOpen={isAIMatrixModalOpen}
+        onClose={() => setIsAIMatrixModalOpen(false)}
+        onSaveToSystem={handleSaveAIMatrixExamToSystem}
       />
 
     </div>

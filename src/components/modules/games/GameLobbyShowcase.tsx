@@ -91,9 +91,10 @@ export const GameLobbyShowcase: React.FC<GameLobbyShowcaseProps> = ({
   const [selectedClass, setSelectedClass] = useState<string>(`Tất cả lớp ${initialGrade}`);
   const [topic, setTopic] = useState<string>('');
   const [questionCount, setQuestionCount] = useState<number>(5);
-  const [saveAsRoom, setSaveAsRoom] = useState<boolean>(false);
+  const [saveAsRoom, setSaveAsRoom] = useState<boolean>(true);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   const { gradeClasses, loading: classesLoading } = useFirestoreClassesByGrade(grade);
 
@@ -136,6 +137,7 @@ export const GameLobbyShowcase: React.FC<GameLobbyShowcaseProps> = ({
     }
     setSelectedSubjectId(newSubjectId);
     setErrorMsg(null);
+    setSuccessMsg(null);
   };
 
   const handleGradeChange = (newGrade: string) => {
@@ -146,6 +148,7 @@ export const GameLobbyShowcase: React.FC<GameLobbyShowcaseProps> = ({
     setGrade(newGrade);
     setSelectedClass(`Tất cả lớp ${newGrade}`);
     setErrorMsg(null);
+    setSuccessMsg(null);
   };
 
   const handleGenerateAndPlay = async (e: React.FormEvent) => {
@@ -153,11 +156,13 @@ export const GameLobbyShowcase: React.FC<GameLobbyShowcaseProps> = ({
     const cleanTopic = topic.trim();
     if (!cleanTopic) {
       setErrorMsg('Em hoặc Thầy/Cô hãy nhập tên bài học hoặc chọn một gợi ý nhanh bên dưới nhé!');
+      setSuccessMsg(null);
       topicInputRef?.current?.focus();
       return;
     }
 
     setErrorMsg(null);
+    setSuccessMsg(null);
     setIsGenerating(true);
 
     try {
@@ -241,7 +246,16 @@ export const GameLobbyShowcase: React.FC<GameLobbyShowcaseProps> = ({
         timePerQuestion: selectedMode === 'speed_quiz' ? '10 giây / câu' : '15 giây / câu',
       };
 
-      onLaunchAiGame(newGame, userRole !== 'student' && saveAsRoom);
+      onLaunchAiGame(newGame, userRole !== 'student' ? saveAsRoom : false);
+
+      if (userRole !== 'student') {
+        setTopic('');
+        setSuccessMsg(
+          saveAsRoom
+            ? `Đã tạo và lưu bộ câu hỏi trò chơi "${newGame.title}" vào Danh sách Phòng Thi Đấu thành công!`
+            : `Đã tạo bộ câu hỏi trò chơi "${newGame.title}" thành công!`
+        );
+      }
     } catch (err: any) {
       setErrorMsg(err?.message || 'Không thể kết nối AI lúc này. Vui lòng thử lại sau giây lát!');
     } finally {
@@ -478,6 +492,7 @@ export const GameLobbyShowcase: React.FC<GameLobbyShowcaseProps> = ({
               onChange={(e) => {
                 setTopic(e.target.value);
                 if (errorMsg) setErrorMsg(null);
+                if (successMsg) setSuccessMsg(null);
               }}
               placeholder={`Nhập tên bài học ${activeSubject.label} (${grade}) — VD: ${quickSuggestions[0] || ''}...`}
               className="w-full min-h-[52px] px-4 py-3 bg-white border-2 border-slate-200 focus:border-indigo-500 rounded-2xl text-sm sm:text-base font-bold text-slate-900 placeholder-slate-400 outline-none shadow-inner transition-colors"
@@ -497,7 +512,7 @@ export const GameLobbyShowcase: React.FC<GameLobbyShowcaseProps> = ({
             ) : (
               <>
                 <Rocket className="w-5 h-5" />
-                <span>Tạo & Chơi Ngay</span>
+                <span>Tạo Trò Chơi</span>
               </>
             )}
           </button>
@@ -518,6 +533,13 @@ export const GameLobbyShowcase: React.FC<GameLobbyShowcaseProps> = ({
                 {gradeClasses.length > 0 ? ` (${selectedClass})` : ` (${grade})`}
               </span>
             </label>
+          </div>
+        )}
+
+        {successMsg && (
+          <div className="relative z-10 px-4 py-3 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs sm:text-sm font-bold flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>{successMsg}</span>
           </div>
         )}
 
