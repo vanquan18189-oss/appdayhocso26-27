@@ -1,5 +1,5 @@
 import { SUBJECTS, GRADES } from '../../lib/constants';
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Sparkles,
   Plus,
@@ -36,6 +36,8 @@ import {
   Eye,
   Settings,
   ExternalLink,
+  Monitor,
+  ShieldCheck,
   X,
 } from 'lucide-react';
 import { getSubjectColorStyles } from '../../utils/subjectColors';
@@ -133,8 +135,8 @@ const GRADE_SELECTOR_CARDS: GradeSelectorMeta[] = [
     key: 'grade-3',
     gradeValue: 'Khối 3',
     label: 'Khối 3',
-    shortTag: 'Mở App K3 ↗',
-    subtitle: 'dayhockhoi3.vercel.app',
+    shortTag: 'Nhúng App K3',
+    subtitle: 'Hiển thị ngay trong App',
     activeGradient: 'from-emerald-600 via-teal-600 to-cyan-600',
     activeShadow: 'shadow-lg shadow-emerald-600/25 ring-2 ring-emerald-400/50',
     inactiveBorder: 'border-emerald-300/90 hover:border-emerald-500 bg-emerald-50/25 hover:bg-emerald-50/60',
@@ -560,89 +562,122 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
     setIsModalOpen(true);
   };
 
-  // Build dedicated Grade 3 application URL (https://dayhockhoi3.vercel.app) with SSO parameters
-  const grade3AppUrlWithSso = useMemo(() => {
-    const rawBase = (grade3DbConfig.externalAppUrl || DEFAULT_GRADE3_APP_URL).trim() || DEFAULT_GRADE3_APP_URL;
-    const baseUrl = /^https?:\/\//i.test(rawBase) ? rawBase : `https://${rawBase}`;
+  // Embedded Grade 3 Workspace State (loads directly inside the main content area of App Mẹ)
+  const grade3IframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [grade3DisplayMode, setGrade3DisplayMode] = useState<'embedded' | 'cards'>('embedded');
+  const [grade3IframeKey, setGrade3IframeKey] = useState<number>(0);
+  const [isGrade3IframeLoading, setIsGrade3IframeLoading] = useState<boolean>(true);
+
+  const grade3SsoPayload = useMemo(() => {
     const teacherEmail = activeTeacherProfile?.email || authEmail || 'thuthuthtk@gmail.com';
     const teacherName = activeTeacherProfile?.name || 'Giáo viên';
     const teacherRole = isAdmin ? 'admin' : userRole || 'teacher';
+    const teacherUid = String(activeTeacherProfile?.id || teacherEmail);
     const ssoToken = encodeUtf8Base64({
       email: teacherEmail,
       name: teacherName,
       role: teacherRole,
-      uid: activeTeacherProfile?.id || teacherEmail,
+      uid: teacherUid,
+      tab: 'lesson',
+      module: 'elearning',
       timestamp: Date.now(),
       source: 'PK_TRUC_KHANG_LMS',
     });
 
+    return {
+      email: teacherEmail,
+      name: teacherName,
+      role: teacherRole,
+      uid: teacherUid,
+      ssoToken,
+    };
+  }, [activeTeacherProfile, authEmail, isAdmin, userRole]);
+
+  // Build dedicated Grade 3 embedded URL (https://dayhockhoi3.vercel.app) with SSO + lesson module routing
+  const grade3EmbeddedUrlWithSso = useMemo(() => {
+    const rawBase =
+      (grade3DbConfig.externalAppUrl || DEFAULT_GRADE3_APP_URL).trim() ||
+      DEFAULT_GRADE3_APP_URL;
+    const baseUrl = /^https?:\/\//i.test(rawBase) ? rawBase : `https://${rawBase}`;
+
     try {
       const urlObj = new URL(baseUrl);
-      if (ssoToken) urlObj.searchParams.set('sso_token', ssoToken);
-      if (teacherEmail) urlObj.searchParams.set('sso_email', teacherEmail);
-      if (teacherName) urlObj.searchParams.set('sso_name', teacherName);
-      if (teacherRole) urlObj.searchParams.set('sso_role', teacherRole);
+      urlObj.searchParams.set('tab', 'lesson');
+      urlObj.searchParams.set('module', 'elearning');
+      urlObj.searchParams.set('grade', 'Khối 3');
+      if (grade3SsoPayload.ssoToken) {
+        urlObj.searchParams.set('sso_token', grade3SsoPayload.ssoToken);
+      }
+      if (grade3SsoPayload.email) {
+        urlObj.searchParams.set('sso_email', grade3SsoPayload.email);
+      }
+      if (grade3SsoPayload.name) {
+        urlObj.searchParams.set('sso_name', grade3SsoPayload.name);
+      }
+      if (grade3SsoPayload.role) {
+        urlObj.searchParams.set('sso_role', grade3SsoPayload.role);
+      }
       return urlObj.toString();
     } catch {
       return baseUrl;
     }
-  }, [grade3DbConfig.externalAppUrl, activeTeacherProfile, authEmail, isAdmin, userRole]);
+  }, [grade3DbConfig.externalAppUrl, grade3SsoPayload]);
 
-  const navigateToGrade3DedicatedApp = useCallback(
-    (e?: React.MouseEvent) => {
-      setFilterGrade('Khối 3');
-      if (grade3DbConfig.enabled && grade3DbConfig.autoSyncOnSelect) {
-        handleSyncGrade3Database(false);
+  const postSsoToGrade3Iframe = useCallback(() => {
+    const iframeWindow = grade3IframeRef.current?.contentWindow;
+    if (!iframeWindow) return;
+    try {
+      iframeWindow.postMessage(
+        {
+          type: 'PK_TRUC_KHANG_SSO_LOGIN',
+          ssoToken: grade3SsoPayload.ssoToken,
+          tab: 'lesson',
+          module: 'elearning',
+          user: {
+            email: grade3SsoPayload.email,
+            name: grade3SsoPayload.name,
+            displayName: grade3SsoPayload.name,
+            role: grade3SsoPayload.role,
+            uid: grade3SsoPayload.uid,
+          },
+        },
+        '*'
+      );
+    } catch {
+      // Ignore cross-origin postMessage errors if any
+    }
+  }, [grade3SsoPayload]);
+
+  const handleGrade3IframeLoad = useCallback(() => {
+    setIsGrade3IframeLoading(false);
+    postSsoToGrade3Iframe();
+    window.setTimeout(postSsoToGrade3Iframe, 350);
+    window.setTimeout(postSsoToGrade3Iframe, 1000);
+  }, [postSsoToGrade3Iframe]);
+
+  useEffect(() => {
+    if (filterGrade !== 'Khối 3') return;
+    const handleMessage = (event: MessageEvent) => {
+      const data = event?.data;
+      if (
+        data &&
+        typeof data === 'object' &&
+        (data.type === 'PK_TRUC_KHANG_REQUEST_SSO' || data.type === 'KHO_HOC_LIEU_READY')
+      ) {
+        postSsoToGrade3Iframe();
       }
-
-      if (typeof window === 'undefined') return;
-
-      const isInsideIframe = (() => {
-        try {
-          return window.self !== window.top;
-        } catch {
-          return true;
-        }
-      })();
-
-      if (!isInsideIframe) {
-        // When running directly in browser tab (e.g., vercel.app), redirect directly to https://dayhockhoi3.vercel.app
-        if (e) e.preventDefault();
-        window.location.href = grade3AppUrlWithSso;
-      } else {
-        // When inside preview iframe, native <a target="_blank"> opens https://dayhockhoi3.vercel.app in a new tab
-        setAssignedToast('Đang mở ứng dụng chuyên biệt Khối 3 (dayhockhoi3.vercel.app)...');
-        setTimeout(() => setAssignedToast(null), 3500);
-      }
-    },
-    [grade3AppUrlWithSso, grade3DbConfig.enabled, grade3DbConfig.autoSyncOnSelect, handleSyncGrade3Database]
-  );
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [filterGrade, postSsoToGrade3Iframe]);
 
   const handleSelectGradeCard = (gradeValue: string) => {
     setFilterGrade(gradeValue);
     if (gradeValue === 'Khối 3') {
+      setGrade3DisplayMode('embedded');
+      setIsGrade3IframeLoading(true);
       if (grade3DbConfig.enabled && grade3DbConfig.autoSyncOnSelect) {
         handleSyncGrade3Database(false);
-      }
-      if (typeof window !== 'undefined') {
-        const isInsideIframe = (() => {
-          try {
-            return window.self !== window.top;
-          } catch {
-            return true;
-          }
-        })();
-        if (!isInsideIframe) {
-          window.location.href = grade3AppUrlWithSso;
-        } else {
-          const a = document.createElement('a');
-          a.href = grade3AppUrlWithSso;
-          a.target = '_blank';
-          a.rel = 'noopener noreferrer';
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-        }
       }
     }
   };
@@ -875,7 +910,7 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
                       </p>
                     </div>
 
-                    {/* Bottom Row: Metrics / Dedicated App Link for Grade 3 */}
+                    {/* Bottom Row: Metrics / Embedded Indicator for Grade 3 */}
                     <div
                       className={`mt-2 pt-1.5 border-t flex items-center justify-between text-[10px] font-semibold tabular-nums ${
                         isSelected
@@ -890,10 +925,10 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
                               isSelected ? 'text-emerald-100' : 'text-emerald-700'
                             }`}
                           >
-                            <ExternalLink className="w-3 h-3" />
-                            <span>Mở App Khối 3</span>
+                            <Monitor className="w-3 h-3" />
+                            <span>Nhúng trực tiếp K3</span>
                           </span>
-                          <span className="font-mono">↗</span>
+                          <span className="font-mono">{grade3LatencyMs}ms</span>
                         </>
                       ) : (
                         <>
@@ -904,22 +939,6 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
                     </div>
                   </>
                 );
-
-                if (card.isDedicatedGrade3) {
-                  return (
-                    <a
-                      key={card.key}
-                      href={grade3AppUrlWithSso}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => navigateToGrade3DedicatedApp(e)}
-                      className={cardClassName}
-                      title="Bấm để mở hoặc chuyển hướng trực tiếp sang ứng dụng riêng của Khối 3 (https://dayhockhoi3.vercel.app)"
-                    >
-                      {cardInnerContent}
-                    </a>
-                  );
-                }
 
                 return (
                   <div
@@ -934,6 +953,11 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
                       }
                     }}
                     className={cardClassName}
+                    title={
+                      card.isDedicatedGrade3
+                        ? 'Bấm để tải và nhúng trực tiếp giao diện bài giảng Khối 3 ngay trong khung nội dung chính'
+                        : `Lọc bài giảng ${card.label}`
+                    }
                   >
                     {cardInnerContent}
                   </div>
@@ -941,75 +965,157 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
               })}
             </div>
 
-            {/* BANNER CHUYÊN BIỆT KHI ĐANG CHỌN THẺ "KHỐI 3" */}
+            {/* THANH ĐIỀU KHIỂN KHI ĐANG CHỌN THẺ "KHỐI 3" (NHÚNG TRỰC TIẾP TRONG APP MẸ) */}
             {filterGrade === 'Khối 3' && (
-              <div className="mt-3 p-4 rounded-2xl bg-gradient-to-r from-emerald-50/90 via-teal-50/70 to-cyan-50/80 border border-emerald-200/90 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-3.5 animate-in fade-in duration-150">
-                <div className="flex items-start gap-3">
+              <div className="mt-3 p-3.5 sm:p-4 rounded-2xl bg-gradient-to-r from-emerald-50/95 via-teal-50/80 to-cyan-50/85 border border-emerald-200/90 flex flex-col xl:flex-row items-start xl:items-center justify-between gap-3 animate-in fade-in duration-150">
+                <div className="flex items-start sm:items-center gap-3 min-w-0">
                   <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-emerald-600 to-teal-600 text-white flex items-center justify-center shrink-0 shadow-sm">
-                    <Database className="w-5 h-5" />
+                    <Monitor className="w-5 h-5" />
                   </div>
-                  <div className="space-y-0.5">
+                  <div className="space-y-0.5 min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-xs sm:text-sm font-extrabold text-emerald-950">
-                        Liên kết Cơ sở dữ liệu Chuyên biệt Khối 3
+                        Không Gian Bài Giảng Chuyên Biệt Khối 3 (Nhúng Trực Tiếp Trong App Mẹ)
                       </span>
-                      <span className="text-[11px] font-bold text-emerald-700 bg-white/90 px-2.5 py-0.5 rounded-lg border border-emerald-200 font-mono tabular-nums">
-                        {grade3DbConfig.enabled ? `⚡ Đang bật • ${grade3LatencyMs}ms` : 'Đang tắt'}
+                      <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-white/95 px-2.5 py-0.5 rounded-lg border border-emerald-200">
+                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>SSO: {grade3SsoPayload.name}</span>
                       </span>
                     </div>
-                    <p className="text-xs text-slate-600 leading-relaxed">
-                      Nguồn dữ liệu: <strong className="text-slate-800">{grade3SourceLabel}</strong>
-                      {grade3DbConfig.lastSyncedAt && (
-                        <span> • Đồng bộ lúc {grade3DbConfig.lastSyncedAt}</span>
-                      )}
-                      <span> • Giúp giảm tải bộ nhớ chính và tối ưu tốc độ vận hành cho học sinh &amp; giáo viên Khối 3.</span>
+                    <p className="text-xs text-slate-600 truncate">
+                      Đang kết nối trực tiếp <strong className="text-slate-800">{grade3DbConfig.externalAppUrl || DEFAULT_GRADE3_APP_URL}</strong> ngay trong khung nội dung chính • Thao tác liền mạch không rời khỏi ứng dụng tổng.
                     </p>
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2 shrink-0 w-full lg:w-auto justify-end">
-                  <button
-                    type="button"
-                    onClick={() => handleSyncGrade3Database(true)}
-                    disabled={isSyncingGrade3Db}
-                    className="px-3.5 py-2 rounded-xl bg-white hover:bg-emerald-50 text-emerald-800 border border-emerald-300 text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs disabled:opacity-50 whitespace-nowrap"
-                  >
-                    <RefreshCw
-                      className={`w-3.5 h-3.5 text-emerald-600 ${
-                        isSyncingGrade3Db ? 'animate-spin' : ''
+                <div className="flex flex-wrap items-center gap-2 shrink-0 w-full xl:w-auto justify-end">
+                  {/* Chuyển đổi giữa Khung nhúng trực tiếp và Danh sách thẻ 5E đồng bộ */}
+                  <div className="inline-flex items-center bg-white/90 p-1 rounded-xl border border-emerald-200">
+                    <button
+                      type="button"
+                      onClick={() => setGrade3DisplayMode('embedded')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all flex items-center gap-1.5 cursor-pointer ${
+                        grade3DisplayMode === 'embedded'
+                          ? 'bg-emerald-600 text-white shadow-2xs'
+                          : 'text-slate-600 hover:text-emerald-800'
                       }`}
-                    />
-                    <span>{isSyncingGrade3Db ? 'Đang đồng bộ...' : 'Đồng bộ CSDL Khối 3'}</span>
-                  </button>
-
-                  {grade3DbConfig.externalAppUrl && (
-                    <a
-                      href={
-                        /^https?:\/\//i.test(grade3DbConfig.externalAppUrl)
-                          ? grade3DbConfig.externalAppUrl
-                          : `https://${grade3DbConfig.externalAppUrl}`
-                      }
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-3.5 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-extrabold flex items-center gap-1.5 transition-all shadow-2xs whitespace-nowrap"
                     >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      <span>Mở Ứng dụng Khối 3</span>
-                    </a>
+                      <Monitor className="w-3.5 h-3.5" />
+                      <span>Giao diện Khối 3 nhúng trực tiếp</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGrade3DisplayMode('cards')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all flex items-center gap-1.5 cursor-pointer ${
+                        grade3DisplayMode === 'cards'
+                          ? 'bg-emerald-600 text-white shadow-2xs'
+                          : 'text-slate-600 hover:text-emerald-800'
+                      }`}
+                    >
+                      <LayoutGrid className="w-3.5 h-3.5" />
+                      <span>Thẻ 5E đồng bộ ({grade3LessonsList.length})</span>
+                    </button>
+                  </div>
+
+                  {grade3DisplayMode === 'embedded' ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsGrade3IframeLoading(true);
+                        setGrade3IframeKey((prev) => prev + 1);
+                      }}
+                      className="px-3 py-2 rounded-xl bg-white hover:bg-emerald-50 text-emerald-800 border border-emerald-300 text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs whitespace-nowrap"
+                      title="Tải lại khung giao diện bài giảng Khối 3"
+                    >
+                      <RefreshCw
+                        className={`w-3.5 h-3.5 text-emerald-600 ${
+                          isGrade3IframeLoading ? 'animate-spin' : ''
+                        }`}
+                      />
+                      <span>Tải lại khung K3</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleSyncGrade3Database(true)}
+                      disabled={isSyncingGrade3Db}
+                      className="px-3 py-2 rounded-xl bg-white hover:bg-emerald-50 text-emerald-800 border border-emerald-300 text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs disabled:opacity-50 whitespace-nowrap"
+                    >
+                      <RefreshCw
+                        className={`w-3.5 h-3.5 text-emerald-600 ${
+                          isSyncingGrade3Db ? 'animate-spin' : ''
+                        }`}
+                      />
+                      <span>{isSyncingGrade3Db ? 'Đang đồng bộ...' : 'Đồng bộ CSDL K3'}</span>
+                    </button>
                   )}
 
                   <button
                     type="button"
                     onClick={() => setIsGrade3ConfigModalOpen(true)}
-                    className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer shadow-xs whitespace-nowrap"
+                    className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer shadow-xs whitespace-nowrap"
                   >
                     <Settings className="w-3.5 h-3.5" />
-                    <span>Cấu hình kết nối</span>
+                    <span>Cấu hình</span>
                   </button>
                 </div>
               </div>
             )}
           </div>
+
+          {/* KHI CHỌN KHỐI 3 Ở CHẾ ĐỘ NHÚNG TRỰC TIẾP: HIỂN THỊ NGAY TRONG KHUNG NỘI DUNG CHÍNH CỦA APP MẸ */}
+          {filterGrade === 'Khối 3' && grade3DisplayMode === 'embedded' ? (
+            <div className="bg-white rounded-3xl border border-emerald-200/90 shadow-sm overflow-hidden flex flex-col animate-in fade-in duration-200">
+              <div className="bg-slate-50 border-b border-slate-200/80 px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                  <span className="font-extrabold text-slate-800 truncate">
+                    Đang hiển thị trực tiếp: Hệ thống Bài giảng Chuyên biệt Khối 3 ({grade3DbConfig.externalAppUrl || DEFAULT_GRADE3_APP_URL})
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-3 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setFilterGrade('Tất cả khối')}
+                    className="text-slate-600 hover:text-indigo-700 font-bold flex items-center gap-1 cursor-pointer"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                    <span>Quay lại Tất cả khối</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="relative w-full bg-slate-50" style={{ height: 'calc(100vh - 200px)', minHeight: '760px' }}>
+                {isGrade3IframeLoading && (
+                  <div className="absolute inset-0 z-10 bg-white/85 backdrop-blur-xs flex flex-col items-center justify-center gap-3">
+                    <div className="w-12 h-12 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-600 flex items-center justify-center shadow-xs">
+                      <RefreshCw className="w-6 h-6 animate-spin" />
+                    </div>
+                    <div className="text-center space-y-1">
+                      <p className="text-sm font-extrabold text-slate-800">
+                        Đang tải giao diện bài giảng Khối 3 ngay trong ứng dụng...
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        Tự động đồng bộ phiên đăng nhập của {grade3SsoPayload.name}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                <iframe
+                  ref={grade3IframeRef}
+                  key={`${grade3IframeKey}-${grade3EmbeddedUrlWithSso}`}
+                  src={grade3EmbeddedUrlWithSso}
+                  onLoad={handleGrade3IframeLoad}
+                  title="Giao diện Bài giảng Chuyên biệt Khối 3"
+                  className="w-full h-full border-0 bg-white"
+                  allow="fullscreen; clipboard-read; clipboard-write; microphone; camera; autoplay"
+                />
+              </div>
+            </div>
+          ) : (
+            <>
 
           {/* 2. 3 STATS CARDS */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -1889,6 +1995,8 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
               </button>
             </div>
           </div>
+            </>
+          )}
         </>
       )}
 
