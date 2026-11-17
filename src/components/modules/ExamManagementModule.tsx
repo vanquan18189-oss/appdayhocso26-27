@@ -13,8 +13,7 @@ import {
 } from '../../services/permissionService';
 import { getStudentsFromLocalStorage, getClassStudentCount, deleteStudentFromClass, generateDefaultClassRoster, normalizeClassKey } from '../../services/studentStorageService';
 import { formatStandardStudentCode, normalizeStudentCode, isSameStudent, extractFullStudentCode } from '../../services/studentCode';
-import { seedInitialExamsManually, deleteAllExamsFromFirestore, isValidOfficialExam } from '../../services/examStorageService';
-// import { bulkDeleteAllSubmissions } from '../../services/bulkSubmissionCleanupService';
+import { isValidOfficialExam } from '../../services/examStorageService';
 import { getExamCompletion, registerFirestoreExamSubs, fetchDirectExamCompletions, getCachedExamCompletion, isStudentRetakeTombstoned, ExamCompletionStats } from '../../services/examCompletionService';
 import { downloadBulkSubmissionsZip } from '../../services/bulkSubmissionZipService';
 import { auth } from '../../services/firebase';
@@ -72,14 +71,13 @@ import {
   Save,
   SaveAll,
   Image as ImageIcon,
-  FileQuestion, Upload, Volume2, Database, QrCode
+  FileQuestion, Upload, Volume2, QrCode
 } from 'lucide-react';
 import { ExamPaper, QuestionItem, UserRole } from '../../types';
 import { generateExamQuestionsAI } from '../../services/geminiService';
 import { TECHNOLOGY_GRADE3_FINAL_EXAM_BLUEPRINT } from '../../config/examBlueprints';
 import { exportExamToExcel } from '../../services/excelService';
 import { ManualQuestionBankModal } from './ManualQuestionBankModal';
-import { UseQuestionBankModal } from './UseQuestionBankModal';
 import { QuestionAiModal } from './QuestionAiModal';
 import { ShareContentModal } from './ShareContentModal';
 import { ExamListExportModal } from './ExamListExportModal';
@@ -143,7 +141,6 @@ interface ExamManagementModuleProps {
 
 export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   exams,
-  questionsBank,
   onSaveExam,
   onDeleteExam,
   userRole
@@ -176,7 +173,6 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
   const [deletingExam, setDeletingExam] = useState<ExamPaper | null>(null);
   const [isManualExamModalOpen, setIsManualExamModalOpen] = useState(false);
-  const [isBankExamModalOpen, setIsBankExamModalOpen] = useState(false);
 
   // AI Question Generation Modal States
   const [isAiQuestionModalOpen, setIsAiQuestionModalOpen] = useState(false);
@@ -210,112 +206,6 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     exams: [],
   });
 
-
-  // Bulk cleanup state
-  const [isBulkCleanupModalOpen, setIsBulkCleanupModalOpen] = useState(false);
-  const [isBulkCleaning, setIsBulkCleaning] = useState(false);
-  const [bulkCleanProgress, setBulkCleanProgress] = useState('');
-
-  const handleBulkCleanup = async () => {
-    setIsBulkCleaning(true);
-    setBulkCleanProgress('Đang bắt đầu dọn dẹp...');
-    try {
-      // const res = await bulkDeleteAllSubmissions();
-      // alert(`✅ Đã xóa thành công ${res.deletedCount} bản ghi bài làm trên hệ thống!`);
-      alert('Chức năng dọn dẹp hiện tạm khóa.');
-      setIsBulkCleanupModalOpen(false);
-      window.location.reload();
-    } catch (err: any) {
-      alert('Lỗi khi dọn dẹp: ' + (err?.message || err));
-    } finally {
-      setIsBulkCleaning(false);
-      setBulkCleanProgress('');
-    }
-  };
-
-
-  const handleCreateExamFromBank = (examData: {
-    title: string;
-    subject: string;
-    grade: string;
-    targetClasses: string[];
-    questions: QuestionItem[];
-    examType?: string;
-    durationMinutes?: number;
-    maxAttempts?: string;
-    shuffleQuestions?: boolean;
-    shuffleOptions?: boolean;
-    dueDate?: string;
-  }) => {
-    const nhanBietCount = examData.questions.filter(q => q.level === 'nhan_biet' || (q.level as any) === 'Nhận biết').length;
-    const thongHieuCount = examData.questions.filter(q => q.level === 'thong_hieu' || (q.level as any) === 'Thông hiểu').length;
-    const vanDungCount = examData.questions.filter(q => q.level === 'van_dung' || (q.level as any) === 'Vận dụng').length;
-    const vanDungCaoCount = examData.questions.filter(q => q.level === 'van_dung_cao' || (q.level as any) === 'Vận dụng cao').length;
-
-    const clonedQuestions = examData.questions.map(q => ({
-      ...q,
-      id: `q-ex-${Date.now()}-${Math.floor(Math.random() * 100000)}`
-    }));
-
-    const rootId = `ex-${Date.now()}`;
-    const rawClasses = (examData.targetClasses && examData.targetClasses.length > 0)
-      ? examData.targetClasses
-      : [''];
-    const uniqueClasses = Array.from(new Set(rawClasses.map(c => c.trim())));
-    const classesToAssign = uniqueClasses.length > 0 ? uniqueClasses : [''];
-
-    try {
-      // Tạo bản ghi độc lập cho từng lớp (1 đề - N lần giao)
-      classesToAssign.forEach((cls) => {
-        const cleanClsKey = cls ? cls.toLowerCase().replace(/[^a-z0-9]/g, '') : 'all';
-        const examId = classesToAssign.length === 1 && !cls
-          ? rootId
-          : `${rootId}-class-${cleanClsKey}`;
-
-        const newExam: ExamPaper = {
-          id: examId,
-          originalExamId: rootId,
-          title: examData.title || `Đề kiểm tra ${examData.subject} (${new Date().toLocaleDateString('vi-VN')})`,
-          subject: examData.subject || 'Toán',
-          grade: examData.grade || 'Khối 3',
-          durationMinutes: Number(examData.durationMinutes) || 45,
-          examType: examData.examType || 'Thường xuyên',
-          targetClass: cls,
-          matrix: {
-            nhanBiet: nhanBietCount,
-            thongHieu: thongHieuCount,
-            vanDung: vanDungCount,
-            vanDungCao: vanDungCaoCount,
-          },
-          questions: clonedQuestions,
-          teacherId: activeTeacherProfile.id,
-          teacherName: activeTeacherProfile.name,
-          teacherEmail: activeTeacherProfile.email,
-          createdBy: activeTeacherProfile.id,
-          authorName: activeTeacherProfile.name,
-          createdAt: new Date().toLocaleDateString('vi-VN'),
-          isShuffled: Boolean(examData.shuffleQuestions),
-          status: 'published',
-          authorType: 'my',
-          submissionsCount: 0,
-          totalStudents: 35,
-        };
-        onSaveExam(newExam);
-      });
-
-      setSelectedExam(null);
-      setActiveTab('list');
-      setIsBankExamModalOpen(false);
-      showToast(
-        classesToAssign.filter(Boolean).length > 1
-          ? `Đã lưu thành công dữ liệu đề thi cho ${classesToAssign.length} lớp riêng biệt!`
-          : "Đã lưu thành công dữ liệu đề thi!",
-        "success"
-      );
-    } catch (err) {
-      showToast("Lưu thất bại, vui lòng kiểm tra lại!", "error");
-    }
-  };
 
   const handleSaveManualExam = (
     questions: QuestionItem[], 
@@ -2881,39 +2771,6 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
             </div>
           </div>
         )}
-        {isBulkCleanupModalOpen && (
-          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-            <div className="bg-white rounded-3xl p-6 max-w-sm w-full space-y-4 shadow-2xl">
-              <h3 className="text-lg font-extrabold text-rose-700">🚨 CẢNH BÁO: Xóa sạch dữ liệu</h3>
-              <p className="text-sm text-slate-600">
-                Hành động này sẽ xóa vĩnh viễn:
-              </p>
-              <ul className="text-xs text-slate-500 list-disc pl-4 space-y-1">
-                <li>Toàn bộ bài nộp của tất cả học sinh.</li>
-                <li>Lịch sử làm bài tập và kiểm tra.</li>
-                <li>Toàn bộ cache tạm trên trình duyệt.</li>
-              </ul>
-              <p className="text-xs font-bold text-rose-600">Hành động này không thể khôi phục!</p>
-              {isBulkCleaning && <p className="text-xs font-bold text-teal-600 animate-pulse">{bulkCleanProgress}</p>}
-              <div className="flex gap-2">
-                <button 
-                  onClick={() => setIsBulkCleanupModalOpen(false)}
-                  disabled={isBulkCleaning}
-                  className="flex-1 px-4 py-2 bg-slate-100 text-slate-700 rounded-xl text-sm font-bold hover:bg-slate-200"
-                >
-                  Hủy bỏ
-                </button>
-                <button 
-                  onClick={handleBulkCleanup}
-                  disabled={isBulkCleaning}
-                  className="flex-1 px-4 py-2 bg-rose-600 text-white rounded-xl text-sm font-bold hover:bg-rose-700 disabled:opacity-50"
-                >
-                  {isBulkCleaning ? 'Đang xử lý...' : 'Xóa sạch ngay'}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     );
   }
@@ -2936,75 +2793,6 @@ return (
             Tạo đề tự động bằng AI từ văn bản, quản lý ma trận 4 mức độ, đảo đề ngẫu nhiên & xuất file Excel chuẩn (.xlsx)
           </p>
         </div>
-
-        {isAdmin && (
-          <div className="flex items-center gap-2 flex-wrap">
-            <button
-              type="button"
-              onClick={async () => {
-                if (window.confirm('⚠️ Bạn có chắc chắn muốn nạp lại dữ liệu đề kiểm tra mẫu lên hệ thống không?')) {
-                  try {
-                    await seedInitialExamsManually();
-                    alert('✅ Đã nạp dữ liệu mẫu thành công!');
-                    window.location.reload();
-                  } catch (err: any) {
-                    alert('Lỗi nạp dữ liệu: ' + (err?.message || err));
-                  }
-                }
-              }}
-              className="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
-              title="Nạp đề kiểm tra mẫu để demo (Thủ công)"
-            >
-              <span>📥 Nạp dữ liệu mẫu</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={async () => {
-                if (window.confirm('🚨 CẢNH BÁO: Bạn có chắc chắn muốn XÓA TOÀN BỘ tất cả đề kiểm tra trên hệ thống không? Hành động này không thể khôi phục!')) {
-                  try {
-                    await deleteAllExamsFromFirestore();
-                    alert('✅ Đã xóa toàn bộ đề kiểm tra trên hệ thống!');
-                    window.location.reload();
-                  } catch (err: any) {
-                    alert('Lỗi xóa tất cả: ' + (err?.message || err));
-                  }
-                }
-              }}
-              className="px-3 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
-              title="Xóa toàn bộ tất cả đề kiểm tra"
-            >
-              <span>🗑️ Xóa tất cả đề</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setIsBulkCleanupModalOpen(true)}
-              className="px-3 py-2 rounded-xl bg-rose-800 hover:bg-rose-900 text-white text-xs font-bold shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
-              title="Xóa sạch toàn bộ dữ liệu bài nộp và lịch sử của tất cả học sinh"
-            >
-              <span>🧨 Xóa sạch dữ liệu bài làm</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                try {
-                  localStorage.removeItem('eduplay_cached_exams');
-                  localStorage.removeItem('eduplay_cached_questions');
-                  alert('✅ Đã dọn sạch cache dữ liệu đề kiểm tra tạm trên trình duyệt!');
-                  window.location.reload();
-                } catch (err) {
-                  alert('Lỗi khi dọn dữ liệu tạm!');
-                }
-              }}
-              className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
-              title="Xóa sạch cache localStorage liên quan đến đề kiểm tra"
-            >
-              <span>🧹 Dọn cache tạm</span>
-            </button>
-          </div>
-        )}
       </div>
 
       <ManualQuestionBankModal
@@ -3015,17 +2803,6 @@ return (
         initialGrade="Khối 3"
         initialSubject="Toán"
         defaultSaveToGlobal={false}
-      />
-
-      <UseQuestionBankModal
-        isOpen={isBankExamModalOpen}
-        onClose={() => setIsBankExamModalOpen(false)}
-        questions={questionsBank}
-        targetContext="exam"
-        initialSubject={filterSubject !== 'Tất cả các môn' ? filterSubject : 'Toán'}
-        initialGrade={filterGrade !== 'Tất cả các khối' ? filterGrade : 'Khối 3'}
-        initialTargetClass={filterClass !== 'Tất cả các lớp' ? filterClass : undefined}
-        onCreateExam={handleCreateExamFromBank}
       />
 
       <QuestionAiModal
@@ -3158,14 +2935,6 @@ return (
                 >
                   <QrCode className="w-4 h-4" />
                   <span>Xuất danh mục & Mã QR</span>
-                </button>
-
-                <button
-                  onClick={() => setIsBankExamModalOpen(true)}
-                  className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-md shadow-amber-200/50 flex items-center gap-1.5 transition-all cursor-pointer shrink-0 whitespace-nowrap"
-                >
-                  <Database className="w-4 h-4" />
-                  <span>Chọn từ Ngân hàng câu hỏi</span>
                 </button>
 
                 <button

@@ -389,10 +389,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
   }, [effectiveTeacherEmail]);
 
   const teacherProfile = asyncTeacherProfile || getCurrentTeacherProfile(effectiveTeacherEmail);
-  const effectiveTeacherRole = (userRole === 'admin' || teacherProfile.userRole === 'admin') ? 'admin' : userRole;
+  const effectiveTeacherRole: UserRole =
+    userRole === 'student'
+      ? 'student'
+      : userRole === 'admin' || teacherProfile?.userRole === 'admin'
+      ? 'admin'
+      : userRole;
 
   const menuItems = userRole === 'student' ? studentMenuItems : teacherMenuItems;
-  const visibleItems = menuItems.filter(item => item.roles.includes(effectiveTeacherRole));
+  const visibleItems =
+    userRole === 'student'
+      ? studentMenuItems
+      : menuItems.filter(item => item.roles.includes(effectiveTeacherRole));
 
   // Use profile name if present, never fall back to email prefix if profile has real name
   const effectiveTeacherName = teacherProfile?.name || resolveTeacherNameByEmail(

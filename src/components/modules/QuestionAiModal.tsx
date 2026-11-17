@@ -145,7 +145,7 @@ export const QuestionAiModal: React.FC<QuestionAiModalProps> = ({
       <div className="bg-white rounded-2xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden border border-slate-100">
         {/* Modal Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 shrink-0">
-          <h3 className="text-xl font-semibold text-slate-800">TRUNG TÂM TẠO CÂU HỎI TỰ ĐỘNG</h3>
+          <h3 className="text-xl font-semibold text-slate-800">TRUNG TÂM TẠO ĐỀ VỚI AI</h3>
           <button
             onClick={onClose}
             className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
@@ -691,7 +691,7 @@ D. Bàn phím cơ
                   ) : (
                     <>
                       <CheckCircle2 className="w-4 h-4 text-indigo-100" />
-                      <span>Xác nhận lưu vào Ngân hàng ({previewQuestions.length} câu)</span>
+                      <span>Lưu đề ngay</span>
                     </>
                   )}
                 </button>
