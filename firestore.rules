@@ -72,6 +72,12 @@ service cloud.firestore {
       allow write: if isNonAnonymousSignedIn();
     }
 
+    match /elearning_lessons_khoi3/{lessonId} {
+      allow get: if isNonAnonymousSignedIn() || resource == null || isPublishedAndApprovedLesson(resource.data);
+      allow list: if isNonAnonymousSignedIn() || isPublishedAndApprovedLesson(resource.data);
+      allow write: if isNonAnonymousSignedIn();
+    }
+
     // Questions collection:
     // Prevent anonymous question-bank scraping; allow anonymous read only for questions explicitly tied to
     // an approved & published lessonId.

@@ -2,6 +2,11 @@ import { db, auth } from './firebase';
 import { collection, doc, setDoc, getDoc, getDocFromServer, getDocs, deleteDoc, onSnapshot, query } from 'firebase/firestore';
 import { signInAnonymously } from 'firebase/auth';
 import { Lesson5EPlan } from '../types';
+import {
+  syncLessonToGrade3Database,
+  removeLessonFromGrade3Database,
+  resolveGrade3FirestoreInstance,
+} from './grade3LessonDbService';
 
 export const ELEARNING_LESSONS_STORAGE_KEY = 'eduplay_5e_lessons';
 export const ELEARNING_LESSONS_COLLECTION = 'elearning_lessons';
@@ -80,6 +85,23 @@ export async function fetchPublicLessonById(lessonId: string): Promise<PublicLes
       }
 
       if (!snap.exists()) {
+        // Check dedicated Grade 3 database / collection if not found in primary collection
+        try {
+          const { dbInstance: g3Db, targetCollection: g3Col } = resolveGrade3FirestoreInstance();
+          if (g3Db && g3Col !== ELEARNING_LESSONS_COLLECTION) {
+            const g3Ref = doc(g3Db, g3Col, cleanId);
+            const g3Snap = await getDoc(g3Ref);
+            if (g3Snap.exists()) {
+              const g3Lesson = { id: g3Snap.id, ...g3Snap.data() } as Lesson5EPlan;
+              if (!isLessonPubliclyAccessible(g3Lesson)) {
+                return { status: 'unpublished' };
+              }
+              return { status: 'ok', lesson: g3Lesson };
+            }
+          }
+        } catch {
+          // Ignore Grade 3 fallback error
+        }
         return { status: 'not_found' };
       }
 
@@ -223,6 +245,11 @@ export async function saveLessonToFirestore(lesson: Lesson5EPlan): Promise<void>
       throw err;
     }
   }
+
+  // 4. Sync to Grade 3 dedicated database if lesson belongs to Khối 3
+  try {
+    await syncLessonToGrade3Database(lesson);
+  } catch {}
 }
 
 /**
@@ -248,6 +275,11 @@ export async function deleteLessonFromFirestore(id: string): Promise<void> {
       throw err;
     }
   }
+
+  // 3. Also remove from Grade 3 dedicated database if present
+  try {
+    await removeLessonFromGrade3Database(id);
+  } catch {}
 }
 
 /**
