@@ -76,15 +76,24 @@ import {
 } from 'lucide-react';
 import { ExamPaper, QuestionItem, UserRole } from '../../types';
 import { generateExamQuestionsAI } from '../../services/geminiService';
-import { exportExamToExcel, downloadExamMatrixTemplate } from '../../services/excelService';
+import { TECHNOLOGY_GRADE3_FINAL_EXAM_BLUEPRINT } from '../../config/examBlueprints';
+import { exportExamToExcel } from '../../services/excelService';
 import { ManualQuestionBankModal } from './ManualQuestionBankModal';
 import { UseQuestionBankModal } from './UseQuestionBankModal';
+import { QuestionAiModal } from './QuestionAiModal';
 import { ShareContentModal } from './ShareContentModal';
 import { ExamListExportModal } from './ExamListExportModal';
 import { buildExamPublicUrl } from '../../utils/examExportUtils';
 import { DateTimePicker } from '../common/DateTimePicker';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
-import { getLocalCachedQuestions, QUESTIONS_CACHE_KEY, saveQuestionsBatchToFirestore } from '../../services/questionStorageService';
+import {
+  getLocalCachedQuestions,
+  QUESTIONS_CACHE_KEY,
+  saveQuestionsBatchToFirestore,
+  sanitizeQuestionForFirestore,
+  downloadQuestionsAsJSON,
+  downloadQuestionsAsCSV
+} from '../../services/questionStorageService';
 import { useScoreSort } from '../../lib/useScoreSort';
 import { ExamQuestionEditorCard, normalizeQuestionType } from './ExamQuestionEditorCard';
 import { syncAssignmentsForExam } from '../../services/assignmentSyncService';
@@ -124,48 +133,6 @@ export interface TrackingSubmissionStudent {
   rawSubmission?: any;
 }
 
-export const TRACKING_STUDENTS_LIST: TrackingSubmissionStudent[] = [
-  { id: '3a1', name: 'Hoàng Bảo An', badge: 'Cần chú ý', answers: ['fail', 'fail', 'fail', 'pass', 'fail', 'pass', 'fail', 'pass', 'pass'], totalScore: 4, attempts: 1, submittedTime: '10 phút', status: 'submitted', aiNote: 'AI từ chối: Đã chấm lại hàng loạt thành công trên dữ liệu mới nhất.', needManual: true },
-  { id: '3a11', name: 'Ngô Nhật Hưng', badge: 'Cần chú ý', answers: ['pass', 'pass', 'fail', 'pass', 'fail', 'pass', 'pass', 'fail', 'pass'], totalScore: 6, attempts: 1, submittedTime: '10 phút', status: 'submitted', aiNote: 'AI từ chối: Đã chấm lại hàng loạt thành công trên dữ liệu mới nhất.', needManual: true },
-  { id: '3a2', name: 'Trần Bảo An', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a3', name: 'Nguyễn Nguyên Anh', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a4', name: 'Nguyễn Quốc Bảo', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a5', name: 'Tống Thị Quỳnh Chi', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a6', name: 'Vũ Ngọc Diệp', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a7', name: 'Mai Hải Đăng', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a8', name: 'Nguyễn Minh Đức', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a9', name: 'Hà Ngọc Hoa', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a10', name: 'Hà Việt Hoàng', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a12', name: 'Nguyễn Bảo Khánh', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a13', name: 'Hoàng Tuấn Kiệt', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a14', name: 'Đỗ Diệu Linh', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a15', name: 'Phan Tú Linh', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a16', name: 'Hà Bảo Long', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a17', name: 'Hà Bảo Nam', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a18', name: 'Hà Duy Nam', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a19', name: 'Dương Bảo Ngân', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a20', name: 'Nguyễn Trung Nghĩa', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a21', name: 'Đào Thị Bích Ngọc', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a22', name: 'Phan Vũ Khánh Ngọc', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a23', name: 'Nguyễn Bình Nguyên', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a24', name: 'Đoàn Yến Nhi', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a25', name: 'Nguyễn Quỳnh Như', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a26', name: 'Lê Hải Phong', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a27', name: 'Hà Đại Phú', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a28', name: 'Đồng Xuân Phúc', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a29', name: 'Vũ Huy Thái', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a30', name: 'Hoàng Mai Phương Thảo', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a31', name: 'Hà Đình Tiến', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a32', name: 'Hoàng Khánh Trang', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a33', name: 'Vũ Hà Trang', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a34', name: 'Đoàn Minh Tú', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a35', name: 'Hà Phạm Hiền Tuệ', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a36', name: 'Đoàn Duy Tùng', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a37', name: 'Hà Thanh Tùng', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a38', name: 'Hà Hồng Vui', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' },
-  { id: '3a39', name: 'Hà Thị Khánh Vy', answers: ['none', 'none', 'none', 'none', 'none', 'none', 'none', 'none', 'none'], totalScore: null, attempts: null, submittedTime: 'CHỜ HỌC SINH', status: 'waiting' }
-];
-
 interface ExamManagementModuleProps {
   exams: ExamPaper[];
   questionsBank: QuestionItem[];
@@ -192,7 +159,7 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     return isContentOwner(exam, accessContext);
   }, [accessContext]);
 
-  const [activeTab, setActiveTab] = useState<'list' | 'ai_creator' | 'matrix_builder' | 'viewer' | 'solver'>('list');
+  const [activeTab, setActiveTab] = useState<'list' | 'viewer'>('list');
   const [selectedExam, setSelectedExam] = useState<ExamPaper | null>(null);
 
   // Filters and Pagination State
@@ -210,6 +177,28 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const [deletingExam, setDeletingExam] = useState<ExamPaper | null>(null);
   const [isManualExamModalOpen, setIsManualExamModalOpen] = useState(false);
   const [isBankExamModalOpen, setIsBankExamModalOpen] = useState(false);
+
+  // AI Question Generation Modal States
+  const [isAiQuestionModalOpen, setIsAiQuestionModalOpen] = useState(false);
+  const [quickGrade, setQuickGrade] = useState('Khối 4');
+  const [quickSubject, setQuickSubject] = useState('Toán');
+  const [quickExamType, setQuickExamType] = useState('Thường xuyên');
+  const [quickLevelSelection, setQuickLevelSelection] = useState('all3');
+  const [quickCount, setQuickCount] = useState(10);
+  const [quickLessonName, setQuickLessonName] = useState('');
+  const [lessonNameError, setLessonNameError] = useState(false);
+  const [quickSourceMode, setQuickSourceMode] = useState<'standard' | 'paste' | 'file'>('paste');
+  const [quickRawText, setQuickRawText] = useState('');
+  const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+  const [uploadedFileContent, setUploadedFileContent] = useState<string>('');
+  const [uploadedFileBase64, setUploadedFileBase64] = useState<string>('');
+  const [uploadedFileType, setUploadedFileType] = useState<string>('');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generationError, setGenerationError] = useState<string | null>(null);
+  const [previewQuestions, setPreviewQuestions] = useState<QuestionItem[]>([]);
+  const [isPreviewStep, setIsPreviewStep] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Exam Catalog & QR Export Modal state
   const [examExportModalState, setExamExportModalState] = useState<{
@@ -1773,53 +1762,153 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
     setRegradingExam(null);
   };
 
-  // Solver State
-  const [examAnswers, setExamAnswers] = useState<Record<string, any>>({});
-  const [isExamSubmitted, setIsExamSubmitted] = useState<boolean>(false);
-  const [examScore, setExamScore] = useState<number>(0);
+  const handleCloseAiModal = () => {
+    setIsAiQuestionModalOpen(false);
+    setIsPreviewStep(false);
+    setPreviewQuestions([]);
+    setQuickRawText('');
+    setUploadedFileName(null);
+    setUploadedFileContent('');
+    setUploadedFileBase64('');
+    setUploadedFileType('');
+    setSaveError(null);
+    setGenerationError(null);
+  };
 
-  // AI Creator State
-  const [aiTopicDoc, setAiTopicDoc] = useState('');
-  const [aiSubject, setAiSubject] = useState('Toán Học');
-  const [aiGrade, setAiGrade] = useState('Khối 10');
-  const [aiCount, setAiCount] = useState(5);
-  const [isGeneratingAi, setIsGeneratingAi] = useState(false);
-
-  // Matrix State
-  const [matrixTitle, setMatrixTitle] = useState('Đề Kiểm Tra Tổng Hợp');
-  const [matrixDuration, setMatrixDuration] = useState(45);
-  const [matrixCounts, setMatrixCounts] = useState({
-    nhanBiet: 4,
-    thongHieu: 3,
-    vanDung: 2,
-    vanDungCao: 1,
-  });
-
-  const handleGenerateAiExam = async () => {
-    if (!aiTopicDoc.trim()) return;
-    setIsGeneratingAi(true);
+  const handleStartCreateExam = async () => {
+    let effectiveLessonName = quickLessonName.trim();
+    if (!effectiveLessonName) {
+      if (uploadedFileName) {
+        effectiveLessonName = uploadedFileName.replace(/\.[^/.]+$/, "");
+        setQuickLessonName(effectiveLessonName);
+      } else if (quickSourceMode === 'standard') {
+        effectiveLessonName = `Đề kiểm tra ${quickSubject} ${quickGrade}`;
+        setQuickLessonName(effectiveLessonName);
+      } else if (quickSourceMode === 'paste' && quickRawText.trim()) {
+        effectiveLessonName = `Đề kiểm tra trích xuất môn ${quickSubject}`;
+        setQuickLessonName(effectiveLessonName);
+      } else {
+        setLessonNameError(true);
+        setGenerationError('Vui lòng nhập chủ đề đề thi hoặc tên bài học trước khi tạo đề.');
+        return;
+      }
+    }
+    setLessonNameError(false);
+    setIsGenerating(true);
+    setGenerationError(null);
 
     try {
-      const generatedQuestions = await generateExamQuestionsAI(
-        aiSubject,
-        aiGrade,
-        aiTopicDoc,
-        aiCount
-      );
+      let generatedQuestions: QuestionItem[] = [];
+
+      if (quickSourceMode === 'standard') {
+        const standardTopicPrompt = `Đề kiểm tra ${quickExamType} môn ${quickSubject} ${quickGrade}. Chủ đề: ${effectiveLessonName}. Mức độ: ${quickLevelSelection === 'all3' ? 'Cả 3 mức độ (Nhận biết, Thông hiểu, Vận dụng)' : quickLevelSelection === 'all4' ? 'Cả 4 mức độ (Nhận biết, Thông hiểu, Vận dụng, Vận dụng cao)' : quickLevelSelection}. Số lượng: ${quickCount} câu hỏi chuẩn sư phạm bám sát chương trình GDPT 2018.`;
+        generatedQuestions = await generateExamQuestionsAI(
+          quickSubject,
+          quickGrade,
+          standardTopicPrompt,
+          quickCount,
+          undefined,
+          TECHNOLOGY_GRADE3_FINAL_EXAM_BLUEPRINT
+        );
+      } else if (quickSourceMode === 'paste') {
+        if (!quickRawText.trim()) {
+          throw new Error('Vui lòng nhập hoặc dán nội dung đề mẫu vào ô văn bản.');
+        }
+        generatedQuestions = await generateExamQuestionsAI(
+          quickSubject,
+          quickGrade,
+          quickRawText.trim(),
+          quickCount
+        );
+      } else if (quickSourceMode === 'file') {
+        if (!uploadedFileName && !uploadedFileContent && !uploadedFileBase64) {
+          throw new Error('Vui lòng chọn hoặc kéo thả tệp PDF / Word / TXT / Excel để tạo đề.');
+        }
+
+        generatedQuestions = await generateExamQuestionsAI(
+          quickSubject,
+          quickGrade,
+          effectiveLessonName,
+          quickCount,
+          {
+            base64: uploadedFileBase64,
+            mimeType: uploadedFileType || (uploadedFileName?.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream'),
+            name: uploadedFileName || 'Tài liệu đề thi',
+            text: uploadedFileContent
+          }
+        );
+      }
+
+      if (generatedQuestions.length > 0) {
+        generatedQuestions.forEach(q => {
+          q.lessonName = effectiveLessonName;
+        });
+        setPreviewQuestions(generatedQuestions);
+        setIsPreviewStep(true);
+      } else {
+        throw new Error('Không có câu hỏi nào được tạo thành công.');
+      }
+    } catch (error: any) {
+      console.error(error);
+      setGenerationError(error.message || 'Có lỗi xảy ra trong quá trình tạo câu hỏi với AI.');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleConfirmSave = async () => {
+    if (previewQuestions.length === 0) return;
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      const sanitizedQuestions: QuestionItem[] = previewQuestions.map((q, idx) => {
+        const fallbackCode = `CH-${(quickSubject || 'TOAN').toUpperCase().slice(0, 3)}-${Date.now().toString().slice(-4)}-${idx + 1}`;
+        const raw = {
+          ...q,
+          id: q.id || `q-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 5)}`,
+          code: q.code || fallbackCode,
+          subject: quickSubject || q.subject || 'Toán',
+          grade: quickGrade || q.grade || 'Khối 3',
+          level: q.level || 'nhan_biet',
+          type: normalizeQuestionType(q.type),
+          lessonName: quickLessonName || q.lessonName || 'Bài học',
+          content: q.content,
+          explanation: q.explanation || 'Giải thích sư phạm cho câu hỏi.',
+          teacherId: activeTeacherProfile.id,
+          teacherName: activeTeacherProfile.name,
+          teacherEmail: activeTeacherProfile.email,
+          createdBy: activeTeacherProfile.id,
+          authorName: activeTeacherProfile.name,
+          authorType: 'my' as const,
+          createdAt: q.createdAt || Date.now()
+        };
+        return sanitizeQuestionForFirestore(raw);
+      });
+
+      const existingCached = getLocalCachedQuestions();
+      const updatedCached = [...existingCached, ...sanitizedQuestions];
+      localStorage.setItem(QUESTIONS_CACHE_KEY, JSON.stringify(updatedCached));
+      await saveQuestionsBatchToFirestore(sanitizedQuestions);
+
+      const nhanBietCount = sanitizedQuestions.filter(q => q.level === 'nhan_biet').length;
+      const thongHieuCount = sanitizedQuestions.filter(q => q.level === 'thong_hieu').length;
+      const vanDungCount = sanitizedQuestions.filter(q => q.level === 'van_dung').length;
+      const vanDungCaoCount = sanitizedQuestions.filter(q => q.level === 'van_dung_cao').length;
 
       const newExam: ExamPaper = {
         id: `ex-ai-${Date.now()}`,
-        title: `Đề Thi AI: ${(aiTopicDoc || '').substring(0, 30)}...`,
-        subject: aiSubject,
-        grade: aiGrade,
+        title: quickLessonName ? `Đề kiểm tra: ${quickLessonName}` : `Đề kiểm tra AI ${quickSubject} (${new Date().toLocaleDateString('vi-VN')})`,
+        subject: quickSubject || 'Toán',
+        grade: quickGrade || 'Khối 3',
         durationMinutes: 45,
+        examType: quickExamType || 'Thường xuyên',
         matrix: {
-          nhanBiet: Math.ceil(generatedQuestions.length * 0.4),
-          thongHieu: Math.ceil(generatedQuestions.length * 0.3),
-          vanDung: Math.ceil(generatedQuestions.length * 0.2),
-          vanDungCao: Math.floor(generatedQuestions.length * 0.1),
+          nhanBiet: nhanBietCount,
+          thongHieu: thongHieuCount,
+          vanDung: vanDungCount,
+          vanDungCao: vanDungCaoCount
         },
-        questions: generatedQuestions,
+        questions: sanitizedQuestions,
         teacherId: activeTeacherProfile.id,
         teacherName: activeTeacherProfile.name,
         teacherEmail: activeTeacherProfile.email,
@@ -1830,129 +1919,36 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
         status: 'published',
         submissionsCount: 0,
         totalStudents: 35,
-        authorType: 'my',
+        authorType: 'my'
       };
-
       onSaveExam(newExam);
-      setSelectedExam(null);
-      setActiveTab('list');
-      showToast("Đã lưu thành công dữ liệu đề thi do AI tạo!", "success");
-    } catch (err: any) {
-      console.error('[AiExamGenerator Error]', err);
-      showToast(err?.message || "Không thể tạo đề bằng AI. Vui lòng thử lại.", "error");
+
+      handleCloseAiModal();
+      showToast(`Đã tạo đề kiểm tra & lưu thành công ${sanitizedQuestions.length} câu hỏi AI vào hệ thống!`, 'success');
+    } catch (error: any) {
+      console.error('Error saving AI questions:', error);
+      const errorMessage = error?.message || (typeof error === 'string' ? error : 'Firebase từ chối ghi hoặc gián đoạn kết nối CSDL.');
+      setSaveError(errorMessage);
+      showToast(`Lỗi khi lưu vào CSDL: ${errorMessage}`, 'error');
     } finally {
-      setIsGeneratingAi(false);
+      setIsSaving(false);
     }
   };
 
-  const handleExamSubmit = () => {
-    if (!selectedExam) return;
-    let correctCount = 0;
-    const totalQ = selectedExam.questions.length;
-    selectedExam.questions.forEach((q) => {
-      const userAns = examAnswers[q.id];
-      if (q.type === 'multiple_choice') {
-        if (userAns && q.correctAnswer && userAns.trim().toUpperCase() === q.correctAnswer.trim().toUpperCase()) {
-          correctCount++;
-        }
-      } else if (q.type === 'fill_blank') {
-        if (userAns && q.correctAnswer && userAns.trim().toLowerCase() === q.correctAnswer.trim().toLowerCase()) {
-          correctCount++;
-        }
-      } else if (q.type === 'true_false' && q.statements) {
-        let allTrue = true;
-        q.statements.forEach((st, sIdx) => {
-          const uState = userAns?.[sIdx];
-          if (uState !== st.isCorrect) allTrue = false;
-        });
-        if (allTrue) correctCount++;
-      } else if (q.type === 'essay' && userAns && userAns.trim().length > 3) {
-        correctCount++;
-      } else if (userAns) {
-        correctCount++;
-      }
-    });
-    const calculatedScore = totalQ > 0 ? Math.round((correctCount / totalQ) * 10) : 10;
-    setExamScore(calculatedScore);
-    setIsExamSubmitted(true);
-  };
-
-  const handleCreateByMatrix = () => {
-    // Select questions from question bank according to matrix
-    const nhanBietQs = questionsBank.filter(q => q.level === 'nhan_biet').slice(0, matrixCounts.nhanBiet);
-    const thongHieuQs = questionsBank.filter(q => q.level === 'thong_hieu').slice(0, matrixCounts.thongHieu);
-    const vanDungQs = questionsBank.filter(q => q.level === 'van_dung').slice(0, matrixCounts.vanDung);
-    const vanDungCaoQs = questionsBank.filter(q => q.level === 'van_dung_cao').slice(0, matrixCounts.vanDungCao);
-
-    const combined = [...nhanBietQs, ...thongHieuQs, ...vanDungQs, ...vanDungCaoQs];
-
-    const newExam: ExamPaper = {
-      id: `ex-mat-${Date.now()}`,
-      title: matrixTitle,
-      subject: aiSubject,
-      grade: aiGrade,
-      durationMinutes: matrixDuration,
-      matrix: { ...matrixCounts },
-      questions: combined.length > 0 ? combined : questionsBank.slice(0, 5),
-      teacherId: activeTeacherProfile.id,
-      teacherName: activeTeacherProfile.name,
-      teacherEmail: activeTeacherProfile.email,
-      createdBy: activeTeacherProfile.id,
-      authorName: activeTeacherProfile.name,
-      createdAt: new Date().toLocaleDateString('vi-VN'),
-      isShuffled: false,
-      status: 'published',
-      submissionsCount: 0,
-      totalStudents: 35,
-      authorType: 'my',
-    };
-
-    try {
-      onSaveExam(newExam);
-      setSelectedExam(null);
-      setActiveTab('list');
-      showToast("Đã lưu thành công dữ liệu đề thi theo ma trận!", "success");
-    } catch (err) {
-      showToast("Lưu thất bại, vui lòng kiểm tra lại!", "error");
-    }
-  };
-
-  // Shuffle Exam Questions & Answers
-  const handleShuffleExam = (exam: ExamPaper) => {
-    const shuffledQuestions = [...exam.questions]
-      .sort(() => Math.random() - 0.5)
-      .map(q => {
-        if (q.type === 'multiple_choice' && q.options) {
-          const shuffledOptions = [...q.options].sort(() => Math.random() - 0.5);
-          return { ...q, options: shuffledOptions };
-        }
-        return q;
-      });
-
-    const shuffledExam: ExamPaper = {
-      ...exam,
-      id: `ex-shuf-${Date.now()}`,
-      title: `${exam.title} (Trộn Đề Mã 102)`,
-      isShuffled: true,
-      questions: shuffledQuestions,
-    };
-
-    try {
-      onSaveExam(shuffledExam);
-      setSelectedExam(null);
-      setActiveTab('list');
-      showToast("Đã trộn và lưu thành công dữ liệu mã đề thi mới!", "success");
-    } catch (err) {
-      showToast("Trộn và lưu đề thất bại!", "error");
+  const handleDownloadBackup = (format: 'json' | 'excel') => {
+    if (previewQuestions.length === 0) return;
+    const fileName = `cau_hoi_ai_${quickSubject || 'toan'}_${Date.now()}`;
+    if (format === 'json') {
+      downloadQuestionsAsJSON(previewQuestions, `${fileName}.json`);
+      showToast(`Đã tải bản sao JSON (${previewQuestions.length} câu hỏi)!`, 'success');
+    } else {
+      downloadQuestionsAsCSV(previewQuestions, `${fileName}.csv`);
+      showToast(`Đã tải bản sao Excel/CSV (${previewQuestions.length} câu hỏi)!`, 'success');
     }
   };
 
   const handleExportExcel = (exam: ExamPaper) => {
     exportExamToExcel(exam);
-  };
-
-  const handleDownloadMatrixTemplate = () => {
-    downloadExamMatrixTemplate();
   };
 
   // Tự động chuẩn hóa dữ liệu cũ (backward compatibility):
@@ -3032,6 +3028,50 @@ return (
         onCreateExam={handleCreateExamFromBank}
       />
 
+      <QuestionAiModal
+        isOpen={isAiQuestionModalOpen}
+        onClose={handleCloseAiModal}
+        quickLessonName={quickLessonName}
+        setQuickLessonName={setQuickLessonName}
+        quickGrade={quickGrade}
+        setQuickGrade={setQuickGrade}
+        quickSubject={quickSubject}
+        setQuickSubject={setQuickSubject}
+        quickExamType={quickExamType}
+        setQuickExamType={setQuickExamType}
+        quickLevelSelection={quickLevelSelection}
+        setQuickLevelSelection={setQuickLevelSelection}
+        quickSourceMode={quickSourceMode}
+        setQuickSourceMode={setQuickSourceMode}
+        quickCount={quickCount}
+        setQuickCount={setQuickCount}
+        quickRawText={quickRawText}
+        setQuickRawText={setQuickRawText}
+        uploadedFileName={uploadedFileName}
+        setUploadedFileName={setUploadedFileName}
+        setUploadedFileContent={setUploadedFileContent}
+        uploadedFileBase64={uploadedFileBase64}
+        setUploadedFileBase64={setUploadedFileBase64}
+        uploadedFileType={uploadedFileType}
+        setUploadedFileType={setUploadedFileType}
+        lessonNameError={lessonNameError}
+        setLessonNameError={setLessonNameError}
+        isGenerating={isGenerating}
+        isSaving={isSaving}
+        saveError={saveError}
+        onDownloadBackup={handleDownloadBackup}
+        generationError={generationError}
+        isPreviewStep={isPreviewStep}
+        setIsPreviewStep={setIsPreviewStep}
+        previewQuestions={previewQuestions}
+        handleStartCreateExam={handleStartCreateExam}
+        handleConfirmSave={handleConfirmSave}
+        GRADES={GRADES}
+        SUBJECTS={SUBJECTS}
+        EXAM_TYPES={EXAM_TYPES}
+        blueprint={TECHNOLOGY_GRADE3_FINAL_EXAM_BLUEPRINT}
+      />
+
       {/* 3 Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <StatCard
@@ -3134,6 +3174,17 @@ return (
                 >
                   <Plus className="w-4 h-4" />
                   <span>Tạo câu hỏi thủ công</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setIsAiQuestionModalOpen(true);
+                    setQuickSourceMode('paste');
+                  }}
+                  className="px-4 py-2 bg-[#7C3AED] hover:bg-[#6D28D9] text-white rounded-xl text-xs sm:text-sm font-semibold shadow-md shadow-purple-200/50 flex items-center gap-1.5 transition-all cursor-pointer shrink-0 whitespace-nowrap"
+                >
+                  <Sparkles className="w-4 h-4 text-amber-300" />
+                  <span>Tạo câu hỏi với AI</span>
                 </button>
               </div>
             )}
@@ -3624,190 +3675,6 @@ return (
         </div>
       )}
 
-      {/* AI CREATOR: Auto Generate Exam from Doc */}
-      {activeTab === 'ai_creator' && (
-        <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs space-y-6 max-w-3xl mx-auto">
-          <div className="bg-gradient-to-r from-sky-600 to-indigo-600 p-6 rounded-2xl text-white space-y-2 shadow-md">
-            <h3 className="text-lg font-extrabold flex items-center gap-2 font-heading">
-              <Sparkles className="w-5 h-5 text-amber-300" /> Tạo Đề Kiểm Tra Tự Động Bằng AI Gemini
-            </h3>
-            <p className="text-xs text-sky-100 leading-relaxed">
-              Dán nội dung bài học, tài liệu hoặc ghi ngắn chủ đề cần kiểm tra. AI Gemini sẽ tự động khởi tạo câu hỏi trắc nghiệm 4 phương án kèm đáp án chuẩn xác.
-            </p>
-          </div>
-
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Môn Học:</label>
-                <select
-                  value={aiSubject}
-                  onChange={(e) => setAiSubject(e.target.value)}
-                  className="w-full p-2.5 text-xs rounded-xl border border-slate-300 bg-white"
-                >
-                  <option value="Toán Học">Toán Học</option>
-                  <option value="Vật Lý">Vật Lý</option>
-                  <option value="Hóa Học">Hóa Học</option>
-                  <option value="Sinh Học">Sinh Học</option>
-                  <option value="Ngữ Văn">Ngữ Văn</option>
-                  <option value="Tiếng Anh">Tiếng Anh</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Khối Lớp:</label>
-                <select
-                  value={aiGrade}
-                  onChange={(e) => setAiGrade(e.target.value)}
-                  className="w-full p-2.5 text-xs rounded-xl border border-slate-300 bg-white"
-                >
-                  <option value="Khối 10">Khối 10</option>
-                  <option value="Khối 11">Khối 11</option>
-                  <option value="Khối 12">Khối 12</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Số Câu Hỏi:</label>
-                <input
-                  type="number"
-                  min={2}
-                  max={20}
-                  value={aiCount}
-                  onChange={(e) => setAiCount(parseInt(e.target.value) || 5)}
-                  className="w-full p-2.5 text-xs rounded-xl border border-slate-300 bg-white font-bold"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Nội Dung Tài Liệu / Chủ Đề Tạo Đề:
-              </label>
-              <textarea
-                rows={5}
-                value={aiTopicDoc}
-                onChange={(e) => setAiTopicDoc(e.target.value)}
-                placeholder="Ví dụ: Phương trình bậc hai ax2 + bx + c = 0, biệt thức Delta, định lý Viet và ứng dụng bài toán thực tế..."
-                className="w-full p-3 text-xs rounded-xl border border-slate-300 focus:ring-2 focus:ring-sky-500 bg-slate-50"
-              />
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                onClick={() => setActiveTab('list')}
-                className="px-4 py-2.5 rounded-xl text-xs font-semibold bg-slate-100 text-slate-700"
-              >
-                Hủy
-              </button>
-              <button
-                onClick={handleGenerateAiExam}
-                disabled={isGeneratingAi || !aiTopicDoc.trim()}
-                className="px-6 py-2.5 rounded-xl text-xs font-bold bg-sky-600 hover:bg-sky-700 text-white shadow-md flex items-center gap-2 cursor-pointer disabled:opacity-50"
-              >
-                {isGeneratingAi ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 animate-spin" /> AI Đang Tạo Đề Thi...
-                  </>
-                ) : (
-                  <>
-                    <Zap className="w-4 h-4 fill-white" /> Khởi Tạo Đề Thi Ngay
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* MATRIX BUILDER */}
-      {activeTab === 'matrix_builder' && (
-        <div className="bg-white rounded-2xl p-6 border border-slate-200/80 shadow-xs space-y-6 max-w-2xl mx-auto">
-          <h3 className="text-base font-extrabold text-slate-900 font-heading">
-            Thiết Lập Đề Thi Theo Cấu Trúc Ma Trận Chuẩn Sư Phạm
-          </h3>
-
-          <div className="space-y-4">
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">Tên Đề Thi:</label>
-              <input
-                type="text"
-                value={matrixTitle}
-                onChange={(e) => setMatrixTitle(e.target.value)}
-                className="w-full p-2.5 text-xs rounded-xl border border-slate-300"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">Thời Gian Làm Bài (Phút):</label>
-              <input
-                type="number"
-                value={matrixDuration}
-                onChange={(e) => setMatrixDuration(parseInt(e.target.value) || 45)}
-                className="w-full p-2.5 text-xs rounded-xl border border-slate-300 font-bold"
-              />
-            </div>
-
-            <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
-              <span className="text-xs font-bold text-slate-800">SỐ CÂU THEO MỨC ĐỘ NHẬN THỨC:</span>
-              <div className="grid grid-cols-2 gap-3 text-xs">
-                <div>
-                  <label className="block font-semibold text-slate-600">Nhận biết:</label>
-                  <input
-                    type="number"
-                    value={matrixCounts.nhanBiet}
-                    onChange={(e) => setMatrixCounts({ ...matrixCounts, nhanBiet: parseInt(e.target.value) || 0 })}
-                    className="w-full p-2 rounded-lg border border-slate-300 bg-white font-bold"
-                  />
-                </div>
-                <div>
-                  <label className="block font-semibold text-slate-600">Thông hiểu:</label>
-                  <input
-                    type="number"
-                    value={matrixCounts.thongHieu}
-                    onChange={(e) => setMatrixCounts({ ...matrixCounts, thongHieu: parseInt(e.target.value) || 0 })}
-                    className="w-full p-2 rounded-lg border border-slate-300 bg-white font-bold"
-                  />
-                </div>
-                <div>
-                  <label className="block font-semibold text-slate-600">Vận dụng:</label>
-                  <input
-                    type="number"
-                    value={matrixCounts.vanDung}
-                    onChange={(e) => setMatrixCounts({ ...matrixCounts, vanDung: parseInt(e.target.value) || 0 })}
-                    className="w-full p-2 rounded-lg border border-slate-300 bg-white font-bold"
-                  />
-                </div>
-                <div>
-                  <label className="block font-semibold text-slate-600">Vận dụng cao:</label>
-                  <input
-                    type="number"
-                    value={matrixCounts.vanDungCao}
-                    onChange={(e) => setMatrixCounts({ ...matrixCounts, vanDungCao: parseInt(e.target.value) || 0 })}
-                    className="w-full p-2 rounded-lg border border-slate-300 bg-white font-bold"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                onClick={() => setActiveTab('list')}
-                className="px-4 py-2.5 rounded-xl text-xs font-semibold bg-slate-100 text-slate-700"
-              >
-                Hủy
-              </button>
-              <button
-                onClick={handleCreateByMatrix}
-                className="px-6 py-2.5 rounded-xl text-xs font-bold bg-sky-600 hover:bg-sky-700 text-white shadow-md cursor-pointer"
-              >
-                Tạo Đề Từ Ngân Hàng
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* VIEWER: Exam Paper View & Print */}
       {activeTab === 'viewer' && selectedExam && !getContentPermissions(selectedExam, accessContext).canView && (
         <div className="bg-white rounded-2xl p-12 border border-rose-200 shadow-sm text-center max-w-xl mx-auto space-y-4">
@@ -3961,324 +3828,6 @@ return (
             ))}
           </div>
 
-        </div>
-      )}
-
-      {/* SOLVER: Interactive Student Test-Taking Mode */}
-      {activeTab === 'solver' && selectedExam && (
-        <div className="bg-white rounded-2xl p-6 sm:p-8 border border-slate-200 shadow-xl space-y-6 max-w-4xl mx-auto animate-fade-in">
-          <div className="flex items-center justify-between border-b border-slate-200 pb-4">
-            <button
-              onClick={() => setActiveTab('list')}
-              className="px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 transition-all flex items-center gap-1.5 cursor-pointer"
-            >
-              <ArrowLeft className="w-4 h-4" /> Thoát làm bài
-            </button>
-
-            <div className="text-center">
-              <span className="text-[10px] font-bold uppercase text-emerald-800 bg-emerald-100 px-2.5 py-1 rounded-full">
-                ✍️ Chế độ làm bài trực tuyến (Interactive Test Mode)
-              </span>
-              <h2 className="text-lg sm:text-xl font-extrabold text-slate-900 font-heading mt-1">
-                {selectedExam.title}
-              </h2>
-            </div>
-
-            <div className="text-xs font-bold text-slate-600 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-xl">
-              ⏱️ Thời gian: {selectedExam.durationMinutes} phút
-            </div>
-          </div>
-
-          {isExamSubmitted && (
-            <div className="bg-emerald-50 border border-emerald-300 rounded-2xl p-5 text-center space-y-2 animate-scale-up">
-              <h3 className="text-lg font-black text-emerald-900 font-heading">
-                🎉 Nộp bài thành công!
-              </h3>
-              <p className="text-xs font-semibold text-emerald-800">
-                Điểm số của bạn: <span className="text-base font-black text-emerald-600">{examScore} / 10 điểm</span>
-              </p>
-              <p className="text-[11px] text-emerald-700">
-                Hệ thống đã ghi nhận kết quả và lưu vào hồ sơ học tập của bạn. Xem chi tiết đáp án và lời giải bên dưới.
-              </p>
-              <button
-                onClick={() => setIsExamSubmitted(false)}
-                className="px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-xs cursor-pointer"
-              >
-                Làm lại / Sửa bài
-              </button>
-            </div>
-          )}
-
-          <div className="space-y-6">
-            {(selectedExam.questions || []).map((q, idx) => (
-              <div key={q.id} className="p-5 rounded-2xl bg-slate-50/80 border border-slate-200 space-y-3">
-                <div className="flex items-start justify-between gap-2">
-                  <h4 className="text-xs font-extrabold text-slate-900 leading-relaxed">
-                    Câu {idx + 1} ({q.level === 'nhan_biet' ? 'Nhận biết' : q.level === 'thong_hieu' ? 'Thông hiểu' : q.level === 'van_dung' ? 'Vận dụng' : 'VD Cao'}): {q.content}
-                  </h4>
-                </div>
-
-                {/* 0. Nối cặp / Kéo thả (Matching) */}
-                {(q.type === 'matching' || (q.matchingPairs && q.matchingPairs.length > 0)) && (
-                  <div className="space-y-4 pt-1">
-                    <div className="bg-indigo-50 border border-indigo-100 p-3 rounded-xl text-indigo-950 text-xs font-bold flex items-center gap-2">
-                      <span>🔗</span>
-                      <span>Nối ý ở Cột 1 (bên trái) tương ứng với lựa chọn ở Cột 2 (bên phải):</span>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {/* Cột 1 (Bên trái): Đánh số thứ tự 1, 2, 3, 4... */}
-                      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 space-y-2.5">
-                        <div className="text-[11px] font-black text-indigo-800 uppercase tracking-wider flex items-center justify-between pb-2 border-b border-slate-200">
-                          <span>📌 CỘT 1 (VẾ TRÁI)</span>
-                          <span className="text-[10px] bg-indigo-100 px-2 py-0.5 rounded text-indigo-700 font-extrabold">Thứ tự 1, 2, 3...</span>
-                        </div>
-                        <div className="space-y-2">
-                          {(q.matchingPairs || []).map((pair, pIdx) => {
-                            const currentSelectedRight = examAnswers[q.id]?.[pIdx] || '';
-                            return (
-                              <div key={pIdx} className="p-3 bg-white border border-slate-200 rounded-xl space-y-2 text-xs shadow-2xs">
-                                <div className="flex items-start gap-2">
-                                  <span className="w-5 h-5 rounded-md bg-indigo-600 text-white flex items-center justify-center text-[11px] font-black shrink-0 mt-0.5">
-                                    {pIdx + 1}
-                                  </span>
-                                  <span className="font-bold text-slate-800 flex-1 leading-relaxed">{pair.left}</span>
-                                </div>
-
-                                <div className="pt-1 flex items-center gap-2">
-                                  <span className="text-[11px] font-bold text-indigo-600 shrink-0">Nối với Cột 2:</span>
-                                  <select
-                                    value={currentSelectedRight}
-                                    onChange={(e) => {
-                                      if (isExamSubmitted) return;
-                                      const val = e.target.value;
-                                      setExamAnswers({
-                                        ...examAnswers,
-                                        [q.id]: { ...(examAnswers[q.id] || {}), [pIdx]: val }
-                                      });
-                                    }}
-                                    disabled={isExamSubmitted}
-                                    className="flex-1 p-1.5 bg-indigo-50/70 border border-indigo-200 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-300 cursor-pointer"
-                                  >
-                                    <option value="" className="text-slate-400">-- Chọn đáp án --</option>
-                                    {(q.matchingPairs || []).map((pRight, rIdx) => {
-                                      const letterLabel = String.fromCharCode(65 + rIdx);
-                                      return (
-                                        <option key={rIdx} value={pRight.right} className="font-semibold text-slate-800">
-                                          {letterLabel}. {pRight.right}
-                                        </option>
-                                      );
-                                    })}
-                                  </select>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      {/* Cột 2 (Bên phải): Gán nhãn chữ cái A, B, C, D... */}
-                      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 space-y-2.5">
-                        <div className="text-[11px] font-black text-emerald-800 uppercase tracking-wider flex items-center justify-between pb-2 border-b border-slate-200">
-                          <span>🎯 CỘT 2 (LỰA CHỌN BÊN PHẢI)</span>
-                          <span className="text-[10px] bg-emerald-100 px-2 py-0.5 rounded text-emerald-700 font-extrabold">Nhãn A, B, C...</span>
-                        </div>
-                        <div className="space-y-2">
-                          {(q.matchingPairs || []).map((pair, rIdx) => {
-                            const letterLabel = String.fromCharCode(65 + rIdx);
-                            return (
-                              <div key={rIdx} className="p-3 bg-white border border-slate-200 rounded-xl flex items-start gap-2 text-xs shadow-2xs">
-                                <span className="w-5 h-5 rounded-md bg-emerald-600 text-white flex items-center justify-center text-[11px] font-black shrink-0 mt-0.5">
-                                  {letterLabel}
-                                </span>
-                                <span className="font-bold text-slate-800 flex-1 leading-relaxed">{pair.right}</span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* 1. Trắc nghiệm đơn */}
-                {q.type === 'multiple_choice' && !q.matchingPairs && q.options && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                    {q.options.map((opt, oIdx) => {
-                      const optLetter = opt.charAt(0);
-                      const isSelected = examAnswers[q.id] === optLetter;
-                      const isCorrectOpt = isExamSubmitted && opt.startsWith(q.correctAnswer || '');
-                      const isWrongSelected = isExamSubmitted && isSelected && !isCorrectOpt;
-
-                      let borderStyle = isSelected ? 'border-sky-500 bg-sky-50 font-bold text-sky-900' : 'border-slate-200 bg-white text-slate-700';
-                      if (isCorrectOpt) borderStyle = 'border-emerald-500 bg-emerald-50 font-bold text-emerald-900';
-                      if (isWrongSelected) borderStyle = 'border-rose-500 bg-rose-50 font-bold text-rose-900';
-
-                      return (
-                        <label key={oIdx} className={`flex items-center gap-2.5 p-3 rounded-xl border text-xs cursor-pointer transition-all ${borderStyle}`}>
-                          <input
-                            type="radio"
-                            name={`q-${q.id}`}
-                            checked={isSelected}
-                            onChange={() => !isExamSubmitted && setExamAnswers({ ...examAnswers, [q.id]: optLetter })}
-                            disabled={isExamSubmitted}
-                            className="text-sky-600 focus:ring-sky-500"
-                          />
-                          <span>{opt}</span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {/* 2. Chọn nhiều đáp án */}
-                {q.type === 'multiple_response' && q.options && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                    {q.options.map((opt, oIdx) => {
-                      const optLetter = opt.charAt(0);
-                      const currentArr = examAnswers[q.id] || [];
-                      const isChecked = currentArr.includes(optLetter);
-
-                      return (
-                        <label key={oIdx} className={`flex items-center gap-2.5 p-3 rounded-xl border text-xs cursor-pointer transition-all ${isChecked ? 'border-indigo-500 bg-indigo-50 font-bold text-indigo-900' : 'border-slate-200 bg-white text-slate-700'}`}>
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            onChange={(e) => {
-                              if (isExamSubmitted) return;
-                              const next = e.target.checked ? [...currentArr, optLetter] : currentArr.filter((x: string) => x !== optLetter);
-                              setExamAnswers({ ...examAnswers, [q.id]: next });
-                            }}
-                            disabled={isExamSubmitted}
-                            className="text-indigo-600 focus:ring-indigo-500 rounded"
-                          />
-                          <span>{opt}</span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {/* 3. Đúng / Sai */}
-                {q.type === 'true_false' && q.statements && (
-                  <div className="space-y-2 pt-1">
-                    {q.statements.map((st, sIdx) => {
-                      const uState = examAnswers[q.id]?.[sIdx];
-                      return (
-                        <div key={sIdx} className="p-3 bg-white border border-slate-200 rounded-xl flex items-center justify-between gap-4">
-                          <span className="text-xs font-semibold text-slate-800">{sIdx + 1}. {st.statement}</span>
-                          <div className="flex items-center gap-2 shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => !isExamSubmitted && setExamAnswers({ ...examAnswers, [q.id]: { ...(examAnswers[q.id] || {}), [sIdx]: true } })}
-                              disabled={isExamSubmitted}
-                              className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer transition-all ${uState === true ? 'bg-emerald-600 text-white shadow-xs' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
-                            >
-                              Đúng
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => !isExamSubmitted && setExamAnswers({ ...examAnswers, [q.id]: { ...(examAnswers[q.id] || {}), [sIdx]: false } })}
-                              disabled={isExamSubmitted}
-                              className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer transition-all ${uState === false ? 'bg-rose-600 text-white shadow-xs' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
-                            >
-                              Sai
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {/* 4. Điền khuyết */}
-                {q.type === 'fill_blank' && (
-                  <div className="pt-1">
-                    <input
-                      type="text"
-                      value={examAnswers[q.id] || ''}
-                      onChange={(e) => !isExamSubmitted && setExamAnswers({ ...examAnswers, [q.id]: e.target.value })}
-                      disabled={isExamSubmitted}
-                      placeholder="Nhập từ hoặc cụm từ điền vào ô trống..."
-                      className="w-full p-3 rounded-xl border border-slate-300 text-xs bg-white focus:ring-2 focus:ring-sky-500 font-medium"
-                    />
-                  </div>
-                )}
-
-                {/* 5. Sắp xếp */}
-                {q.type === 'ordering' && (
-                  <div className="space-y-2 pt-1">
-                    <p className="text-[11px] text-slate-500 italic">Sắp xếp các bước theo thứ tự logic:</p>
-                    {(q.options || ['Bước 1', 'Bước 2', 'Bước 3']).map((item, oIdx) => (
-                      <div key={oIdx} className="p-2.5 bg-white border border-slate-200 rounded-xl flex items-center justify-between text-xs font-medium">
-                        <span>{oIdx + 1}. {item}</span>
-                        <span className="text-[10px] bg-slate-100 px-2 py-0.5 rounded text-slate-600 font-bold">Thứ tự {oIdx + 1}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* 6. Phân loại */}
-                {q.type === 'classification' && (
-                  <div className="space-y-2 pt-1">
-                    {(q.classificationItems || [{ name: 'Vật phẩm mẫu', group: q.classificationGroups?.[0] || 'Nhóm 1' }]).map((ci, cIdx) => (
-                      <div key={cIdx} className="p-2.5 bg-white border border-slate-200 rounded-xl flex items-center justify-between text-xs">
-                        <span className="font-semibold text-slate-800">{ci.name}</span>
-                        <select
-                          value={examAnswers[q.id]?.[cIdx] || ''}
-                          onChange={(e) => !isExamSubmitted && setExamAnswers({ ...examAnswers, [q.id]: { ...(examAnswers[q.id] || {}), [cIdx]: e.target.value } })}
-                          disabled={isExamSubmitted}
-                          className="p-1.5 rounded-lg border border-slate-300 text-xs bg-slate-50 font-bold text-emerald-800"
-                        >
-                          <option value="">-- Chọn danh mục --</option>
-                          {(q.classificationGroups || ['Tự nhiên', 'Công nghệ']).map((g, gIdx) => (
-                            <option key={gIdx} value={g}>{g}</option>
-                          ))}
-                        </select>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* 7. Tự luận */}
-                {q.type === 'essay' && (
-                  <div className="pt-1">
-                    <textarea
-                      rows={4}
-                      value={examAnswers[q.id] || ''}
-                      onChange={(e) => !isExamSubmitted && setExamAnswers({ ...examAnswers, [q.id]: e.target.value })}
-                      disabled={isExamSubmitted}
-                      placeholder="Trình bày câu trả lời chi tiết của bạn..."
-                      className="w-full p-3 rounded-xl border border-slate-300 text-xs bg-white focus:ring-2 focus:ring-sky-500 font-medium"
-                    />
-                  </div>
-                )}
-
-                {isExamSubmitted && q.explanation && (
-                  <div className="mt-2 p-2.5 bg-amber-50 rounded-lg text-[11px] text-amber-900 border border-amber-200">
-                    💡 <strong>Hướng dẫn giải thích:</strong> {q.explanation}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-
-          {!isExamSubmitted && (
-            <div className="flex justify-end gap-3 pt-4 border-t border-slate-200">
-              <button
-                onClick={() => setActiveTab('list')}
-                className="px-5 py-2.5 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer"
-              >
-                Hủy bỏ
-              </button>
-              <button
-                onClick={handleExamSubmit}
-                className="px-7 py-2.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-lg cursor-pointer transition-all"
-              >
-                Nộp Bài Thi
-              </button>
-            </div>
-          )}
         </div>
       )}
 
