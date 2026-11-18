@@ -201,19 +201,24 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
 
     try {
       const urlObj = new URL(baseUrl);
+      urlObj.searchParams.set('autologin', 'true');
       urlObj.searchParams.set('tab', 'assignment');
       urlObj.searchParams.set('module', 'assignment');
       urlObj.searchParams.set('grade', 'Khối 3');
-      if (grade3SsoPayload.ssoToken) {
-        urlObj.searchParams.set('sso_token', grade3SsoPayload.ssoToken);
-      }
       if (grade3SsoPayload.email) {
+        urlObj.searchParams.set('email', grade3SsoPayload.email);
         urlObj.searchParams.set('sso_email', grade3SsoPayload.email);
       }
+      if (grade3SsoPayload.ssoToken) {
+        urlObj.searchParams.set('token', grade3SsoPayload.ssoToken);
+        urlObj.searchParams.set('sso_token', grade3SsoPayload.ssoToken);
+      }
       if (grade3SsoPayload.name) {
+        urlObj.searchParams.set('name', grade3SsoPayload.name);
         urlObj.searchParams.set('sso_name', grade3SsoPayload.name);
       }
       if (grade3SsoPayload.role) {
+        urlObj.searchParams.set('role', grade3SsoPayload.role);
         urlObj.searchParams.set('sso_role', grade3SsoPayload.role);
       }
       return urlObj.toString();
@@ -226,22 +231,25 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     const iframeWindow = grade3IframeRef.current?.contentWindow;
     if (!iframeWindow) return;
     try {
-      iframeWindow.postMessage(
-        {
-          type: 'PK_TRUC_KHANG_SSO_LOGIN',
-          ssoToken: grade3SsoPayload.ssoToken,
-          tab: 'assignment',
-          module: 'assignment',
-          user: {
-            email: grade3SsoPayload.email,
-            name: grade3SsoPayload.name,
-            displayName: grade3SsoPayload.name,
-            role: grade3SsoPayload.role,
-            uid: grade3SsoPayload.uid,
-          },
+      const payload = {
+        autologin: true,
+        email: grade3SsoPayload.email,
+        name: grade3SsoPayload.name,
+        role: grade3SsoPayload.role,
+        token: grade3SsoPayload.ssoToken,
+        ssoToken: grade3SsoPayload.ssoToken,
+        tab: 'assignment',
+        module: 'assignment',
+        user: {
+          email: grade3SsoPayload.email,
+          name: grade3SsoPayload.name,
+          displayName: grade3SsoPayload.name,
+          role: grade3SsoPayload.role,
+          uid: grade3SsoPayload.uid,
         },
-        '*'
-      );
+      };
+      iframeWindow.postMessage({ ...payload, type: 'PK_TRUC_KHANG_SSO_LOGIN' }, '*');
+      iframeWindow.postMessage({ ...payload, type: 'SSO_AUTO_LOGIN' }, '*');
     } catch {
       // Ignore cross-origin postMessage errors if any
     }
@@ -263,6 +271,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
       teacherEmail: grade3SsoPayload.email,
       teacherName: grade3SsoPayload.name,
       teacherRole: grade3SsoPayload.role,
+      ssoToken: grade3SsoPayload.ssoToken,
     }).then((docHtml) => {
       if (!cancelled) {
         setGrade3SrcDoc(docHtml);
@@ -279,6 +288,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     grade3SsoPayload.email,
     grade3SsoPayload.name,
     grade3SsoPayload.role,
+    grade3SsoPayload.ssoToken,
   ]);
 
   const handleGrade3IframeLoad = useCallback(() => {

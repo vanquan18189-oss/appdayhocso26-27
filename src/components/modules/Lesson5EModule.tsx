@@ -21,6 +21,7 @@ import {
 } from '../../services/grade3LessonDbService';
 import { Grade3DatabaseConfigModal } from './Grade3DatabaseConfigModal';
 import { encodeUtf8Base64 } from '../portal/DigitalResourcePortal';
+import { buildGrade3EmbeddedSrcDoc } from '../../utils/grade3EmbedLoader';
 
 interface Lesson5EModuleProps {
   lessons: Lesson5EPlan[];
@@ -160,6 +161,7 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
   const grade3IframeRef = useRef<HTMLIFrameElement | null>(null);
   const [grade3IframeKey, setGrade3IframeKey] = useState<number>(0);
   const [isGrade3IframeLoading, setIsGrade3IframeLoading] = useState<boolean>(true);
+  const [grade3SrcDoc, setGrade3SrcDoc] = useState<string | null>(null);
 
   const handleSyncGrade3Database = useCallback(
     async (showNotification = false) => {
@@ -229,19 +231,24 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
 
     try {
       const urlObj = new URL(baseUrl);
-      urlObj.searchParams.set('tab', 'lesson');
-      urlObj.searchParams.set('module', 'elearning');
+      urlObj.searchParams.set('autologin', 'true');
+      urlObj.searchParams.set('tab', 'lesson_5e');
+      urlObj.searchParams.set('module', 'lesson_5e');
       urlObj.searchParams.set('grade', 'Khối 3');
-      if (grade3SsoPayload.ssoToken) {
-        urlObj.searchParams.set('sso_token', grade3SsoPayload.ssoToken);
-      }
       if (grade3SsoPayload.email) {
+        urlObj.searchParams.set('email', grade3SsoPayload.email);
         urlObj.searchParams.set('sso_email', grade3SsoPayload.email);
       }
+      if (grade3SsoPayload.ssoToken) {
+        urlObj.searchParams.set('token', grade3SsoPayload.ssoToken);
+        urlObj.searchParams.set('sso_token', grade3SsoPayload.ssoToken);
+      }
       if (grade3SsoPayload.name) {
+        urlObj.searchParams.set('name', grade3SsoPayload.name);
         urlObj.searchParams.set('sso_name', grade3SsoPayload.name);
       }
       if (grade3SsoPayload.role) {
+        urlObj.searchParams.set('role', grade3SsoPayload.role);
         urlObj.searchParams.set('sso_role', grade3SsoPayload.role);
       }
       return urlObj.toString();
@@ -254,26 +261,65 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
     const iframeWindow = grade3IframeRef.current?.contentWindow;
     if (!iframeWindow) return;
     try {
-      iframeWindow.postMessage(
-        {
-          type: 'PK_TRUC_KHANG_SSO_LOGIN',
-          ssoToken: grade3SsoPayload.ssoToken,
-          tab: 'lesson',
-          module: 'elearning',
-          user: {
-            email: grade3SsoPayload.email,
-            name: grade3SsoPayload.name,
-            displayName: grade3SsoPayload.name,
-            role: grade3SsoPayload.role,
-            uid: grade3SsoPayload.uid,
-          },
+      const payload = {
+        autologin: true,
+        email: grade3SsoPayload.email,
+        name: grade3SsoPayload.name,
+        role: grade3SsoPayload.role,
+        token: grade3SsoPayload.ssoToken,
+        ssoToken: grade3SsoPayload.ssoToken,
+        tab: 'lesson_5e',
+        module: 'lesson_5e',
+        user: {
+          email: grade3SsoPayload.email,
+          name: grade3SsoPayload.name,
+          displayName: grade3SsoPayload.name,
+          role: grade3SsoPayload.role,
+          uid: grade3SsoPayload.uid,
         },
-        '*'
-      );
+      };
+      iframeWindow.postMessage({ ...payload, type: 'PK_TRUC_KHANG_SSO_LOGIN' }, '*');
+      iframeWindow.postMessage({ ...payload, type: 'SSO_AUTO_LOGIN' }, '*');
     } catch {
       // Ignore cross-origin postMessage errors if any
     }
   }, [grade3SsoPayload]);
+
+  // Load HTML of https://dayhockhoi3.vercel.app and inject auto-routing to 'lesson_5e' (Bài giảng E-Learning)
+  useEffect(() => {
+    if (filterGrade !== 'Khối 3') return;
+    let cancelled = false;
+    setIsGrade3IframeLoading(true);
+
+    const rawBase =
+      (grade3DbConfig.externalAppUrl || DEFAULT_GRADE3_APP_URL).trim() ||
+      DEFAULT_GRADE3_APP_URL;
+
+    buildGrade3EmbeddedSrcDoc({
+      baseUrl: rawBase,
+      targetModuleId: 'lesson_5e',
+      teacherEmail: grade3SsoPayload.email,
+      teacherName: grade3SsoPayload.name,
+      teacherRole: grade3SsoPayload.role,
+      ssoToken: grade3SsoPayload.ssoToken,
+    }).then((docHtml) => {
+      if (!cancelled) {
+        setGrade3SrcDoc(docHtml);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    filterGrade,
+    grade3IframeKey,
+    grade3DbConfig.externalAppUrl,
+    grade3SsoPayload.email,
+    grade3SsoPayload.name,
+    grade3SsoPayload.role,
+    grade3SsoPayload.ssoToken,
+  ]);
 
   const handleGrade3IframeLoad = useCallback(() => {
     setIsGrade3IframeLoading(false);
@@ -563,15 +609,29 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
               </div>
             )}
 
-            <iframe
-              ref={grade3IframeRef}
-              key={`${grade3IframeKey}-${grade3EmbeddedUrlWithSso}`}
-              src={grade3EmbeddedUrlWithSso}
-              onLoad={handleGrade3IframeLoad}
-              title="Giao diện Bài giảng Chuyên biệt Khối 3"
-              className="w-full h-full border-0 bg-white"
-              allow="fullscreen; clipboard-read; clipboard-write; microphone; camera; autoplay"
-            />
+            {grade3SrcDoc ? (
+              <iframe
+                ref={grade3IframeRef}
+                key={`srcdoc-${grade3IframeKey}`}
+                srcDoc={grade3SrcDoc}
+                onLoad={handleGrade3IframeLoad}
+                title="Giao diện Bài giảng Chuyên biệt Khối 3"
+                className="w-full h-full border-0 bg-white"
+                allow="fullscreen; clipboard-read; clipboard-write; microphone; camera; autoplay"
+              />
+            ) : (
+              !isGrade3IframeLoading && (
+                <iframe
+                  ref={grade3IframeRef}
+                  key={`src-${grade3IframeKey}-${grade3EmbeddedUrlWithSso}`}
+                  src={grade3EmbeddedUrlWithSso}
+                  onLoad={handleGrade3IframeLoad}
+                  title="Giao diện Bài giảng Chuyên biệt Khối 3"
+                  className="w-full h-full border-0 bg-white"
+                  allow="fullscreen; clipboard-read; clipboard-write; microphone; camera; autoplay"
+                />
+              )
+            )}
           </div>
         </div>
       )}

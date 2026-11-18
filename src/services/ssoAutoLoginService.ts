@@ -48,17 +48,23 @@ export function decodeUtf8Base64(encoded: string): Record<string, any> | null {
 }
 
 /**
- * Ánh xạ tham số điều hướng nhanh trên URL (tab=ppt-ai, tab=exam-ai, tab=game, tab=library)
+ * Ánh xạ tham số điều hướng nhanh trên URL (tab=assignment, tab=lesson_5e, tab=ppt-ai, tab=exam-ai, tab=game, tab=library)
  * sang phân hệ chức năng tương ứng
  */
 export function mapSsoTabToActiveModule(tabOrModule?: string | null): ActiveModule | undefined {
   const normalized = (tabOrModule || '').trim().toLowerCase();
   if (!normalized) return undefined;
 
-  if (normalized === 'ppt-ai' || normalized === 'lesson' || normalized === 'elearning') {
+  if (
+    normalized === 'lesson_5e' ||
+    normalized === 'ppt-ai' ||
+    normalized === 'lesson' ||
+    normalized === 'elearning'
+  ) {
     return 'lesson_5e';
   }
   if (
+    normalized === 'exam_management' ||
     normalized === 'exam-ai' ||
     normalized === 'exam-matrix' ||
     normalized === 'exam' ||
@@ -66,17 +72,39 @@ export function mapSsoTabToActiveModule(tabOrModule?: string | null): ActiveModu
   ) {
     return 'exam_management';
   }
-  if (normalized === 'game' || normalized === 'games' || normalized === 'game-ai') {
+  if (
+    normalized === 'interactive_games' ||
+    normalized === 'game' ||
+    normalized === 'games' ||
+    normalized === 'game-ai'
+  ) {
     return 'interactive_games';
   }
-  if (normalized === 'library' || normalized === 'school-library' || normalized === 'kho-hoc-lieu') {
+  if (
+    normalized === 'dashboard' ||
+    normalized === 'library' ||
+    normalized === 'school-library' ||
+    normalized === 'kho-hoc-lieu'
+  ) {
     return 'dashboard';
   }
-  if (normalized === 'question-bank' || normalized === 'questions') {
+  if (
+    normalized === 'question_bank' ||
+    normalized === 'question-bank' ||
+    normalized === 'questions'
+  ) {
     return 'question_bank';
   }
-  if (normalized === 'assignment' || normalized === 'homework') {
+  if (
+    normalized === 'assignment' ||
+    normalized === 'homework' ||
+    normalized === 'bai-tap' ||
+    normalized === 'quan-ly-bai-tap'
+  ) {
     return 'assignment';
+  }
+  if (normalized === 'hoc_ba_so' || normalized === 'hoc-ba-so') {
+    return 'hoc_ba_so';
   }
   return undefined;
 }
@@ -124,6 +152,7 @@ export function persistSsoTeacherSession(params: {
     userRole: effectiveRole,
     targetModule,
     rawTab: params.rawTab || undefined,
+    autologin: true,
     source: 'PK_TRUC_KHANG_LMS',
     loggedInAt: new Date().toISOString(),
   };
@@ -133,6 +162,7 @@ export function persistSsoTeacherSession(params: {
       localStorage.setItem('eduplay_teacher_email', cleanEmail);
       localStorage.setItem('eduplay_teacher_name', effectiveName);
       localStorage.setItem('eduplay_user_role', effectiveRole);
+      localStorage.setItem('eduplay_active_role', effectiveRole);
       localStorage.setItem(SSO_SESSION_KEY, JSON.stringify(sessionPayload));
       localStorage.setItem('khls_current_user', JSON.stringify(sessionPayload));
 
@@ -169,7 +199,7 @@ export function persistSsoTeacherSession(params: {
 }
 
 /**
- * Xóa sạch các tham số sso_token, sso_email, sso_name, sso_role trên thanh địa chỉ bằng window.history.replaceState
+ * Xóa sạch các tham số SSO (email, token, autologin, sso_token, sso_email, sso_name, sso_role) trên thanh địa chỉ
  */
 export function cleanSsoParamsFromUrl(): void {
   if (typeof window === 'undefined') return;
@@ -177,10 +207,16 @@ export function cleanSsoParamsFromUrl(): void {
     const url = new URL(window.location.href);
     const ssoKeys = [
       'sso_token',
+      'token',
       'sso_email',
+      'email',
       'sso_name',
+      'name',
       'sso_role',
+      'role',
       'sso_uid',
+      'autologin',
+      'auto_login',
       'tab',
       'module',
     ];
@@ -203,23 +239,26 @@ export function cleanSsoParamsFromUrl(): void {
 }
 
 /**
- * Kiểm tra ngay khi khởi động ứng dụng xem trên URL (window.location.search) có sso_token / sso_email
- * hoặc trong sessionStorage đã có phiên SSO đang hoạt động hay chưa.
+ * Kiểm tra ngay khi khởi động ứng dụng xem trên URL (window.location.search) có:
+ * - ?email=...&token=...&autologin=true hoặc ?sso_token=...&sso_email=...
+ * - Hoặc trong sessionStorage đã có phiên SSO đang hoạt động hay chưa.
  */
 export function checkInitialSsoAutoLogin(): SsoLoginResult | null {
   if (typeof window === 'undefined') return null;
 
   try {
     const searchParams = new URLSearchParams(window.location.search);
-    const rawToken = searchParams.get('sso_token');
-    const rawEmailParam = searchParams.get('sso_email');
-    const rawNameParam = searchParams.get('sso_name');
-    const rawRoleParam = searchParams.get('sso_role');
+    const rawToken = searchParams.get('sso_token') || searchParams.get('token');
+    const rawEmailParam = searchParams.get('sso_email') || searchParams.get('email');
+    const rawNameParam = searchParams.get('sso_name') || searchParams.get('name');
+    const rawRoleParam = searchParams.get('sso_role') || searchParams.get('role');
+    const rawAutoLoginParam = searchParams.get('autologin') || searchParams.get('auto_login');
     const rawTabParam = searchParams.get('tab') || searchParams.get('module');
 
     let resolvedEmail = (rawEmailParam || '').trim();
     let resolvedName = (rawNameParam || '').trim();
     let resolvedRole = (rawRoleParam || '').trim();
+    let resolvedTab = (rawTabParam || '').trim();
 
     if (rawToken) {
       const decoded = decodeUtf8Base64(rawToken);
@@ -233,7 +272,20 @@ export function checkInitialSsoAutoLogin(): SsoLoginResult | null {
         if (!resolvedRole && typeof decoded.role === 'string') {
           resolvedRole = decoded.role.trim();
         }
+        if (!resolvedTab && typeof (decoded.tab || decoded.module) === 'string') {
+          resolvedTab = String(decoded.tab || decoded.module).trim();
+        }
       }
+    }
+
+    // Nếu truyền ?autologin=true nhưng chưa kèm email trực tiếp trên URL thì lấy email giáo viên đã lưu
+    if (
+      !resolvedEmail &&
+      (rawAutoLoginParam === 'true' || rawAutoLoginParam === '1')
+    ) {
+      resolvedEmail =
+        (localStorage.getItem('eduplay_teacher_email') || '').trim() ||
+        (sessionStorage.getItem('eduplay_teacher_email') || '').trim();
     }
 
     if (resolvedEmail) {
@@ -241,7 +293,7 @@ export function checkInitialSsoAutoLogin(): SsoLoginResult | null {
         email: resolvedEmail,
         name: resolvedName,
         role: resolvedRole,
-        rawTab: rawTabParam,
+        rawTab: resolvedTab,
       });
       cleanSsoParamsFromUrl();
       return result;
@@ -253,8 +305,8 @@ export function checkInitialSsoAutoLogin(): SsoLoginResult | null {
     if (isSsoActive && rawSavedSession) {
       const parsed = JSON.parse(rawSavedSession);
       if (parsed && typeof parsed.email === 'string' && parsed.email.trim()) {
-        const nextModule = mapSsoTabToActiveModule(rawTabParam) || parsed.targetModule;
-        if (rawTabParam) {
+        const nextModule = mapSsoTabToActiveModule(resolvedTab) || parsed.targetModule;
+        if (resolvedTab) {
           cleanSsoParamsFromUrl();
         }
         return {
@@ -263,7 +315,7 @@ export function checkInitialSsoAutoLogin(): SsoLoginResult | null {
           name: parsed.name || resolveTeacherNameByEmail(parsed.email),
           role: parsed.role === 'admin' ? 'admin' : 'teacher',
           targetModule: nextModule,
-          rawTab: rawTabParam || parsed.rawTab,
+          rawTab: resolvedTab || parsed.rawTab,
         };
       }
     }

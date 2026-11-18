@@ -310,43 +310,79 @@ export function PortalView({ onSelectPortal }: PortalViewProps) {
   const [authError, setAuthError] = useState<string | null>(null);
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(false);
 
-  // Tự động kiểm tra SSO ngay khi PortalView khởi tạo (dự phòng trường hợp truy cập qua URL hoặc iframe postMessage)
+  // Tự động kiểm tra SSO ngay khi PortalView khởi tạo (bỏ qua hoàn toàn màn hình Cổng Học Sinh / Cổng Giáo Viên)
   useEffect(() => {
-    const sso = checkInitialSsoAutoLogin();
-    if (sso && sso.authenticated) {
-      onSelectPortal(sso.role, 'Khối 3', 'Lớp 3A', {
-        email: sso.email,
-        name: sso.name,
-      });
-      return;
+    try {
+      const sso = checkInitialSsoAutoLogin();
+      if (sso && sso.authenticated) {
+        onSelectPortal(sso.role, 'Khối 3', 'Lớp 3A', {
+          email: sso.email,
+          name: sso.name,
+        });
+        if (sso.targetModule) {
+          window.setTimeout(() => {
+            window.dispatchEvent(
+              new CustomEvent('eduplay_navigate_module', {
+                detail: { module: sso.targetModule },
+              })
+            );
+          }, 50);
+        }
+        return;
+      }
+    } catch (err) {
+      console.warn('SSO init check warning:', err);
     }
 
     const handleSsoMessage = (event: MessageEvent) => {
-      const data = event?.data;
-      if (!data || typeof data !== 'object' || data.type !== 'PK_TRUC_KHANG_SSO_LOGIN') {
-        return;
-      }
-      const userObj = data.user && typeof data.user === 'object' ? data.user : {};
-      let email = String(userObj.email || data.email || '').trim();
-      let name = String(userObj.name || userObj.displayName || data.name || '').trim();
-      let role = String(userObj.role || data.role || '').trim();
-
-      if (!email && typeof data.ssoToken === 'string') {
-        const decoded = decodeUtf8Base64(data.ssoToken);
-        if (decoded) {
-          email = String(decoded.email || '').trim();
-          name = name || String(decoded.name || '').trim();
-          role = role || String(decoded.role || '').trim();
+      try {
+        const data = event?.data;
+        if (
+          !data ||
+          typeof data !== 'object' ||
+          (data.type !== 'PK_TRUC_KHANG_SSO_LOGIN' &&
+            data.type !== 'SSO_AUTO_LOGIN' &&
+            data.autologin !== true)
+        ) {
+          return;
         }
-      }
+        const userObj = data.user && typeof data.user === 'object' ? data.user : {};
+        let email = String(userObj.email || data.email || data.sso_email || '').trim();
+        let name = String(
+          userObj.name || userObj.displayName || data.name || data.sso_name || ''
+        ).trim();
+        let role = String(userObj.role || data.role || data.sso_role || '').trim();
+        const rawTab = String(data.tab || data.module || '').trim();
+        const rawToken = String(data.ssoToken || data.token || data.sso_token || '').trim();
 
-      if (!email) return;
-      const res = persistSsoTeacherSession({ email, name, role });
-      cleanSsoParamsFromUrl();
-      onSelectPortal(res.role, 'Khối 3', 'Lớp 3A', {
-        email: res.email,
-        name: res.name,
-      });
+        if (!email && rawToken) {
+          const decoded = decodeUtf8Base64(rawToken);
+          if (decoded) {
+            email = String(decoded.email || '').trim();
+            name = name || String(decoded.name || '').trim();
+            role = role || String(decoded.role || '').trim();
+          }
+        }
+
+        if (!email) return;
+        const res = persistSsoTeacherSession({ email, name, role, rawTab });
+        cleanSsoParamsFromUrl();
+        onSelectPortal(res.role, 'Khối 3', 'Lớp 3A', {
+          email: res.email,
+          name: res.name,
+        });
+        if (res.targetModule) {
+          window.setTimeout(() => {
+            window.dispatchEvent(
+              new CustomEvent('eduplay_navigate_module', {
+                detail: { module: res.targetModule },
+              })
+            );
+          }, 50);
+        }
+      } catch (err) {
+        console.warn('SSO postMessage warning:', err);
+      }
     };
 
     window.addEventListener('message', handleSsoMessage);
