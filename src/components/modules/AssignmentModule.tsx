@@ -20,7 +20,6 @@ import {
 } from '../../services/grade3LessonDbService';
 import { Grade3DatabaseConfigModal } from './Grade3DatabaseConfigModal';
 import { encodeUtf8Base64 } from '../portal/DigitalResourcePortal';
-import { buildGrade3EmbeddedSrcDoc } from '../../utils/grade3EmbedLoader';
 
 export interface AssignmentModuleProps {
   assignments: HomeworkAssignment[];
@@ -157,7 +156,6 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
   const grade3IframeRef = useRef<HTMLIFrameElement | null>(null);
   const [grade3IframeKey, setGrade3IframeKey] = useState<number>(0);
   const [isGrade3IframeLoading, setIsGrade3IframeLoading] = useState<boolean>(true);
-  const [grade3SrcDoc, setGrade3SrcDoc] = useState<string | null>(null);
 
   useEffect(() => {
     const onConfigUpdated = () => {
@@ -256,66 +254,11 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     }
   }, [grade3SsoPayload]);
 
-  // Load HTML of https://dayhockhoi3.vercel.app and inject auto-routing to 'assignment' (Quản lý Bài tập)
-  useEffect(() => {
-    if (filterGrade !== 'Khối 3') return;
-    let cancelled = false;
-    setIsGrade3IframeLoading(true);
-
-    const rawBase =
-      (grade3DbConfig.externalAppUrl || DEFAULT_GRADE3_APP_URL).trim() ||
-      DEFAULT_GRADE3_APP_URL;
-
-    buildGrade3EmbeddedSrcDoc({
-      baseUrl: rawBase,
-      targetModuleId: 'assignment',
-      teacherEmail: grade3SsoPayload.email,
-      teacherName: grade3SsoPayload.name,
-      teacherRole: grade3SsoPayload.role,
-      ssoToken: grade3SsoPayload.ssoToken,
-    }).then((docHtml) => {
-      if (!cancelled) {
-        setGrade3SrcDoc(docHtml);
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    filterGrade,
-    grade3IframeKey,
-    grade3DbConfig.externalAppUrl,
-    grade3SsoPayload.email,
-    grade3SsoPayload.name,
-    grade3SsoPayload.role,
-    grade3SsoPayload.ssoToken,
-  ]);
-
   const handleGrade3IframeLoad = useCallback(() => {
     setIsGrade3IframeLoading(false);
     postSsoToGrade3Iframe();
-    // Ensure 'sidebar-item-assignment' is activated if same-origin srcDoc is used
-    const activateAssignmentTabInDoc = () => {
-      try {
-        const doc = grade3IframeRef.current?.contentDocument;
-        const btn = doc?.getElementById('sidebar-item-assignment');
-        if (btn) {
-          btn.click();
-        }
-      } catch {
-        // Ignore if cross-origin fallback is active
-      }
-    };
-    activateAssignmentTabInDoc();
-    window.setTimeout(() => {
-      postSsoToGrade3Iframe();
-      activateAssignmentTabInDoc();
-    }, 250);
-    window.setTimeout(() => {
-      postSsoToGrade3Iframe();
-      activateAssignmentTabInDoc();
-    }, 800);
+    window.setTimeout(postSsoToGrade3Iframe, 250);
+    window.setTimeout(postSsoToGrade3Iframe, 800);
   }, [postSsoToGrade3Iframe]);
 
   useEffect(() => {
@@ -596,29 +539,15 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
               </div>
             )}
 
-            {grade3SrcDoc ? (
-              <iframe
-                ref={grade3IframeRef}
-                key={`srcdoc-${grade3IframeKey}`}
-                srcDoc={grade3SrcDoc}
-                onLoad={handleGrade3IframeLoad}
-                title="Giao diện Quản lý Bài tập Chuyên biệt Khối 3"
-                className="w-full h-full border-0 bg-white"
-                allow="fullscreen; clipboard-read; clipboard-write; microphone; camera; autoplay"
-              />
-            ) : (
-              !isGrade3IframeLoading && (
-                <iframe
-                  ref={grade3IframeRef}
-                  key={`src-${grade3IframeKey}-${grade3EmbeddedUrlWithSso}`}
-                  src={grade3EmbeddedUrlWithSso}
-                  onLoad={handleGrade3IframeLoad}
-                  title="Giao diện Quản lý Bài tập Chuyên biệt Khối 3"
-                  className="w-full h-full border-0 bg-white"
-                  allow="fullscreen; clipboard-read; clipboard-write; microphone; camera; autoplay"
-                />
-              )
-            )}
+            <iframe
+              ref={grade3IframeRef}
+              key={`src-${grade3IframeKey}-${grade3EmbeddedUrlWithSso}`}
+              src={grade3EmbeddedUrlWithSso}
+              onLoad={handleGrade3IframeLoad}
+              title="Giao diện Quản lý Bài tập Chuyên biệt Khối 3"
+              className="w-full h-full border-0 bg-white"
+              allow="fullscreen; clipboard-read; clipboard-write; microphone; camera; autoplay"
+            />
           </div>
         </div>
       )}

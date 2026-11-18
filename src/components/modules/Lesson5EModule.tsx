@@ -21,7 +21,6 @@ import {
 } from '../../services/grade3LessonDbService';
 import { Grade3DatabaseConfigModal } from './Grade3DatabaseConfigModal';
 import { encodeUtf8Base64 } from '../portal/DigitalResourcePortal';
-import { buildGrade3EmbeddedSrcDoc } from '../../utils/grade3EmbedLoader';
 
 interface Lesson5EModuleProps {
   lessons: Lesson5EPlan[];
@@ -161,7 +160,6 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
   const grade3IframeRef = useRef<HTMLIFrameElement | null>(null);
   const [grade3IframeKey, setGrade3IframeKey] = useState<number>(0);
   const [isGrade3IframeLoading, setIsGrade3IframeLoading] = useState<boolean>(true);
-  const [grade3SrcDoc, setGrade3SrcDoc] = useState<string | null>(null);
 
   const handleSyncGrade3Database = useCallback(
     async (showNotification = false) => {
@@ -232,6 +230,7 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
     try {
       const urlObj = new URL(baseUrl);
       urlObj.searchParams.set('autologin', 'true');
+      urlObj.searchParams.set('auto_login', 'true');
       urlObj.searchParams.set('tab', 'lesson_5e');
       urlObj.searchParams.set('module', 'lesson_5e');
       urlObj.searchParams.set('grade', 'Khối 3');
@@ -284,42 +283,6 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
       // Ignore cross-origin postMessage errors if any
     }
   }, [grade3SsoPayload]);
-
-  // Load HTML of https://dayhockhoi3.vercel.app and inject auto-routing to 'lesson_5e' (Bài giảng E-Learning)
-  useEffect(() => {
-    if (filterGrade !== 'Khối 3') return;
-    let cancelled = false;
-    setIsGrade3IframeLoading(true);
-
-    const rawBase =
-      (grade3DbConfig.externalAppUrl || DEFAULT_GRADE3_APP_URL).trim() ||
-      DEFAULT_GRADE3_APP_URL;
-
-    buildGrade3EmbeddedSrcDoc({
-      baseUrl: rawBase,
-      targetModuleId: 'lesson_5e',
-      teacherEmail: grade3SsoPayload.email,
-      teacherName: grade3SsoPayload.name,
-      teacherRole: grade3SsoPayload.role,
-      ssoToken: grade3SsoPayload.ssoToken,
-    }).then((docHtml) => {
-      if (!cancelled) {
-        setGrade3SrcDoc(docHtml);
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    filterGrade,
-    grade3IframeKey,
-    grade3DbConfig.externalAppUrl,
-    grade3SsoPayload.email,
-    grade3SsoPayload.name,
-    grade3SsoPayload.role,
-    grade3SsoPayload.ssoToken,
-  ]);
 
   const handleGrade3IframeLoad = useCallback(() => {
     setIsGrade3IframeLoading(false);
@@ -609,29 +572,15 @@ export const Lesson5EModule: React.FC<Lesson5EModuleProps> = ({
               </div>
             )}
 
-            {grade3SrcDoc ? (
-              <iframe
-                ref={grade3IframeRef}
-                key={`srcdoc-${grade3IframeKey}`}
-                srcDoc={grade3SrcDoc}
-                onLoad={handleGrade3IframeLoad}
-                title="Giao diện Bài giảng Chuyên biệt Khối 3"
-                className="w-full h-full border-0 bg-white"
-                allow="fullscreen; clipboard-read; clipboard-write; microphone; camera; autoplay"
-              />
-            ) : (
-              !isGrade3IframeLoading && (
-                <iframe
-                  ref={grade3IframeRef}
-                  key={`src-${grade3IframeKey}-${grade3EmbeddedUrlWithSso}`}
-                  src={grade3EmbeddedUrlWithSso}
-                  onLoad={handleGrade3IframeLoad}
-                  title="Giao diện Bài giảng Chuyên biệt Khối 3"
-                  className="w-full h-full border-0 bg-white"
-                  allow="fullscreen; clipboard-read; clipboard-write; microphone; camera; autoplay"
-                />
-              )
-            )}
+            <iframe
+              ref={grade3IframeRef}
+              key={`src-${grade3IframeKey}-${grade3EmbeddedUrlWithSso}`}
+              src={grade3EmbeddedUrlWithSso}
+              onLoad={handleGrade3IframeLoad}
+              title="Giao diện Bài giảng Chuyên biệt Khối 3"
+              className="w-full h-full border-0 bg-white"
+              allow="fullscreen; clipboard-read; clipboard-write; microphone; camera; autoplay"
+            />
           </div>
         </div>
       )}

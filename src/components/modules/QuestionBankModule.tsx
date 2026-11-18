@@ -21,7 +21,6 @@ import {
 } from '../../services/grade3LessonDbService';
 import { Grade3DatabaseConfigModal } from './Grade3DatabaseConfigModal';
 import { encodeUtf8Base64 } from '../portal/DigitalResourcePortal';
-import { buildGrade3EmbeddedSrcDoc } from '../../utils/grade3EmbedLoader';
 
 /**
  * Chuẩn hóa hàm lọc Khối: Khối 4 nhận diện toàn bộ câu hỏi có grade là "Khối 4", "4", "4C", "Lớp 4", v.v.
@@ -185,7 +184,6 @@ export const QuestionBankModule: React.FC<QuestionBankModuleProps> = ({
   const grade3IframeRef = useRef<HTMLIFrameElement | null>(null);
   const [grade3IframeKey, setGrade3IframeKey] = useState<number>(0);
   const [isGrade3IframeLoading, setIsGrade3IframeLoading] = useState<boolean>(true);
-  const [grade3SrcDoc, setGrade3SrcDoc] = useState<string | null>(null);
 
   useEffect(() => {
     const onConfigUpdated = () => {
@@ -230,6 +228,7 @@ export const QuestionBankModule: React.FC<QuestionBankModuleProps> = ({
     try {
       const urlObj = new URL(baseUrl);
       urlObj.searchParams.set('autologin', 'true');
+      urlObj.searchParams.set('auto_login', 'true');
       urlObj.searchParams.set('tab', 'question_bank');
       urlObj.searchParams.set('module', 'question_bank');
       urlObj.searchParams.set('grade', 'Khối 3');
@@ -283,66 +282,11 @@ export const QuestionBankModule: React.FC<QuestionBankModuleProps> = ({
     }
   }, [grade3SsoPayload]);
 
-  // Load HTML of https://dayhockhoi3.vercel.app and inject auto-routing to 'question_bank' (Ngân Hàng Câu Hỏi)
-  useEffect(() => {
-    if (filterGrade !== 'Khối 3') return;
-    let cancelled = false;
-    setIsGrade3IframeLoading(true);
-
-    const rawBase =
-      (grade3DbConfig.externalAppUrl || DEFAULT_GRADE3_APP_URL).trim() ||
-      DEFAULT_GRADE3_APP_URL;
-
-    buildGrade3EmbeddedSrcDoc({
-      baseUrl: rawBase,
-      targetModuleId: 'question_bank',
-      teacherEmail: grade3SsoPayload.email,
-      teacherName: grade3SsoPayload.name,
-      teacherRole: grade3SsoPayload.role,
-      ssoToken: grade3SsoPayload.ssoToken,
-    }).then((docHtml) => {
-      if (!cancelled) {
-        setGrade3SrcDoc(docHtml);
-      }
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    filterGrade,
-    grade3IframeKey,
-    grade3DbConfig.externalAppUrl,
-    grade3SsoPayload.email,
-    grade3SsoPayload.name,
-    grade3SsoPayload.role,
-    grade3SsoPayload.ssoToken,
-  ]);
-
   const handleGrade3IframeLoad = useCallback(() => {
     setIsGrade3IframeLoading(false);
     postSsoToGrade3Iframe();
-    // Ensure 'sidebar-item-question_bank' is activated if same-origin srcDoc is used
-    const activateQuestionBankTabInDoc = () => {
-      try {
-        const doc = grade3IframeRef.current?.contentDocument;
-        const btn = doc?.getElementById('sidebar-item-question_bank');
-        if (btn) {
-          btn.click();
-        }
-      } catch {
-        // Ignore if cross-origin fallback is active
-      }
-    };
-    activateQuestionBankTabInDoc();
-    window.setTimeout(() => {
-      postSsoToGrade3Iframe();
-      activateQuestionBankTabInDoc();
-    }, 250);
-    window.setTimeout(() => {
-      postSsoToGrade3Iframe();
-      activateQuestionBankTabInDoc();
-    }, 800);
+    window.setTimeout(postSsoToGrade3Iframe, 250);
+    window.setTimeout(postSsoToGrade3Iframe, 800);
   }, [postSsoToGrade3Iframe]);
 
   useEffect(() => {
@@ -623,29 +567,15 @@ export const QuestionBankModule: React.FC<QuestionBankModuleProps> = ({
               </div>
             )}
 
-            {grade3SrcDoc ? (
-              <iframe
-                ref={grade3IframeRef}
-                key={`srcdoc-${grade3IframeKey}`}
-                srcDoc={grade3SrcDoc}
-                onLoad={handleGrade3IframeLoad}
-                title="Giao diện Ngân hàng Câu hỏi Chuyên biệt Khối 3"
-                className="w-full h-full border-0 bg-white"
-                allow="fullscreen; clipboard-read; clipboard-write; microphone; camera; autoplay"
-              />
-            ) : (
-              !isGrade3IframeLoading && (
-                <iframe
-                  ref={grade3IframeRef}
-                  key={`src-${grade3IframeKey}-${grade3EmbeddedUrlWithSso}`}
-                  src={grade3EmbeddedUrlWithSso}
-                  onLoad={handleGrade3IframeLoad}
-                  title="Giao diện Ngân hàng Câu hỏi Chuyên biệt Khối 3"
-                  className="w-full h-full border-0 bg-white"
-                  allow="fullscreen; clipboard-read; clipboard-write; microphone; camera; autoplay"
-                />
-              )
-            )}
+            <iframe
+              ref={grade3IframeRef}
+              key={`src-${grade3IframeKey}-${grade3EmbeddedUrlWithSso}`}
+              src={grade3EmbeddedUrlWithSso}
+              onLoad={handleGrade3IframeLoad}
+              title="Giao diện Ngân hàng Câu hỏi Chuyên biệt Khối 3"
+              className="w-full h-full border-0 bg-white"
+              allow="fullscreen; clipboard-read; clipboard-write; microphone; camera; autoplay"
+            />
           </div>
         </div>
       )}

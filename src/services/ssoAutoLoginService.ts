@@ -21,9 +21,6 @@ const KHLS_USER_KEY = 'khls_current_user';
 const DEFAULT_PORTAL_TEACHER_EMAIL = 'thuthuthtk@gmail.com';
 const DEFAULT_PORTAL_TEACHER_NAME = 'Nguyễn Thị Thu';
 
-let isClearingSsoSession = false;
-let isStorageGuardInstalled = false;
-
 /**
  * Kiểm tra xem ứng dụng có đang chạy bên trong khung nhúng iframe (window.self !== window.top) hay không
  */
@@ -32,39 +29,7 @@ export function isEmbeddedIframe(): boolean {
   try {
     return window.self !== window.top;
   } catch {
-    // Nếu trình duyệt chặn truy cập window.top do khác origin thì chắc chắn đang nằm trong iframe
     return true;
-  }
-}
-
-/**
- * Bảo vệ phiên SSO trong localStorage khỏi bị xóa ngoài ý muốn bởi sự kiện khởi tạo Firebase Auth (onAuthStateChanged(null))
- * khi giáo viên đăng nhập qua SSO/iframe mà không dùng mật khẩu trực tiếp.
- */
-function installSsoLocalStorageGuard(): void {
-  if (typeof window === 'undefined' || isStorageGuardInstalled) return;
-  isStorageGuardInstalled = true;
-
-  try {
-    const originalRemoveItem = Storage.prototype.removeItem;
-    Storage.prototype.removeItem = function (key: string) {
-      if (
-        !isClearingSsoSession &&
-        this === window.localStorage &&
-        (key === 'eduplay_teacher_email' || key === 'eduplay_teacher_name')
-      ) {
-        const ssoActive =
-          window.localStorage.getItem(SSO_AUTH_FLAG_KEY) === 'true' ||
-          window.sessionStorage.getItem(SSO_AUTH_FLAG_KEY) === 'true' ||
-          isEmbeddedIframe();
-        if (ssoActive) {
-          return;
-        }
-      }
-      return originalRemoveItem.call(this, key);
-    };
-  } catch {
-    // Bỏ qua nếu môi trường không cho phép ghi đè prototype
   }
 }
 
@@ -183,7 +148,7 @@ export function getSavedSsoSession(): Record<string, any> | null {
 /**
  * Lưu phiên đăng nhập liên thông SSO vào localStorage và sessionStorage
  * để khi chuyển tab, thao tác hoặc tải lại trang bên trong phân hệ Quản lý bài tập
- * không bao giờ bị văng ngược ra màn hình đăng nhập.
+ * luôn giữ vững phiên đăng nhập.
  */
 export function persistSsoTeacherSession(params: {
   email: string;
@@ -191,8 +156,6 @@ export function persistSsoTeacherSession(params: {
   role?: string | null;
   rawTab?: string | null;
 }): SsoLoginResult {
-  installSsoLocalStorageGuard();
-
   const cleanEmail = (params.email || DEFAULT_PORTAL_TEACHER_EMAIL).trim().toLowerCase();
   const localProfile = getCurrentTeacherProfile(cleanEmail);
   const teachersList = getTeachersFromLocalStorage();
@@ -240,7 +203,6 @@ export function persistSsoTeacherSession(params: {
 
   if (typeof window !== 'undefined') {
     try {
-      // Lưu bền vững vào localStorage để chuyển tab hoặc F5 không bao giờ mất phiên
       localStorage.setItem(SSO_AUTH_FLAG_KEY, 'true');
       localStorage.setItem(SSO_SESSION_KEY, JSON.stringify(sessionPayload));
       localStorage.setItem(KHLS_USER_KEY, JSON.stringify(sessionPayload));
@@ -249,14 +211,12 @@ export function persistSsoTeacherSession(params: {
       localStorage.setItem('eduplay_user_role', effectiveRole);
       localStorage.setItem('eduplay_active_role', effectiveRole);
 
-      // Đồng bộ cả sessionStorage
       sessionStorage.setItem(SSO_AUTH_FLAG_KEY, 'true');
       sessionStorage.setItem(SSO_SESSION_KEY, JSON.stringify(sessionPayload));
       sessionStorage.setItem('eduplay_teacher_email', cleanEmail);
       sessionStorage.setItem('eduplay_teacher_name', effectiveName);
       sessionStorage.setItem('eduplay_user_role', effectiveRole);
 
-      // Phát sự kiện để đồng bộ tên giáo viên trên Header
       window.setTimeout(() => {
         window.dispatchEvent(new Event('eduplay_teachers_updated'));
       }, 50);
@@ -264,7 +224,6 @@ export function persistSsoTeacherSession(params: {
       console.warn('Không thể lưu phiên SSO vào bộ nhớ trình duyệt:', err);
     }
 
-    // Đồng bộ ngầm hồ sơ giáo viên mới nhất từ Firestore (nếu có)
     fetchCurrentTeacherProfile(cleanEmail)
       .then((cloudProfile) => {
         if (cloudProfile && cloudProfile.name) {
@@ -289,7 +248,7 @@ export function persistSsoTeacherSession(params: {
 }
 
 /**
- * Xóa sạch các tham số SSO (email, token, autologin, auto_login, sso_token, sso_email, sso_name, sso_role) trên thanh địa chỉ
+ * Xóa sạch các tham số SSO trên thanh địa chỉ sau khi đã xác thực thành công
  */
 export function cleanSsoParamsFromUrl(): void {
   if (typeof window === 'undefined') return;
@@ -329,18 +288,15 @@ export function cleanSsoParamsFromUrl(): void {
 }
 
 /**
- * Kiểm tra ngay khi khởi động ứng dụng (tương tự ssoAuth.ts của Kho Học Liệu Số):
- * 1. Nếu URL có chứa các tham số như ?sso_email=, ?sso_token=, ?auto_login=true (hoặc ?autologin=true, ?email=, ?token=)
+ * Kiểm tra ngay khi khởi động ứng dụng:
+ * 1. Nếu URL có chứa các tham số như ?sso_email=, ?sso_token=, ?auto_login=true (hoặc ?autologin=true)
  * 2. HOẶC ứng dụng đang chạy bên trong khung nhúng iframe (window.self !== window.top)
  * 3. HOẶC đã có phiên đăng nhập SSO lưu trong localStorage / sessionStorage
- * -> Lập tức bỏ qua màn hình đăng nhập và vào thẳng giao diện quản lý bài tập (hoặc phân hệ đích).
- * Nếu truy cập trực tiếp từ đường dẫn gốc ở bên ngoài (không phải iframe, không có tham số SSO, chưa có phiên SSO),
- * trả về null để hệ thống yêu cầu đăng nhập bình thường.
+ * -> Bỏ qua màn hình đăng nhập và vào thẳng giao diện làm việc.
+ * Nếu truy cập trực tiếp bằng link gốc từ bên ngoài, trả về null để hiển thị màn hình Đăng nhập bình thường.
  */
 export function checkInitialSsoAutoLogin(): SsoLoginResult | null {
   if (typeof window === 'undefined') return null;
-
-  installSsoLocalStorageGuard();
 
   try {
     const searchParams = new URLSearchParams(window.location.search);
@@ -383,8 +339,6 @@ export function checkInitialSsoAutoLogin(): SsoLoginResult | null {
       }
     }
 
-    // Trường hợp 1: Có tham số SSO trên URL (?sso_email=, ?sso_token=, ?auto_login=true, ?autologin=true)
-    // HOẶC đang chạy bên trong khung nhúng iframe (window.self !== window.top)
     if (hasSsoUrlTrigger || runningInIframe) {
       if (!resolvedEmail) {
         resolvedEmail =
@@ -422,7 +376,6 @@ export function checkInitialSsoAutoLogin(): SsoLoginResult | null {
         cleanSsoParamsFromUrl();
       }
 
-      // Khi chạy trong iframe, chủ động gửi thông báo sẵn sàng lên cổng chính để đồng bộ thông tin tài khoản mới nhất
       if (runningInIframe && window.parent && window.parent !== window) {
         try {
           window.parent.postMessage({ type: 'PK_TRUC_KHANG_REQUEST_SSO' }, '*');
@@ -432,7 +385,6 @@ export function checkInitialSsoAutoLogin(): SsoLoginResult | null {
       return result;
     }
 
-    // Trường hợp 2: Đã có phiên SSO lưu trong localStorage hoặc sessionStorage (khi chuyển tab hoặc F5 tải lại trang)
     const isSsoPersisted =
       localStorage.getItem(SSO_AUTH_FLAG_KEY) === 'true' ||
       sessionStorage.getItem(SSO_AUTH_FLAG_KEY) === 'true';
@@ -453,8 +405,6 @@ export function checkInitialSsoAutoLogin(): SsoLoginResult | null {
     console.warn('Lỗi kiểm tra SSO khi khởi động:', err);
   }
 
-  // Trường hợp 3: Truy cập trực tiếp từ đường dẫn gốc ở bên ngoài (không phải iframe, không có tham số SSO, chưa có phiên SSO)
-  // -> Yêu cầu đăng nhập bình thường
   return null;
 }
 
@@ -463,7 +413,6 @@ export function checkInitialSsoAutoLogin(): SsoLoginResult | null {
  */
 export function clearSsoSession(): void {
   if (typeof window === 'undefined') return;
-  isClearingSsoSession = true;
   try {
     localStorage.removeItem(SSO_AUTH_FLAG_KEY);
     localStorage.removeItem(SSO_SESSION_KEY);
@@ -479,7 +428,5 @@ export function clearSsoSession(): void {
     sessionStorage.removeItem('eduplay_user_role');
   } catch {
     // Ignore storage removal errors
-  } finally {
-    isClearingSsoSession = false;
   }
 }
