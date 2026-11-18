@@ -183,25 +183,48 @@ export function App() {
   useEffect(() => {
     const handleSsoPostMessage = (event: MessageEvent) => {
       const data = event?.data;
-      if (!data || typeof data !== 'object' || data.type !== 'PK_TRUC_KHANG_SSO_LOGIN') {
+      if (
+        !data ||
+        typeof data !== 'object' ||
+        (data.type !== 'PK_TRUC_KHANG_SSO_LOGIN' &&
+          data.type !== 'SSO_AUTO_LOGIN' &&
+          data.autologin !== true &&
+          data.auto_login !== true)
+      ) {
         return;
       }
 
-      const userObj = data.user && typeof data.user === 'object' ? data.user : {};
-      let email = String(userObj.email || data.email || '').trim();
-      let name = String(userObj.name || userObj.displayName || data.name || '').trim();
-      let role = String(userObj.role || data.role || '').trim();
+      const payloadObj = data.payload && typeof data.payload === 'object' ? data.payload : {};
+      const userObj = data.user && typeof data.user === 'object' ? data.user : payloadObj;
+      let email = String(
+        userObj.email || data.sso_email || data.email || payloadObj.sso_email || ''
+      ).trim();
+      let name = String(
+        userObj.name ||
+          userObj.displayName ||
+          data.sso_name ||
+          data.name ||
+          payloadObj.sso_name ||
+          ''
+      ).trim();
+      let role = String(
+        userObj.role || data.sso_role || data.role || payloadObj.sso_role || ''
+      ).trim();
       const rawTab =
-        String(data.tab || data.module || '').trim() ||
+        String(data.tab || data.module || payloadObj.tab || payloadObj.module || '').trim() ||
         new URLSearchParams(window.location.search).get('tab') ||
-        new URLSearchParams(window.location.search).get('module');
+        new URLSearchParams(window.location.search).get('module') ||
+        'assignment';
 
-      if (!email && typeof data.ssoToken === 'string') {
-        const decoded = decodeUtf8Base64(data.ssoToken);
+      const rawToken = String(
+        data.sso_token || data.ssoToken || data.token || payloadObj.sso_token || ''
+      ).trim();
+      if (rawToken) {
+        const decoded = decodeUtf8Base64(rawToken);
         if (decoded) {
-          email = String(decoded.email || '').trim();
-          name = name || String(decoded.name || '').trim();
-          role = role || String(decoded.role || '').trim();
+          email = email || String(decoded.email || decoded.sso_email || '').trim();
+          name = name || String(decoded.name || decoded.sso_name || '').trim();
+          role = role || String(decoded.role || decoded.sso_role || '').trim();
         }
       }
 
@@ -217,14 +240,20 @@ export function App() {
       setTeacherEmail(ssoRes.email);
       setTeacherName(ssoRes.name);
       setUserRole(ssoRes.role);
-      if (ssoRes.targetModule) {
-        setActiveModule(ssoRes.targetModule);
-      }
+      setActiveModule(ssoRes.targetModule || 'assignment');
       setShowPortal(false);
       cleanSsoParamsFromUrl();
     };
 
+    const handleNavigateModule = (e: Event) => {
+      const customEvent = e as CustomEvent<{ module?: ModuleType }>;
+      if (customEvent.detail?.module) {
+        setActiveModule(customEvent.detail.module);
+      }
+    };
+
     window.addEventListener('message', handleSsoPostMessage);
+    window.addEventListener('eduplay_navigate_module', handleNavigateModule);
 
     // Nếu ứng dụng đang chạy bên trong iframe của cổng Dạy và Học Số, chủ động gửi tín hiệu sẵn sàng nhận SSO
     if (typeof window !== 'undefined' && window.parent && window.parent !== window) {
@@ -233,7 +262,10 @@ export function App() {
       } catch {}
     }
 
-    return () => window.removeEventListener('message', handleSsoPostMessage);
+    return () => {
+      window.removeEventListener('message', handleSsoPostMessage);
+      window.removeEventListener('eduplay_navigate_module', handleNavigateModule);
+    };
   }, []);
 
   // Initialize and Sync all Firebase collections on mount (skipped during public guest routes)
@@ -368,7 +400,7 @@ export function App() {
     }
   }, [userRole, activeModule]);
 
-  // Sync Firebase Auth state with Teacher session only (never override student or anonymous guest sessions)
+  // Sync Firebase Auth state with Teacher session only (never override student, SSO, or anonymous guest sessions)
   useEffect(() => {
     if (!auth) return;
     const unsubscribe = onAuthStateChanged(auth, (user) => {
@@ -379,6 +411,21 @@ export function App() {
         setTeacherName(resolvedName);
         localStorage.setItem('eduplay_teacher_name', resolvedName);
       } else if (!user) {
+        const isSsoActive =
+          localStorage.getItem('eduplay_sso_authenticated') === 'true' ||
+          sessionStorage.getItem('eduplay_sso_authenticated') === 'true';
+        const ssoEmail =
+          localStorage.getItem('eduplay_teacher_email') ||
+          sessionStorage.getItem('eduplay_teacher_email');
+        if (isSsoActive && ssoEmail) {
+          const ssoName =
+            localStorage.getItem('eduplay_teacher_name') ||
+            sessionStorage.getItem('eduplay_teacher_name');
+          setTeacherEmail(ssoEmail);
+          setTeacherName(resolveTeacherNameByEmail(ssoEmail, ssoName));
+          return;
+        }
+
         // Clear cached stale user profile on explicit logout
         const defaultEmail = 'vanquan18189@gmail.com';
         const defaultName = resolveTeacherNameByEmail(defaultEmail);

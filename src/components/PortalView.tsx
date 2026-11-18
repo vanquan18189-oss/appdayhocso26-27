@@ -319,19 +319,24 @@ export function PortalView({ onSelectPortal }: PortalViewProps) {
           email: sso.email,
           name: sso.name,
         });
-        if (sso.targetModule) {
-          window.setTimeout(() => {
-            window.dispatchEvent(
-              new CustomEvent('eduplay_navigate_module', {
-                detail: { module: sso.targetModule },
-              })
-            );
-          }, 50);
-        }
+        window.setTimeout(() => {
+          window.dispatchEvent(
+            new CustomEvent('eduplay_navigate_module', {
+              detail: { module: sso.targetModule || 'assignment' },
+            })
+          );
+        }, 50);
         return;
       }
     } catch (err) {
       console.warn('SSO init check warning:', err);
+    }
+
+    // Chủ động gửi tín hiệu 'PK_TRUC_KHANG_REQUEST_SSO' lên cửa sổ cha (window.parent) nếu đang chạy trong iframe
+    if (typeof window !== 'undefined' && window.parent && window.parent !== window) {
+      try {
+        window.parent.postMessage({ type: 'PK_TRUC_KHANG_REQUEST_SSO' }, '*');
+      } catch {}
     }
 
     const handleSsoMessage = (event: MessageEvent) => {
@@ -342,25 +347,40 @@ export function PortalView({ onSelectPortal }: PortalViewProps) {
           typeof data !== 'object' ||
           (data.type !== 'PK_TRUC_KHANG_SSO_LOGIN' &&
             data.type !== 'SSO_AUTO_LOGIN' &&
-            data.autologin !== true)
+            data.autologin !== true &&
+            data.auto_login !== true)
         ) {
           return;
         }
-        const userObj = data.user && typeof data.user === 'object' ? data.user : {};
-        let email = String(userObj.email || data.email || data.sso_email || '').trim();
-        let name = String(
-          userObj.name || userObj.displayName || data.name || data.sso_name || ''
+        const payloadObj = data.payload && typeof data.payload === 'object' ? data.payload : {};
+        const userObj = data.user && typeof data.user === 'object' ? data.user : payloadObj;
+        let email = String(
+          userObj.email || data.sso_email || data.email || payloadObj.sso_email || ''
         ).trim();
-        let role = String(userObj.role || data.role || data.sso_role || '').trim();
-        const rawTab = String(data.tab || data.module || '').trim();
-        const rawToken = String(data.ssoToken || data.token || data.sso_token || '').trim();
+        let name = String(
+          userObj.name ||
+            userObj.displayName ||
+            data.sso_name ||
+            data.name ||
+            payloadObj.sso_name ||
+            ''
+        ).trim();
+        let role = String(
+          userObj.role || data.sso_role || data.role || payloadObj.sso_role || ''
+        ).trim();
+        const rawTab = String(
+          data.tab || data.module || payloadObj.tab || payloadObj.module || 'assignment'
+        ).trim();
+        const rawToken = String(
+          data.sso_token || data.ssoToken || data.token || payloadObj.sso_token || ''
+        ).trim();
 
         if (!email && rawToken) {
           const decoded = decodeUtf8Base64(rawToken);
           if (decoded) {
-            email = String(decoded.email || '').trim();
-            name = name || String(decoded.name || '').trim();
-            role = role || String(decoded.role || '').trim();
+            email = String(decoded.email || decoded.sso_email || '').trim();
+            name = name || String(decoded.name || decoded.sso_name || '').trim();
+            role = role || String(decoded.role || decoded.sso_role || '').trim();
           }
         }
 
@@ -371,15 +391,13 @@ export function PortalView({ onSelectPortal }: PortalViewProps) {
           email: res.email,
           name: res.name,
         });
-        if (res.targetModule) {
-          window.setTimeout(() => {
-            window.dispatchEvent(
-              new CustomEvent('eduplay_navigate_module', {
-                detail: { module: res.targetModule },
-              })
-            );
-          }, 50);
-        }
+        window.setTimeout(() => {
+          window.dispatchEvent(
+            new CustomEvent('eduplay_navigate_module', {
+              detail: { module: res.targetModule || 'assignment' },
+            })
+          );
+        }, 50);
       } catch (err) {
         console.warn('SSO postMessage warning:', err);
       }
