@@ -83,6 +83,7 @@ export async function buildGrade3EmbeddedSrcDoc(
             eduplay_gemini_api_key: true
           };
           var PROTECTED_SSO_KEYS = {
+            eduplay_sso_authenticated: 'true',
             eduplay_teacher_email: ssoEmail,
             eduplay_teacher_name: ssoName,
             eduplay_user_role: ssoRole,
@@ -101,6 +102,7 @@ export async function buildGrade3EmbeddedSrcDoc(
             targetModule: targetModuleId,
             rawTab: targetModuleId,
             autologin: true,
+            auto_login: true,
             source: 'PK_TRUC_KHANG_LMS',
             loggedInAt: new Date().toISOString()
           });
@@ -148,6 +150,7 @@ export async function buildGrade3EmbeddedSrcDoc(
             enumerable: true
           });
 
+          window.localStorage.setItem('eduplay_sso_authenticated', 'true');
           window.localStorage.setItem('eduplay_teacher_email', ssoEmail);
           window.localStorage.setItem('eduplay_teacher_name', ssoName);
           window.localStorage.setItem('eduplay_user_role', ssoRole);

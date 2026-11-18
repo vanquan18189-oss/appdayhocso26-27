@@ -202,6 +202,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     try {
       const urlObj = new URL(baseUrl);
       urlObj.searchParams.set('autologin', 'true');
+      urlObj.searchParams.set('auto_login', 'true');
       urlObj.searchParams.set('tab', 'assignment');
       urlObj.searchParams.set('module', 'assignment');
       urlObj.searchParams.set('grade', 'Khối 3');
