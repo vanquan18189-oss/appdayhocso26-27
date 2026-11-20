@@ -15,6 +15,7 @@ import { auth } from '../../services/firebase';
 import {
   Grade3DatabaseConfig,
   DEFAULT_GRADE3_APP_URL,
+  DEFAULT_GRADE4_APP_URL,
   getGrade3DbConfig,
   getCachedGrade3Lessons,
 } from '../../services/grade3LessonDbService';
@@ -44,6 +45,7 @@ interface GradeSelectorMeta {
   badgeText: string;
   iconBg: string;
   isDedicatedGrade3?: boolean;
+  isDedicatedGrade4?: boolean;
 }
 
 const GRADE_SELECTOR_CARDS: GradeSelectorMeta[] = [
@@ -104,14 +106,15 @@ const GRADE_SELECTOR_CARDS: GradeSelectorMeta[] = [
     key: 'grade-4',
     gradeValue: 'Khối 4',
     label: 'Khối 4',
-    shortTag: 'Lớp 4',
-    subtitle: 'Phát triển năng lực',
+    shortTag: 'Nhúng App K4',
+    subtitle: 'Hiển thị ngay trong App',
     activeGradient: 'from-sky-500 via-blue-600 to-indigo-600',
     activeShadow: 'shadow-lg shadow-blue-500/25 ring-2 ring-sky-400/40',
-    inactiveBorder: 'border-sky-200/80 hover:border-sky-400 hover:bg-sky-50/40',
+    inactiveBorder: 'border-sky-300/90 hover:border-sky-500 bg-sky-50/25 hover:bg-sky-50/60',
     badgeBg: 'bg-sky-100',
     badgeText: 'text-sky-800',
     iconBg: 'bg-gradient-to-br from-sky-500 to-blue-600 text-white',
+    isDedicatedGrade4: true,
   },
   {
     key: 'grade-5',
@@ -152,10 +155,14 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
 
   const [filterGrade, setFilterGrade] = useState('Tất cả khối');
 
-  // Embedded Grade 3 Workspace State (loads directly inside the main content area of App Mẹ)
+  // Embedded Grade 3 & Grade 4 Workspace State (loads directly inside the main content area of App Mẹ)
   const grade3IframeRef = useRef<HTMLIFrameElement | null>(null);
   const [grade3IframeKey, setGrade3IframeKey] = useState<number>(0);
   const [isGrade3IframeLoading, setIsGrade3IframeLoading] = useState<boolean>(true);
+
+  const grade4IframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [grade4IframeKey, setGrade4IframeKey] = useState<number>(0);
+  const [isGrade4IframeLoading, setIsGrade4IframeLoading] = useState<boolean>(true);
 
   useEffect(() => {
     const onConfigUpdated = () => {
@@ -226,19 +233,93 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     }
   }, [grade3DbConfig.externalAppUrl, grade3SsoPayload]);
 
+  // Build dedicated Grade 4 embedded URL (https://dayhockhoi4-eight.vercel.app/) with SSO + assignment module routing
+  const grade4EmbeddedUrlWithSso = useMemo(() => {
+    const rawBase = DEFAULT_GRADE4_APP_URL.trim();
+    const baseUrl = /^https?:\/\//i.test(rawBase) ? rawBase : `https://${rawBase}`;
+
+    try {
+      const urlObj = new URL(baseUrl);
+      urlObj.searchParams.set('autologin', 'true');
+      urlObj.searchParams.set('auto_login', 'true');
+      urlObj.searchParams.set('tab', 'assignment');
+      urlObj.searchParams.set('module', 'assignment');
+      urlObj.searchParams.set('grade', 'Khối 4');
+      if (grade3SsoPayload.email) {
+        urlObj.searchParams.set('email', grade3SsoPayload.email);
+        urlObj.searchParams.set('sso_email', grade3SsoPayload.email);
+      }
+      if (grade3SsoPayload.ssoToken) {
+        urlObj.searchParams.set('token', grade3SsoPayload.ssoToken);
+        urlObj.searchParams.set('sso_token', grade3SsoPayload.ssoToken);
+      }
+      if (grade3SsoPayload.name) {
+        urlObj.searchParams.set('name', grade3SsoPayload.name);
+        urlObj.searchParams.set('sso_name', grade3SsoPayload.name);
+      }
+      if (grade3SsoPayload.role) {
+        urlObj.searchParams.set('role', grade3SsoPayload.role);
+        urlObj.searchParams.set('sso_role', grade3SsoPayload.role);
+      }
+      return urlObj.toString();
+    } catch {
+      return baseUrl;
+    }
+  }, [grade3SsoPayload]);
+
   const postSsoToGrade3Iframe = useCallback(() => {
     const iframeWindow = grade3IframeRef.current?.contentWindow;
     if (!iframeWindow) return;
     try {
       const payload = {
         autologin: true,
+        auto_login: true,
         email: grade3SsoPayload.email,
+        sso_email: grade3SsoPayload.email,
         name: grade3SsoPayload.name,
+        sso_name: grade3SsoPayload.name,
         role: grade3SsoPayload.role,
+        sso_role: grade3SsoPayload.role,
         token: grade3SsoPayload.ssoToken,
         ssoToken: grade3SsoPayload.ssoToken,
+        sso_token: grade3SsoPayload.ssoToken,
         tab: 'assignment',
         module: 'assignment',
+        grade: 'Khối 3',
+        user: {
+          email: grade3SsoPayload.email,
+          name: grade3SsoPayload.name,
+          displayName: grade3SsoPayload.name,
+          role: grade3SsoPayload.role,
+          uid: grade3SsoPayload.uid,
+        },
+      };
+      iframeWindow.postMessage({ ...payload, type: 'PK_TRUC_KHANG_SSO_LOGIN' }, '*');
+      iframeWindow.postMessage({ ...payload, type: 'SSO_AUTO_LOGIN' }, '*');
+    } catch {
+      // Ignore cross-origin postMessage errors if any
+    }
+  }, [grade3SsoPayload]);
+
+  const postSsoToGrade4Iframe = useCallback(() => {
+    const iframeWindow = grade4IframeRef.current?.contentWindow;
+    if (!iframeWindow) return;
+    try {
+      const payload = {
+        autologin: true,
+        auto_login: true,
+        email: grade3SsoPayload.email,
+        sso_email: grade3SsoPayload.email,
+        name: grade3SsoPayload.name,
+        sso_name: grade3SsoPayload.name,
+        role: grade3SsoPayload.role,
+        sso_role: grade3SsoPayload.role,
+        token: grade3SsoPayload.ssoToken,
+        ssoToken: grade3SsoPayload.ssoToken,
+        sso_token: grade3SsoPayload.ssoToken,
+        tab: 'assignment',
+        module: 'assignment',
+        grade: 'Khối 4',
         user: {
           email: grade3SsoPayload.email,
           name: grade3SsoPayload.name,
@@ -261,26 +342,43 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
     window.setTimeout(postSsoToGrade3Iframe, 800);
   }, [postSsoToGrade3Iframe]);
 
+  const handleGrade4IframeLoad = useCallback(() => {
+    setIsGrade4IframeLoading(false);
+    postSsoToGrade4Iframe();
+    window.setTimeout(postSsoToGrade4Iframe, 250);
+    window.setTimeout(postSsoToGrade4Iframe, 800);
+  }, [postSsoToGrade4Iframe]);
+
   useEffect(() => {
-    if (filterGrade !== 'Khối 3') return;
+    if (filterGrade !== 'Khối 3' && filterGrade !== 'Khối 4') return;
     const handleMessage = (event: MessageEvent) => {
-      const data = event?.data;
-      if (
-        data &&
-        typeof data === 'object' &&
-        (data.type === 'PK_TRUC_KHANG_REQUEST_SSO' || data.type === 'KHO_HOC_LIEU_READY')
-      ) {
-        postSsoToGrade3Iframe();
+      try {
+        const data = event?.data;
+        if (
+          data &&
+          typeof data === 'object' &&
+          (data.type === 'PK_TRUC_KHANG_REQUEST_SSO' || data.type === 'KHO_HOC_LIEU_READY')
+        ) {
+          if (filterGrade === 'Khối 3') {
+            postSsoToGrade3Iframe();
+          } else if (filterGrade === 'Khối 4') {
+            postSsoToGrade4Iframe();
+          }
+        }
+      } catch {
+        // Ignore postMessage listener errors
       }
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [filterGrade, postSsoToGrade3Iframe]);
+  }, [filterGrade, postSsoToGrade3Iframe, postSsoToGrade4Iframe]);
 
   const handleSelectGradeCard = (gradeValue: string) => {
     setFilterGrade(gradeValue);
     if (gradeValue === 'Khối 3') {
       setIsGrade3IframeLoading(true);
+    } else if (gradeValue === 'Khối 4') {
+      setIsGrade4IframeLoading(true);
     }
   };
 
@@ -317,7 +415,7 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                 Chọn Khối Lớp Quản Lý Bài Tập (Khối 1 – Khối 5)
               </h3>
               <p className="text-[11px] text-slate-500">
-                Bấm vào từng thẻ khối để điều hướng sang không gian bài tập chuyên biệt • Riêng Khối 3 nhúng trực tiếp ngay trong App
+                Bấm vào từng thẻ khối để điều hướng sang không gian bài tập chuyên biệt • Khối 3 &amp; Khối 4 nhúng trực tiếp ngay trong App
               </p>
             </div>
           </div>
@@ -364,6 +462,8 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                 title={
                   card.isDedicatedGrade3
                     ? 'Bấm để tải và nhúng trực tiếp giao diện Quản lý Bài tập Khối 3 ngay trong khung nội dung chính'
+                    : card.isDedicatedGrade4
+                    ? 'Bấm để tải và nhúng trực tiếp giao diện Quản lý Bài tập Khối 4 (https://dayhockhoi4-eight.vercel.app/) ngay trong khung nội dung chính'
                     : `Chọn không gian bài tập ${card.label}`
                 }
               >
@@ -450,6 +550,18 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
                       >
                         <Monitor className="w-3 h-3" />
                         <span>Nhúng trực tiếp K3</span>
+                      </span>
+                      <span className="font-mono">{grade3LatencyMs}ms</span>
+                    </>
+                  ) : card.isDedicatedGrade4 ? (
+                    <>
+                      <span
+                        className={`flex items-center gap-1 font-bold ${
+                          isSelected ? 'text-sky-100' : 'text-sky-700'
+                        }`}
+                      >
+                        <Monitor className="w-3 h-3" />
+                        <span>Nhúng trực tiếp K4</span>
                       </span>
                       <span className="font-mono">{grade3LatencyMs}ms</span>
                     </>
@@ -545,6 +657,83 @@ export const AssignmentModule: React.FC<AssignmentModuleProps> = ({
               src={grade3EmbeddedUrlWithSso}
               onLoad={handleGrade3IframeLoad}
               title="Giao diện Quản lý Bài tập Chuyên biệt Khối 3"
+              className="w-full h-full border-0 bg-white"
+              allow="fullscreen; clipboard-read; clipboard-write; microphone; camera; autoplay"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* KHUNG NHÚNG TRỰC TIẾP GIAO DIỆN QUẢN LÝ BÀI TẬP KHỐI 4 NGAY TRONG APP MẸ */}
+      {filterGrade === 'Khối 4' && (
+        <div className="bg-white rounded-3xl border border-sky-200/90 shadow-sm overflow-hidden flex flex-col animate-in fade-in duration-200">
+          <div className="bg-gradient-to-r from-sky-50/95 via-blue-50/80 to-indigo-50/85 border-b border-sky-200/80 px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="w-2.5 h-2.5 rounded-full bg-sky-500 animate-pulse shrink-0" />
+              <span className="font-extrabold text-sky-950 truncate">
+                Đang hiển thị trực tiếp: Quản lý Bài tập Chuyên biệt Khối 4 ({DEFAULT_GRADE4_APP_URL})
+              </span>
+              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-sky-700 bg-white/95 px-2.5 py-0.5 rounded-lg border border-sky-200 shrink-0">
+                <ShieldCheck className="w-3.5 h-3.5 text-sky-600" />
+                <span>SSO: {grade3SsoPayload.name}</span>
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsGrade4IframeLoading(true);
+                  setGrade4IframeKey((prev) => prev + 1);
+                }}
+                className="px-3 py-1.5 rounded-xl bg-white hover:bg-sky-50 text-sky-800 border border-sky-300 text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs whitespace-nowrap"
+                title="Tải lại khung giao diện Quản lý Bài tập Khối 4"
+              >
+                <RefreshCw
+                  className={`w-3.5 h-3.5 text-sky-600 ${
+                    isGrade4IframeLoading ? 'animate-spin' : ''
+                  }`}
+                />
+                <span>Tải lại khung K4</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setFilterGrade('Tất cả khối')}
+                className="px-3 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Đóng khung K4</span>
+              </button>
+            </div>
+          </div>
+
+          <div
+            className="relative w-full bg-slate-50"
+            style={{ height: 'calc(100vh - 200px)', minHeight: '760px' }}
+          >
+            {isGrade4IframeLoading && (
+              <div className="absolute inset-0 z-10 bg-white/85 backdrop-blur-xs flex flex-col items-center justify-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-sky-50 border border-sky-200 text-sky-600 flex items-center justify-center shadow-xs">
+                  <RefreshCw className="w-6 h-6 animate-spin" />
+                </div>
+                <div className="text-center space-y-1">
+                  <p className="text-sm font-extrabold text-slate-800">
+                    Đang tải giao diện Quản lý Bài tập Khối 4 ngay trong ứng dụng...
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    Tự động đồng bộ phiên đăng nhập của {grade3SsoPayload.name}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <iframe
+              ref={grade4IframeRef}
+              key={`src-k4-${grade4IframeKey}-${grade4EmbeddedUrlWithSso}`}
+              src={grade4EmbeddedUrlWithSso}
+              onLoad={handleGrade4IframeLoad}
+              title="Giao diện Quản lý Bài tập Chuyên biệt Khối 4"
               className="w-full h-full border-0 bg-white"
               allow="fullscreen; clipboard-read; clipboard-write; microphone; camera; autoplay"
             />

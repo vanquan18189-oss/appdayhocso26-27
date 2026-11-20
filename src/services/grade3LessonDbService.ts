@@ -18,6 +18,7 @@ export const GRADE3_DB_CONFIG_STORAGE_KEY = 'eduplay_grade3_dedicated_db_config_
 export const GRADE3_DEDICATED_CACHE_KEY = 'eduplay_grade3_dedicated_lessons_cache_v1';
 export const DEFAULT_GRADE3_COLLECTION = 'elearning_lessons_khoi3';
 export const DEFAULT_GRADE3_APP_URL = 'https://dayhockhoi3.vercel.app';
+export const DEFAULT_GRADE4_APP_URL = 'https://dayhockhoi4-eight.vercel.app/';
 
 export type Grade3ConnectionMode = 'partitioned_collection' | 'external_firebase' | 'external_app_url';
 

@@ -9,7 +9,8 @@ import {
   Check,
   Layers,
   Laptop,
-  Loader2
+  Loader2,
+  AlertCircle
 } from 'lucide-react';
 import { useClassesList } from '../../services/classStorageService';
 import { GRADES, SUBJECTS } from '../../lib/constants';
@@ -22,6 +23,7 @@ interface QuizziGameModalProps {
   onClose: () => void;
   onSave: (newGames: QuizziGameItem[]) => Promise<void> | void;
   initialData?: QuizziGameItem | null;
+  defaultGrade?: string;
 }
 
 export const QuizziGameModal: React.FC<QuizziGameModalProps> = ({
@@ -29,39 +31,52 @@ export const QuizziGameModal: React.FC<QuizziGameModalProps> = ({
   onClose,
   onSave,
   initialData,
+  defaultGrade,
 }) => {
   const { getClassesForGrade } = useClassesList();
 
-  const authEmail = (typeof window !== 'undefined' ? (auth?.currentUser?.email || localStorage.getItem('eduplay_teacher_email')) : null);
-  const activeTeacherProfile = useMemo(() => resolveCurrentTeacherProfile(authEmail), [authEmail]);
+  const authEmail =
+    typeof window !== 'undefined'
+      ? auth?.currentUser?.email || localStorage.getItem('eduplay_teacher_email')
+      : null;
+  const activeTeacherProfile = useMemo(
+    () => resolveCurrentTeacherProfile(authEmail),
+    [authEmail]
+  );
+
+  const resolvedDefaultGrade =
+    defaultGrade && GRADES.includes(defaultGrade) ? defaultGrade : 'Khối 3';
 
   const [title, setTitle] = useState('');
   const [desc, setDesc] = useState('');
-  const [selectedGrade, setSelectedGrade] = useState('Khối 3');
-  // Trạng thái khởi tạo luôn trống rỗng ([]) cho đến khi người dùng chủ động chọn
+  const [selectedGrade, setSelectedGrade] = useState(resolvedDefaultGrade);
   const [selectedClasses, setSelectedClasses] = useState<string[]>([]);
   const [subject, setSubject] = useState('Tin học');
   const [embedUrl, setEmbedUrl] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Lấy danh sách lớp khả dụng theo khối
   const availableClasses = getClassesForGrade(selectedGrade).map((c) => c.name);
 
-  // Khi khối lớp thay đổi, trạng thái lớp đã chọn luôn được đặt lại thành rỗng ([])
   const handleGradeChange = (newGrade: string) => {
     setSelectedGrade(newGrade);
     setSelectedClasses([]);
+    setErrorMsg(null);
   };
 
   useEffect(() => {
+    setErrorMsg(null);
     if (initialData) {
       setTitle(initialData.title || '');
       setDesc(initialData.desc || '');
-      setSelectedGrade(initialData.grade || 'Khối 3');
+      setSelectedGrade(initialData.grade || resolvedDefaultGrade);
       setSubject(initialData.subjectLabel || initialData.subject || 'Tin học');
       setEmbedUrl(initialData.embedUrl || '');
       if (initialData.classInfo) {
-        const classes = initialData.classInfo.split(',').map((c) => c.trim()).filter(Boolean);
+        const classes = initialData.classInfo
+          .split(',')
+          .map((c) => c.trim())
+          .filter(Boolean);
         setSelectedClasses(classes);
       } else {
         setSelectedClasses([]);
@@ -69,17 +84,17 @@ export const QuizziGameModal: React.FC<QuizziGameModalProps> = ({
     } else {
       setTitle('');
       setDesc('');
-      setSelectedGrade('Khối 3');
-      setSelectedClasses([]); // Tuyệt đối không gán cứng Lớp 3A, để trống [] cho người dùng tự chọn
+      setSelectedGrade(resolvedDefaultGrade);
+      setSelectedClasses([]);
       setSubject('Tin học');
       setEmbedUrl('');
     }
-  }, [initialData, isOpen]);
+  }, [initialData, isOpen, resolvedDefaultGrade]);
 
   if (!isOpen) return null;
 
-  // Toggle chọn / bỏ chọn 1 lớp
   const handleToggleClass = (className: string) => {
+    setErrorMsg(null);
     setSelectedClasses((prev) =>
       prev.includes(className)
         ? prev.filter((c) => c !== className)
@@ -87,17 +102,15 @@ export const QuizziGameModal: React.FC<QuizziGameModalProps> = ({
     );
   };
 
-  // Chọn tất cả lớp trong khối
   const handleSelectAllClasses = () => {
+    setErrorMsg(null);
     setSelectedClasses(availableClasses);
   };
 
-  // Bỏ chọn tất cả
   const handleDeselectAllClasses = () => {
     setSelectedClasses([]);
   };
 
-  // Bóc tách URL sạch nếu người dùng dán cả mã nhúng iframe
   const extractCleanUrl = (input: string): string => {
     const trimmed = input.trim();
     if (!trimmed) return '';
@@ -112,18 +125,21 @@ export const QuizziGameModal: React.FC<QuizziGameModalProps> = ({
     if (isSaving) return;
 
     if (!title.trim()) {
-      alert('Vui lòng nhập tên trò chơi Quizzi!');
+      setErrorMsg('Vui lòng nhập tên trò chơi Quizzi!');
       return;
     }
 
-    if (selectedClasses.length === 0) {
-      alert('Vui lòng chọn ít nhất 1 lớp học để giao trò chơi!');
+    const uniqueSelectedClasses = Array.from(
+      new Set(selectedClasses.map((c) => c.trim()).filter(Boolean))
+    );
+
+    if (uniqueSelectedClasses.length === 0) {
+      setErrorMsg('Vui lòng chọn ít nhất 1 lớp học để giao trò chơi!');
       return;
     }
 
     const cleanUrl = extractCleanUrl(embedUrl);
 
-    // Xác định icon và màu sắc phù hợp theo môn học
     const getSubjectConfig = (subj: string) => {
       const lower = subj.toLowerCase();
       if (lower.includes('tin học') || lower.includes('công nghệ')) {
@@ -139,33 +155,30 @@ export const QuizziGameModal: React.FC<QuizziGameModalProps> = ({
     };
 
     const subjConfig = getSubjectConfig(subject);
-    const rootId = initialData ? String(initialData.originalGameId || initialData.id) : `quizzi-${Date.now()}`;
+    const rootId = initialData
+      ? String(initialData.originalGameId || initialData.id)
+      : `quizzi-${Date.now()}`;
 
-    // Lọc duy nhất danh sách lớp thực tế được chọn, tuyệt đối không tự cộng thêm lớp ngoài
-    const uniqueSelectedClasses = Array.from(new Set(selectedClasses.map((c) => c.trim()).filter(Boolean)));
-
-    if (uniqueSelectedClasses.length === 0) {
-      alert('Vui lòng chọn ít nhất 1 lớp học để giao trò chơi!');
-      return;
-    }
-
-    // Chỉ tạo chính xác số lượng bản ghi tương ứng với mảng các lớp đã chọn thực tế
     const generatedGames: QuizziGameItem[] = uniqueSelectedClasses.map((cls, idx) => {
-      // Khi cập nhật: Nếu chỉ có 1 lớp và khớp lớp cũ của initialData thì giữ nguyên ID cũ
-      const isRetainingId = initialData && uniqueSelectedClasses.length === 1 && initialData.classInfo === cls;
-      const gameId = isRetainingId 
-        ? initialData.id 
+      const isRetainingId =
+        initialData &&
+        uniqueSelectedClasses.length === 1 &&
+        initialData.classInfo === cls;
+      const gameId = isRetainingId
+        ? initialData.id
         : `${rootId}-class-${cls.toLowerCase().replace(/[^a-z0-9]/g, '')}-${idx}`;
 
       return {
         id: gameId,
         originalGameId: rootId,
         title: title.trim(),
-        desc: desc.trim() || `Trò chơi tương tác môn ${subject} dành cho học sinh ${selectedGrade} (${cls})`,
+        desc:
+          desc.trim() ||
+          `Trò chơi tương tác môn ${subject} dành cho học sinh ${selectedGrade} (${cls})`,
         subject: subjConfig.subjectUpper,
         subjectLabel: subject,
         grade: selectedGrade,
-        classInfo: cls, // Lưu độc lập duy nhất 1 lớp được giáo viên chọn
+        classInfo: cls,
         icon: subjConfig.icon,
         color: subjConfig.color,
         type: 'Nhúng liên kết',
@@ -182,10 +195,12 @@ export const QuizziGameModal: React.FC<QuizziGameModalProps> = ({
 
     try {
       setIsSaving(true);
+      setErrorMsg(null);
       await onSave(generatedGames);
       onClose();
     } catch (err) {
       console.error('Lỗi khi lưu trò chơi Quizzi:', err);
+      setErrorMsg('Không thể lưu trò chơi lúc này. Vui lòng thử lại.');
     } finally {
       setIsSaving(false);
     }
@@ -202,7 +217,9 @@ export const QuizziGameModal: React.FC<QuizziGameModalProps> = ({
             </div>
             <div>
               <h3 className="text-xl font-black font-heading tracking-wide">
-                {initialData ? 'Chỉnh sửa trò chơi Quizzi' : 'Tạo trò chơi Quizzi (Nhúng Liên kết)'}
+                {initialData
+                  ? 'Chỉnh sửa trò chơi Quizzi'
+                  : 'Tạo trò chơi Quizzi (Nhúng Liên kết)'}
               </h3>
               <p className="text-indigo-100 text-sm mt-1">
                 Hỗ trợ liên kết Wordwall, Quizizz, Kahoot, Google Forms, v.v.
@@ -220,16 +237,27 @@ export const QuizziGameModal: React.FC<QuizziGameModalProps> = ({
 
         {/* Body */}
         <div className="p-6 space-y-5 overflow-y-auto flex-1">
+          {errorMsg && (
+            <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-bold flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+              <span>{errorMsg}</span>
+            </div>
+          )}
+
           {/* Tên trò chơi */}
           <div className="space-y-1.5">
             <label className="flex items-center gap-2 text-sm font-bold text-teal-700">
-              <Gamepad2 className="w-4 h-4" /> Tên trò chơi <span className="text-rose-500">*</span>
+              <Gamepad2 className="w-4 h-4" /> Tên trò chơi{' '}
+              <span className="text-rose-500">*</span>
             </label>
             <input
               type="text"
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="Ví dụ: Đấu trường ô chữ ôn tập Tin học lớp 3..."
+              onChange={(e) => {
+                setTitle(e.target.value);
+                if (errorMsg) setErrorMsg(null);
+              }}
+              placeholder="Ví dụ: Đấu trường ô chữ ôn tập Tin học..."
               className="w-full px-4 py-3 bg-white border border-slate-300 rounded-xl text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
             />
           </div>
@@ -248,7 +276,7 @@ export const QuizziGameModal: React.FC<QuizziGameModalProps> = ({
             />
           </div>
 
-          {/* 3 cột: Khối lớp - Môn học */}
+          {/* Khối lớp - Môn học */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <label className="text-sm font-bold text-slate-800">
@@ -296,12 +324,16 @@ export const QuizziGameModal: React.FC<QuizziGameModalProps> = ({
             <div className="flex items-center justify-between">
               <label className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
                 <span>Lớp nhận trò chơi</span>
-                <span className={`px-2 py-0.5 rounded-full text-xs font-black transition-colors ${
-                  selectedClasses.length > 0 
-                    ? 'bg-purple-600 text-white' 
-                    : 'bg-amber-100 text-amber-700 border border-amber-200'
-                }`}>
-                  {selectedClasses.length > 0 ? `${selectedClasses.length} lớp đã chọn` : 'Chưa chọn lớp'}
+                <span
+                  className={`px-2 py-0.5 rounded-full text-xs font-black transition-colors ${
+                    selectedClasses.length > 0
+                      ? 'bg-purple-600 text-white'
+                      : 'bg-amber-100 text-amber-700 border border-amber-200'
+                  }`}
+                >
+                  {selectedClasses.length > 0
+                    ? `${selectedClasses.length} lớp đã chọn`
+                    : 'Chưa chọn lớp'}
                 </span>
                 <span className="text-rose-500">*</span>
               </label>
@@ -357,11 +389,12 @@ export const QuizziGameModal: React.FC<QuizziGameModalProps> = ({
 
             {selectedClasses.length === 0 ? (
               <p className="text-xs text-rose-500 font-semibold italic mt-1">
-                ⚠️ Vui lòng chọn ít nhất 1 lớp học để phân phối trò chơi.
+                Vui lòng chọn ít nhất 1 lớp học để phân phối trò chơi.
               </p>
             ) : selectedClasses.length > 1 ? (
               <p className="text-xs text-purple-700 bg-white/80 p-2 rounded-xl border border-purple-200 font-medium mt-1">
-                💡 Hệ thống sẽ tự động tách thành <strong>{selectedClasses.length} trò chơi Quizzi độc lập</strong> cho từng lớp theo mô hình 1 nội dung gốc – N lần giao độc lập.
+                Hệ thống sẽ tự động tách thành{' '}
+                <strong>{selectedClasses.length} trò chơi Quizzi độc lập</strong> cho từng lớp theo mô hình 1 nội dung gốc – N lần giao độc lập.
               </p>
             ) : null}
           </div>
@@ -369,7 +402,8 @@ export const QuizziGameModal: React.FC<QuizziGameModalProps> = ({
           {/* Link trò chơi */}
           <div className="space-y-1.5">
             <label className="flex items-center gap-2 text-sm font-bold text-indigo-600">
-              <Link2 className="w-4 h-4" /> LINK TRÒ CHƠI (IFRAME/URL) <span className="text-rose-500">*</span>
+              <Link2 className="w-4 h-4" /> LINK TRÒ CHƠI (IFRAME/URL){' '}
+              <span className="text-rose-500">*</span>
             </label>
             <textarea
               rows={3}
@@ -381,7 +415,7 @@ export const QuizziGameModal: React.FC<QuizziGameModalProps> = ({
             <p className="text-xs text-slate-400 font-medium leading-relaxed flex gap-1 items-start mt-1.5">
               <span className="shrink-0">💡</span>
               <span>
-                Hệ thống sẽ tự động bóc tách đường dẫn sạch từ đoạn mã nhúng '&lt;iframe src="..."&gt;' của Wordwall, Kahoot, Quizizz, v.v.
+                Hệ thống sẽ tự động bóc tách đường dẫn sạch từ đoạn mã nhúng &apos;&lt;iframe src=&quot;...&quot;&gt;&apos; của Wordwall, Kahoot, Quizizz, v.v.
               </span>
             </p>
           </div>
@@ -409,7 +443,8 @@ export const QuizziGameModal: React.FC<QuizziGameModalProps> = ({
               </>
             ) : (
               <>
-                <Sparkles className="w-4 h-4" /> {initialData ? 'Cập nhật trò chơi' : 'Xác nhận tạo'}
+                <Sparkles className="w-4 h-4" />{' '}
+                {initialData ? 'Cập nhật trò chơi' : 'Xác nhận tạo'}
               </>
             )}
           </button>

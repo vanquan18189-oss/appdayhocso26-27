@@ -42,20 +42,25 @@ import {
   Share2,
   AlertCircle,
   ExternalLink,
-  QrCode
+  QrCode,
+  LayoutGrid,
+  Database,
+  Settings,
+  Monitor,
+  ShieldCheck
 } from 'lucide-react';
 import { GameItem, GameType, UserRole, QuizziGameItem } from '../../types';
 import { getStudentGameProfile, resolveAuthenticStudentId } from '../../services/studentGameStoreService';
 import { studentResultService } from '../../services/studentResultService';
 import { normalizeStudentCode } from '../../services/studentCode';
-import { db } from '../../services/firebase';
-import { collection, getDocs, getDoc, doc, writeBatch } from 'firebase/firestore';
+import { db, auth } from '../../services/firebase';
+import { collection, getDocs, getDoc, doc, query, where } from 'firebase/firestore';
 import { getStudentsFromLocalStorage, generateDefaultClassRoster } from '../../services/studentStorageService';
 import { ShareContentModal } from './ShareContentModal';
 import { StudentGameStoreTab } from './StudentGameStoreTab';
 import { ConfirmDeleteModal } from '../common/ConfirmDeleteModal';
 import { StatsSummaryRow } from '../common/StatsSummaryRow';
-import { awardArenaReward, calculateArenaReward, hasClaimedReward } from '../../config/rewardConfig';
+import { awardArenaReward, hasClaimedReward } from '../../config/rewardConfig';
 import { QuizziGameModal } from './QuizziGameModal';
 import { GameExportModal } from './GameExportModal';
 import { ExportableGame } from '../../utils/gameExportUtils';
@@ -69,21 +74,133 @@ import {
 import {
   joinQuizLiveSession,
   completeQuizLiveSession,
-  updateQuizLiveProgress
+  updateQuizLiveProgress,
+  queryQuizLiveSessionsByTargetIds
 } from '../../services/liveQuizSessionService';
 import {
   getEffectiveStudentClassAndGrade,
   isTargetingStudent
 } from '../../services/studentSessionService';
-import { auth } from '../../services/firebase';
 import { resolveCurrentTeacherProfile } from '../../services/teacherStorageService';
 import {
-  attachOwnershipOnCreate,
   getCurrentAccessContext,
   getContentPermissions,
   filterAccessibleItems,
   canTeacherAccessClass
-} from '../../services/permissionService';
+} from '../../utils/permissions';
+import {
+  Grade3DatabaseConfig,
+  DEFAULT_GRADE3_APP_URL,
+  DEFAULT_GRADE4_APP_URL,
+  getGrade3DbConfig,
+  getCachedGrade3Lessons
+} from '../../services/grade3LessonDbService';
+import { Grade3DatabaseConfigModal } from './Grade3DatabaseConfigModal';
+import { encodeUtf8Base64 } from '../portal/DigitalResourcePortal';
+import {
+  checkInitialSsoAutoLogin,
+  persistSsoTeacherSession,
+  decodeUtf8Base64
+} from '../../services/ssoAutoLoginService';
+
+interface GradeSelectorMeta {
+  key: string;
+  gradeValue: string;
+  label: string;
+  shortTag: string;
+  subtitle: string;
+  activeGradient: string;
+  activeShadow: string;
+  inactiveBorder: string;
+  badgeBg: string;
+  badgeText: string;
+  iconBg: string;
+  isDedicatedGrade3?: boolean;
+  isDedicatedGrade4?: boolean;
+}
+
+const GRADE_SELECTOR_CARDS: GradeSelectorMeta[] = [
+  {
+    key: 'all',
+    gradeValue: 'Tất cả các khối',
+    label: 'Tất cả khối',
+    shortTag: 'K1 → K5',
+    subtitle: 'Tổng hợp toàn trường',
+    activeGradient: 'from-slate-900 via-indigo-950 to-blue-950',
+    activeShadow: 'shadow-lg shadow-indigo-950/20 ring-2 ring-indigo-600/30',
+    inactiveBorder: 'border-slate-200/90 hover:border-indigo-300 hover:bg-indigo-50/30',
+    badgeBg: 'bg-indigo-100',
+    badgeText: 'text-indigo-800',
+    iconBg: 'bg-indigo-600 text-white',
+  },
+  {
+    key: 'grade-1',
+    gradeValue: 'Khối 1',
+    label: 'Khối 1',
+    shortTag: 'Lớp 1',
+    subtitle: 'Trò chơi khởi đầu',
+    activeGradient: 'from-rose-500 via-pink-600 to-fuchsia-600',
+    activeShadow: 'shadow-lg shadow-rose-500/25 ring-2 ring-rose-400/40',
+    inactiveBorder: 'border-rose-200/80 hover:border-rose-400 hover:bg-rose-50/40',
+    badgeBg: 'bg-rose-100',
+    badgeText: 'text-rose-800',
+    iconBg: 'bg-gradient-to-br from-rose-500 to-pink-600 text-white',
+  },
+  {
+    key: 'grade-2',
+    gradeValue: 'Khối 2',
+    label: 'Khối 2',
+    shortTag: 'Lớp 2',
+    subtitle: 'Đấu trí nền tảng',
+    activeGradient: 'from-amber-500 via-orange-500 to-red-500',
+    activeShadow: 'shadow-lg shadow-amber-500/25 ring-2 ring-amber-400/40',
+    inactiveBorder: 'border-amber-200/80 hover:border-amber-400 hover:bg-amber-50/40',
+    badgeBg: 'bg-amber-100',
+    badgeText: 'text-amber-800',
+    iconBg: 'bg-gradient-to-br from-amber-500 to-orange-600 text-white',
+  },
+  {
+    key: 'grade-3',
+    gradeValue: 'Khối 3',
+    label: 'Khối 3',
+    shortTag: 'Nhúng App K3',
+    subtitle: 'Hiển thị ngay trong App',
+    activeGradient: 'from-emerald-600 via-teal-600 to-cyan-600',
+    activeShadow: 'shadow-lg shadow-emerald-600/25 ring-2 ring-emerald-400/50',
+    inactiveBorder: 'border-emerald-300/90 hover:border-emerald-500 bg-emerald-50/25 hover:bg-emerald-50/60',
+    badgeBg: 'bg-emerald-100',
+    badgeText: 'text-emerald-800',
+    iconBg: 'bg-gradient-to-br from-emerald-500 to-teal-600 text-white',
+    isDedicatedGrade3: true,
+  },
+  {
+    key: 'grade-4',
+    gradeValue: 'Khối 4',
+    label: 'Khối 4',
+    shortTag: 'Nhúng App K4',
+    subtitle: 'Hiển thị ngay trong App',
+    activeGradient: 'from-sky-500 via-blue-600 to-indigo-600',
+    activeShadow: 'shadow-lg shadow-blue-500/25 ring-2 ring-sky-400/40',
+    inactiveBorder: 'border-sky-300/90 hover:border-sky-500 bg-sky-50/25 hover:bg-sky-50/60',
+    badgeBg: 'bg-sky-100',
+    badgeText: 'text-sky-800',
+    iconBg: 'bg-gradient-to-br from-sky-500 to-blue-600 text-white',
+    isDedicatedGrade4: true,
+  },
+  {
+    key: 'grade-5',
+    gradeValue: 'Khối 5',
+    label: 'Khối 5',
+    shortTag: 'Lớp 5',
+    subtitle: 'Đấu trường chuyển cấp',
+    activeGradient: 'from-violet-600 via-purple-600 to-indigo-700',
+    activeShadow: 'shadow-lg shadow-violet-600/25 ring-2 ring-violet-400/40',
+    inactiveBorder: 'border-violet-200/80 hover:border-violet-400 hover:bg-violet-50/40',
+    badgeBg: 'bg-violet-100',
+    badgeText: 'text-violet-800',
+    iconBg: 'bg-gradient-to-br from-violet-600 to-purple-600 text-white',
+  },
+];
 
 interface InteractiveGamesModuleProps {
   games: GameItem[];
@@ -113,19 +230,263 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
   soundEnabled = true
 }) => {
   const { getClassesForGrade } = useClassesList();
-  const authEmail = (typeof window !== 'undefined' ? (auth?.currentUser?.email || localStorage.getItem('eduplay_teacher_email')) : null);
+  const [ssoEmailOverride, setSsoEmailOverride] = useState<string | null>(() => {
+    const initialSso = checkInitialSsoAutoLogin();
+    return initialSso?.authenticated && initialSso.email ? initialSso.email : null;
+  });
+  const authEmail =
+    typeof window !== 'undefined'
+      ? ssoEmailOverride || auth?.currentUser?.email || localStorage.getItem('eduplay_teacher_email')
+      : null;
   const activeTeacherProfile = useMemo(() => resolveCurrentTeacherProfile(authEmail), [authEmail]);
   const accessContext = useMemo(() => getCurrentAccessContext(userRole, authEmail), [userRole, authEmail]);
   const isAdmin = accessContext.isAdmin;
   const [resourceTab, setResourceTab] = useState<'all' | 'mine' | 'colleagues'>('all');
 
-  const isRoomOwner = useCallback((room: GameItem): boolean => {
-    return getContentPermissions(room, accessContext).isOwner || isAdmin;
-  }, [accessContext, isAdmin]);
+  // Lắng nghe thông tin đăng nhập SSO từ URL hoặc postMessage (PK_TRUC_KHANG_SSO_LOGIN / SSO_AUTO_LOGIN)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleSsoMessage = (event: MessageEvent) => {
+      try {
+        const data = event?.data;
+        if (!data || typeof data !== 'object') return;
+        if (data.type !== 'PK_TRUC_KHANG_SSO_LOGIN' && data.type !== 'SSO_AUTO_LOGIN') return;
 
-  const isQuizziOwner = useCallback((game: QuizziGameItem): boolean => {
-    return getContentPermissions(game, accessContext).isOwner || isAdmin;
-  }, [accessContext, isAdmin]);
+        let tokenObj: Record<string, any> | null = null;
+        const rawToken = data.sso_token || data.ssoToken || data.token;
+        if (typeof rawToken === 'string' && rawToken.trim()) {
+          tokenObj = decodeUtf8Base64(rawToken.trim());
+        }
+
+        const email = String(
+          data.sso_email || data.email || data.user?.email || tokenObj?.email || ''
+        )
+          .trim()
+          .toLowerCase();
+        if (!email) return;
+
+        const name = String(
+          data.sso_name || data.name || data.user?.name || tokenObj?.name || ''
+        ).trim();
+        const role = String(
+          data.sso_role || data.role || data.user?.role || tokenObj?.role || ''
+        ).trim();
+
+        const sessionUser = persistSsoTeacherSession({
+          email,
+          name,
+          role,
+          rawTab: 'interactive_games',
+        });
+        setSsoEmailOverride(sessionUser.email);
+      } catch {
+        // Ignore invalid cross-origin postMessage payloads
+      }
+    };
+
+    window.addEventListener('message', handleSsoMessage);
+    return () => window.removeEventListener('message', handleSsoMessage);
+  }, []);
+
+  const [grade3DbConfig, setGrade3DbConfig] = useState<Grade3DatabaseConfig>(() =>
+    getGrade3DbConfig()
+  );
+  const [grade3LatencyMs] = useState<number>(
+    () => getGrade3DbConfig().lastPingMs || 14
+  );
+  const [isGrade3ConfigModalOpen, setIsGrade3ConfigModalOpen] = useState(false);
+  const [showDedicatedGradeIframe, setShowDedicatedGradeIframe] = useState<boolean>(true);
+
+  const grade3IframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [grade3IframeKey, setGrade3IframeKey] = useState<number>(0);
+  const [isGrade3IframeLoading, setIsGrade3IframeLoading] = useState<boolean>(true);
+
+  const grade4IframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [grade4IframeKey, setGrade4IframeKey] = useState<number>(0);
+  const [isGrade4IframeLoading, setIsGrade4IframeLoading] = useState<boolean>(true);
+
+  useEffect(() => {
+    const onConfigUpdated = () => {
+      setGrade3DbConfig(getGrade3DbConfig());
+    };
+    window.addEventListener('eduplay_grade3_db_config_updated', onConfigUpdated);
+    return () => window.removeEventListener('eduplay_grade3_db_config_updated', onConfigUpdated);
+  }, []);
+
+  const gradeSsoPayload = useMemo(() => {
+    const teacherEmail = activeTeacherProfile?.email || authEmail || 'thuthuthtk@gmail.com';
+    const teacherName = activeTeacherProfile?.name || 'Giáo viên';
+    const teacherRole = isAdmin ? 'admin' : userRole || 'teacher';
+    const teacherUid = String(activeTeacherProfile?.id || teacherEmail);
+    const ssoToken = encodeUtf8Base64({
+      email: teacherEmail,
+      name: teacherName,
+      role: teacherRole,
+      uid: teacherUid,
+      tab: 'interactive_games',
+      module: 'interactive_games',
+      timestamp: Date.now(),
+      source: 'PK_TRUC_KHANG_LMS',
+    });
+
+    return {
+      email: teacherEmail,
+      name: teacherName,
+      role: teacherRole,
+      uid: teacherUid,
+      ssoToken,
+    };
+  }, [activeTeacherProfile, authEmail, isAdmin, userRole]);
+
+  const grade3EmbeddedUrlWithSso = useMemo(() => {
+    const rawBase =
+      (grade3DbConfig.externalAppUrl || DEFAULT_GRADE3_APP_URL).trim() ||
+      DEFAULT_GRADE3_APP_URL;
+    const baseUrl = /^https?:\/\//i.test(rawBase) ? rawBase : `https://${rawBase}`;
+
+    try {
+      const urlObj = new URL(baseUrl);
+      urlObj.searchParams.set('autologin', 'true');
+      urlObj.searchParams.set('auto_login', 'true');
+      urlObj.searchParams.set('tab', 'interactive_games');
+      urlObj.searchParams.set('module', 'interactive_games');
+      urlObj.searchParams.set('grade', 'Khối 3');
+      if (gradeSsoPayload.email) {
+        urlObj.searchParams.set('email', gradeSsoPayload.email);
+        urlObj.searchParams.set('sso_email', gradeSsoPayload.email);
+      }
+      if (gradeSsoPayload.ssoToken) {
+        urlObj.searchParams.set('token', gradeSsoPayload.ssoToken);
+        urlObj.searchParams.set('sso_token', gradeSsoPayload.ssoToken);
+      }
+      if (gradeSsoPayload.name) {
+        urlObj.searchParams.set('name', gradeSsoPayload.name);
+        urlObj.searchParams.set('sso_name', gradeSsoPayload.name);
+      }
+      if (gradeSsoPayload.role) {
+        urlObj.searchParams.set('role', gradeSsoPayload.role);
+        urlObj.searchParams.set('sso_role', gradeSsoPayload.role);
+      }
+      return urlObj.toString();
+    } catch {
+      return baseUrl;
+    }
+  }, [grade3DbConfig.externalAppUrl, gradeSsoPayload]);
+
+  const grade4EmbeddedUrlWithSso = useMemo(() => {
+    const rawBase = DEFAULT_GRADE4_APP_URL.trim();
+    const baseUrl = /^https?:\/\//i.test(rawBase) ? rawBase : `https://${rawBase}`;
+
+    try {
+      const urlObj = new URL(baseUrl);
+      urlObj.searchParams.set('autologin', 'true');
+      urlObj.searchParams.set('auto_login', 'true');
+      urlObj.searchParams.set('tab', 'interactive_games');
+      urlObj.searchParams.set('module', 'interactive_games');
+      urlObj.searchParams.set('grade', 'Khối 4');
+      if (gradeSsoPayload.email) {
+        urlObj.searchParams.set('email', gradeSsoPayload.email);
+        urlObj.searchParams.set('sso_email', gradeSsoPayload.email);
+      }
+      if (gradeSsoPayload.ssoToken) {
+        urlObj.searchParams.set('token', gradeSsoPayload.ssoToken);
+        urlObj.searchParams.set('sso_token', gradeSsoPayload.ssoToken);
+      }
+      if (gradeSsoPayload.name) {
+        urlObj.searchParams.set('name', gradeSsoPayload.name);
+        urlObj.searchParams.set('sso_name', gradeSsoPayload.name);
+      }
+      if (gradeSsoPayload.role) {
+        urlObj.searchParams.set('role', gradeSsoPayload.role);
+        urlObj.searchParams.set('sso_role', gradeSsoPayload.role);
+      }
+      return urlObj.toString();
+    } catch {
+      return baseUrl;
+    }
+  }, [gradeSsoPayload]);
+
+  const postSsoToGrade3Iframe = useCallback(() => {
+    const iframeWindow = grade3IframeRef.current?.contentWindow;
+    if (!iframeWindow) return;
+    try {
+      const payload = {
+        autologin: true,
+        auto_login: true,
+        email: gradeSsoPayload.email,
+        sso_email: gradeSsoPayload.email,
+        name: gradeSsoPayload.name,
+        sso_name: gradeSsoPayload.name,
+        role: gradeSsoPayload.role,
+        sso_role: gradeSsoPayload.role,
+        token: gradeSsoPayload.ssoToken,
+        ssoToken: gradeSsoPayload.ssoToken,
+        sso_token: gradeSsoPayload.ssoToken,
+        tab: 'interactive_games',
+        module: 'interactive_games',
+        grade: 'Khối 3',
+        user: {
+          email: gradeSsoPayload.email,
+          name: gradeSsoPayload.name,
+          displayName: gradeSsoPayload.name,
+          role: gradeSsoPayload.role,
+          uid: gradeSsoPayload.uid,
+        },
+      };
+      iframeWindow.postMessage({ ...payload, type: 'PK_TRUC_KHANG_SSO_LOGIN' }, '*');
+      iframeWindow.postMessage({ ...payload, type: 'SSO_AUTO_LOGIN' }, '*');
+    } catch {
+      // Ignore cross-origin postMessage errors
+    }
+  }, [gradeSsoPayload]);
+
+  const postSsoToGrade4Iframe = useCallback(() => {
+    const iframeWindow = grade4IframeRef.current?.contentWindow;
+    if (!iframeWindow) return;
+    try {
+      const payload = {
+        autologin: true,
+        auto_login: true,
+        email: gradeSsoPayload.email,
+        sso_email: gradeSsoPayload.email,
+        name: gradeSsoPayload.name,
+        sso_name: gradeSsoPayload.name,
+        role: gradeSsoPayload.role,
+        sso_role: gradeSsoPayload.role,
+        token: gradeSsoPayload.ssoToken,
+        ssoToken: gradeSsoPayload.ssoToken,
+        sso_token: gradeSsoPayload.ssoToken,
+        tab: 'interactive_games',
+        module: 'interactive_games',
+        grade: 'Khối 4',
+        user: {
+          email: gradeSsoPayload.email,
+          name: gradeSsoPayload.name,
+          displayName: gradeSsoPayload.name,
+          role: gradeSsoPayload.role,
+          uid: gradeSsoPayload.uid,
+        },
+      };
+      iframeWindow.postMessage({ ...payload, type: 'PK_TRUC_KHANG_SSO_LOGIN' }, '*');
+      iframeWindow.postMessage({ ...payload, type: 'SSO_AUTO_LOGIN' }, '*');
+    } catch {
+      // Ignore cross-origin postMessage errors
+    }
+  }, [gradeSsoPayload]);
+
+  const handleGrade3IframeLoad = useCallback(() => {
+    setIsGrade3IframeLoading(false);
+    postSsoToGrade3Iframe();
+    window.setTimeout(postSsoToGrade3Iframe, 250);
+    window.setTimeout(postSsoToGrade3Iframe, 800);
+  }, [postSsoToGrade3Iframe]);
+
+  const handleGrade4IframeLoad = useCallback(() => {
+    setIsGrade4IframeLoading(false);
+    postSsoToGrade4Iframe();
+    window.setTimeout(postSsoToGrade4Iframe, 250);
+    window.setTimeout(postSsoToGrade4Iframe, 800);
+  }, [postSsoToGrade4Iframe]);
 
   const [activeGame, setActiveGame] = useState<GameItem | null>(null);
   const [selectedLobbyMode, setSelectedLobbyMode] = useState<GameType>('golden_bell');
@@ -307,6 +668,42 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
   const [filterSubject, setFilterSubject] = useState('Tất cả các môn');
   const [filterType, setFilterType] = useState('Tất cả Loại');
 
+  useEffect(() => {
+    if (filterGrade !== 'Khối 3' && filterGrade !== 'Khối 4') return;
+    const handleMessage = (event: MessageEvent) => {
+      try {
+        const data = event?.data;
+        if (
+          data &&
+          typeof data === 'object' &&
+          (data.type === 'PK_TRUC_KHANG_REQUEST_SSO' || data.type === 'KHO_HOC_LIEU_READY')
+        ) {
+          if (filterGrade === 'Khối 3') {
+            postSsoToGrade3Iframe();
+          } else if (filterGrade === 'Khối 4') {
+            postSsoToGrade4Iframe();
+          }
+        }
+      } catch {
+        // Ignore postMessage listener errors
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [filterGrade, postSsoToGrade3Iframe, postSsoToGrade4Iframe]);
+
+  const handleSelectGradeCard = (gradeValue: string) => {
+    setFilterGrade(gradeValue);
+    setFilterClass('Tất cả các lớp');
+    if (gradeValue === 'Khối 3') {
+      setShowDedicatedGradeIframe(true);
+      setIsGrade3IframeLoading(true);
+    } else if (gradeValue === 'Khối 4') {
+      setShowDedicatedGradeIframe(true);
+      setIsGrade4IframeLoading(true);
+    }
+  };
+
   // Student Filter States
   const [studentRoomSubjectFilter, setStudentRoomSubjectFilter] = useState('Tất cả các môn');
   const [studentQuizSubjectFilter, setStudentQuizSubjectFilter] = useState('Tất cả các môn');
@@ -404,7 +801,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
     return accessibleCustomRooms.filter(room => {
       const roomGrade = room.khoi || room.grade;
       const roomClass = room.lop || room.classInfo;
-      if (filterGrade !== 'Tất cả các khối' && filterGrade !== 'Tất cả' && roomGrade && roomGrade !== filterGrade) return false;
+      if (filterGrade !== 'Tất cả các khối' && filterGrade !== 'Tất cả khối' && filterGrade !== 'Tất cả' && roomGrade && roomGrade !== filterGrade) return false;
       if (filterClass !== 'Tất cả các lớp' && filterClass !== 'Tất cả' && roomClass) {
         const isAllGradeClasses = roomClass.toLowerCase().includes('tất cả') && (!roomGrade || roomGrade === filterGrade || extractGradeDigit(roomGrade) === extractGradeDigit(filterClass));
         if (!isAllGradeClasses && roomClass !== filterClass) return false;
@@ -415,7 +812,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
   }, [accessibleCustomRooms, filterGrade, filterClass, filterSubject]);
 
   const filteredGames = accessibleQuizziGames.filter(g => {
-    if (filterGrade !== 'Tất cả các khối' && g.grade !== filterGrade) return false;
+    if (filterGrade !== 'Tất cả các khối' && filterGrade !== 'Tất cả khối' && g.grade !== filterGrade) return false;
     if (filterClass !== 'Tất cả các lớp' && g.classInfo !== 'Tất cả các lớp' && g.classInfo !== filterClass) return false;
     if (filterSubject !== 'Tất cả các môn' && g.subjectLabel !== filterSubject && g.subject !== filterSubject) return false;
     if (filterType !== 'Tất cả Loại' && g.type !== filterType) return false;
@@ -424,7 +821,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
 
   const handleDeleteCard = async (id: number | string) => {
     try {
-      await deleteQuizziGameFromFirestore(id);
+      await deleteQuizziGameFromFirestore(String(id));
       setQuizziGames(prev => prev.filter(g => String(g.id) !== String(id)));
       setDeletedCards(prev => [...prev, id]);
       setToastMessage("🗑️ Đã xóa trò chơi thành công");
@@ -439,14 +836,13 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
     try {
       if (editingQuizziGame) {
         const rootId = editingQuizziGame.originalGameId || String(editingQuizziGame.id).replace(/-class-.*$/, '');
-        // Xóa các document cũ không còn thuộc danh sách mới
         const oldMatches = quizziGames.filter(g => {
           const gRoot = g.originalGameId || String(g.id).replace(/-class-.*$/, '');
           return gRoot === rootId || g.id === editingQuizziGame.id;
         });
         for (const old of oldMatches) {
           if (!newGames.some(ng => String(ng.id) === String(old.id))) {
-            await deleteQuizziGameFromFirestore(old.id);
+            await deleteQuizziGameFromFirestore(String(old.id));
           }
         }
         await saveMultipleQuizziGamesToFirestore(newGames);
@@ -522,17 +918,20 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
       const rootId = currentRoomId.replace(/-class-.*$/, '');
       const currentTitle = (selectedLeaderboardGame.title || '').trim().toLowerCase();
 
-      // Class to filter: either user's selected dropdown or game's assigned class
       const targetClass = leaderboardClassFilter || selectedLeaderboardGame.classInfo || 'Lớp 3D';
       const cleanTargetClass = targetClass.replace(/^Lớp\s*/i, '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
 
-      // Prepare student roster for name fallback
+      // Prepare student roster for studentCode lookup (studentCode is the ONLY primary identifier key)
       const roster = getStudentsFromLocalStorage(targetClass) || generateDefaultClassRoster(targetClass, 38);
       const rosterMap = new Map<string, string>();
+      const rosterCodes: string[] = [];
       roster.forEach((st: any) => {
         const code = normalizeStudentCode(st.code || st.studentCode || st.maHs || st.id);
         const name = st.fullName || st.name || '';
-        if (code && name) rosterMap.set(code.toUpperCase(), name);
+        if (code) {
+          rosterCodes.push(code);
+          if (name) rosterMap.set(code.toUpperCase(), name);
+        }
       });
 
       const studentMap = new Map<string, any>();
@@ -541,21 +940,56 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
       const studentDetails: any[] = [];
       const misplacedGames: any[] = [];
 
-      // 1. Scan student_results collection (server-authoritative)
-      try {
-        const snap = await getDocs(collection(db, 'student_results'));
-        readCount += snap.size;
-        docsFound += snap.size;
+      // 1. Truy vấn quiz_live_sessions tối ưu bằng điều kiện where('targetId', 'in', ...)
+      const targetIds = Array.from(new Set([currentRoomId, currentOriginalId, rootId].filter(Boolean)));
+      const liveParticipants = await queryQuizLiveSessionsByTargetIds(targetIds);
 
-        snap.forEach(docSnap => {
-          const data = docSnap.data();
+      // 2. Truy vấn student_results tối ưu bằng where('className', 'in', ...) và where('studentCode', 'in', ...)
+      try {
+        const fetchedStudentDocs = new Map<string, any>();
+
+        if (targetClass && targetClass !== 'Tất cả các lớp' && cleanTargetClass) {
+          const classVariants = Array.from(
+            new Set([targetClass, `Lớp ${cleanTargetClass}`, cleanTargetClass])
+          ).slice(0, 10);
+          const classQuery = query(
+            collection(db, 'student_results'),
+            where('className', 'in', classVariants)
+          );
+          const classSnap = await getDocs(classQuery);
+          readCount += classSnap.size;
+          classSnap.forEach((d) => fetchedStudentDocs.set(d.id, d.data()));
+        }
+
+        // Bổ sung các mã studentCode từ danh sách lớp và từ phiên live (chia batch tối đa 10 mã cho toán tử 'in')
+        const candidateCodes = Array.from(
+          new Set([
+            ...rosterCodes,
+            ...liveParticipants.map((p) => normalizeStudentCode(p.studentCode || p.studentId)).filter(Boolean),
+          ])
+        ).filter((code) => !fetchedStudentDocs.has(code));
+
+        for (let i = 0; i < candidateCodes.length; i += 10) {
+          const batchCodes = candidateCodes.slice(i, i + 10);
+          if (batchCodes.length === 0) continue;
+          const codeQuery = query(
+            collection(db, 'student_results'),
+            where('studentCode', 'in', batchCodes)
+          );
+          const codeSnap = await getDocs(codeQuery);
+          readCount += codeSnap.size;
+          codeSnap.forEach((d) => fetchedStudentDocs.set(d.id, d.data()));
+        }
+
+        docsFound = fetchedStudentDocs.size;
+
+        fetchedStudentDocs.forEach((data, docId) => {
           if (!data) return;
-          const docId = docSnap.id;
-          const sCode = normalizeStudentCode(data.studentCode || docId) || docId;
+          const sCode = normalizeStudentCode(data.studentCode || docId);
+          if (!sCode) return;
           const sCodeUpper = sCode.toUpperCase();
           const gamesObj = data.games || {};
 
-          // Infer student class
           let sClass = data.className || data.studentClass || data.class || '';
           if (!sClass) {
             const codeMatch = sCodeUpper.match(/([1-5][A-Z])/);
@@ -570,7 +1004,6 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
             const resTitle = String(res.roomTitle || '').trim().toLowerCase();
             const resClass = res.className || res.studentClass || sClass;
 
-            // Check if game record matches this room
             const isIdMatch = (
               gKey === currentRoomId ||
               gKey === currentOriginalId ||
@@ -592,7 +1025,6 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
               const effectiveClass = resClass || sClass || targetClass;
               const cleanStudentClass = effectiveClass.replace(/^Lớp\s*/i, '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
 
-              // Check if matches class filter
               const isClassAllowed = (
                 targetClass === 'Tất cả các lớp' ||
                 cleanTargetClass === '' ||
@@ -646,31 +1078,17 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
           }
         });
       } catch (err) {
-        console.warn('Lỗi quét student_results cho leaderboard:', err);
+        console.warn('Lỗi truy vấn student_results theo where() cho leaderboard:', err);
       }
 
-      // 2. Scan quiz_live_sessions collection (for in-progress and completed sessions)
+      // 3. Hợp nhất dữ liệu từ quiz_live_sessions (đã truy vấn theo where('targetId', 'in', targetIds))
       try {
-        const liveSnap = await getDocs(collection(db, 'quiz_live_sessions'));
-        liveSnap.forEach(docSnap => {
-          const p = docSnap.data();
+        liveParticipants.forEach((p) => {
           if (!p || p.studentId?.startsWith('seed_st_')) return;
 
-          const pTargetId = String(p.targetId || '');
-          const pTitle = String(p.targetTitle || '').trim().toLowerCase();
-
-          const isTargetMatch = (
-            pTargetId === currentRoomId ||
-            pTargetId === currentOriginalId ||
-            pTargetId === rootId ||
-            (pTargetId && currentRoomId && (pTargetId.includes(currentRoomId) || currentRoomId.includes(pTargetId))) ||
-            Boolean(pTitle && currentTitle && (pTitle === currentTitle || pTitle.includes(currentTitle) || currentTitle.includes(pTitle)))
-          );
-
-          if (!isTargetMatch) return;
-
-          const pStudentId = normalizeStudentCode(p.studentId) || p.studentId;
-          const pStudentIdUpper = pStudentId.toUpperCase();
+          const pStudentCode = normalizeStudentCode(p.studentCode || p.studentId);
+          if (!pStudentCode) return;
+          const pStudentIdUpper = pStudentCode.toUpperCase();
           const pClass = p.studentClass || '';
           const cleanPClass = pClass.replace(/^Lớp\s*/i, '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
 
@@ -693,8 +1111,8 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
           }
 
           const candidate = {
-            studentCode: pStudentId,
-            studentName: p.studentName || rosterMap.get(pStudentIdUpper) || pStudentId,
+            studentCode: pStudentCode,
+            studentName: p.studentName || rosterMap.get(pStudentIdUpper) || pStudentCode,
             className: pClass || targetClass,
             score: scoreVal,
             maxScore: totalQ * 100,
@@ -716,7 +1134,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
           }
         });
       } catch (err) {
-        console.warn('Lỗi quét quiz_live_sessions cho leaderboard:', err);
+        console.warn('Lỗi hợp nhất quiz_live_sessions cho leaderboard:', err);
       }
 
       const results = Array.from(studentMap.values());
@@ -796,7 +1214,17 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
   const handleScanMisplacedGameResults = async () => {
     if (!selectedLeaderboardGame || !db) return;
     try {
-      const snap = await getDocs(collection(db, 'student_results'));
+      const targetClass = leaderboardClassFilter || selectedLeaderboardGame.classInfo || 'Lớp 3D';
+      const cleanTargetClass = targetClass.replace(/^Lớp\s*/i, '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+      const classVariants = Array.from(
+        new Set([targetClass, `Lớp ${cleanTargetClass}`, cleanTargetClass].filter(Boolean))
+      ).slice(0, 10);
+
+      const q = query(
+        collection(db, 'student_results'),
+        where('className', 'in', classVariants.length > 0 ? classVariants : ['Lớp 3A'])
+      );
+      const snap = await getDocs(q);
       const exactMatch: any[] = [];
       const normalizedMatch: any[] = [];
       const unmatched: any[] = [];
@@ -804,7 +1232,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
       snap.forEach(docSnap => {
         const data = docSnap.data();
         if (!data || !data.games) return;
-        const studentCode = data.studentCode || docSnap.id;
+        const studentCode = normalizeStudentCode(data.studentCode || docSnap.id) || docSnap.id;
         for (const [gKey, gVal] of Object.entries(data.games)) {
           const res = gVal as any;
           if (!res) continue;
@@ -818,10 +1246,13 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
         }
       });
 
-      alert(`[QUÉT KẾT QUẢ TRÒ CHƠI LẠC MÃ]\n- Khớp chính xác (roomId): ${exactMatch.length} bản ghi\n- Khớp theo tiêu đề: ${normalizedMatch.length} bản ghi\n- Khác/Không khớp: ${unmatched.length} bản ghi`);
+      showToast(
+        `Đã đối soát kết quả theo Mã HS: Khớp roomId (${exactMatch.length}) • Khớp tiêu đề (${normalizedMatch.length}) • Khác (${unmatched.length})`,
+        'success'
+      );
     } catch (err) {
       console.error('Lỗi quét kết quả game:', err);
-      alert('Lỗi khi quét kết quả trò chơi');
+      showToast('Không thể quét kết quả trò chơi lúc này.', 'error');
     }
   };
 
@@ -1925,50 +2356,353 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
 
       {/* LOBBY: Teacher View (Tab 1) */}
       {gameMode === 'lobby' && activeTab === 'games' && userRole !== 'student' && (
-        <div className="space-y-6">
-          {/* Top Stat Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="bg-teal-700 rounded-xl p-5 text-white flex flex-col justify-center relative overflow-hidden">
-              <Gamepad2 className="w-20 h-20 absolute -right-4 -bottom-4 text-teal-800/50" />
-              <div className="flex items-center gap-4 relative z-10">
-                <div className="w-12 h-12 bg-teal-800/50 rounded-full flex items-center justify-center shrink-0">
-                  <Gamepad2 className="w-6 h-6 text-teal-100" />
+        <div className="space-y-5">
+          {/* THANH CHỌN KHỐI TRỰC QUAN TỪ KHỐI 1 ĐẾN KHỐI 5 */}
+          <div className="bg-white p-4 sm:p-5 rounded-3xl border border-slate-200/80 shadow-xs space-y-3.5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
+                  <Layers className="w-4 h-4" />
                 </div>
                 <div>
-                  <div className="text-3xl font-black">{accessibleCustomRooms.filter(g => g.status !== 'closed').length}</div>
-                  <div className="text-[10px] font-black uppercase tracking-wider text-teal-100 mt-0.5">PHÒNG THI ĐẤU ĐANG HOẠT ĐỘNG</div>
+                  <h3 className="text-xs sm:text-sm font-extrabold text-slate-900">
+                    Chọn Khối Lớp Trò Chơi Học Tập (Khối 1 – Khối 5)
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Bấm vào từng thẻ khối để lọc hoặc điều hướng sang không gian trò chơi chuyên biệt • Khối 3 &amp; Khối 4 tích hợp SSO trực tiếp
+                  </p>
                 </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+                {(filterGrade === 'Khối 3' || filterGrade === 'Khối 4') && (
+                  <button
+                    type="button"
+                    onClick={() => setShowDedicatedGradeIframe((prev) => !prev)}
+                    className="px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-[11px] font-extrabold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    <Monitor className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>
+                      {showDedicatedGradeIframe
+                        ? `Xem kho trò chơi ${filterGrade} tại App Mẹ`
+                        : `Mở khung nhúng App ${filterGrade}`}
+                    </span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setIsGrade3ConfigModalOpen(true)}
+                  className="px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200/90 text-[11px] font-extrabold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                  title="Cấu hình liên kết cơ sở dữ liệu riêng của ứng dụng Khối 3"
+                >
+                  <Database className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Cấu hình CSDL Khối 3</span>
+                </button>
               </div>
             </div>
 
-            <div className="bg-indigo-600 rounded-xl p-5 text-white flex flex-col justify-center relative overflow-hidden">
-              <Zap className="w-20 h-20 absolute -right-4 -bottom-4 text-indigo-700/50" />
-              <div className="flex items-center gap-4 relative z-10">
-                <div className="w-12 h-12 bg-indigo-700/50 rounded-full flex items-center justify-center shrink-0">
-                  <Zap className="w-6 h-6 text-indigo-100" />
-                </div>
-                <div>
-                  <div className="text-3xl font-black">
-                    {accessibleQuizziGames.length}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+              {GRADE_SELECTOR_CARDS.map((card) => {
+                const isSelected =
+                  filterGrade.trim().toLowerCase() === card.gradeValue.trim().toLowerCase() ||
+                  (card.key === 'all' &&
+                    (filterGrade === 'Tất cả khối' || filterGrade === 'Tất cả các khối'));
+
+                const cardClassName = `relative rounded-2xl p-3.5 transition-all duration-150 cursor-pointer select-none flex flex-col justify-between min-h-[112px] border no-underline ${
+                  isSelected
+                    ? `bg-gradient-to-br ${card.activeGradient} text-white border-transparent ${card.activeShadow} -translate-y-0.5`
+                    : `bg-white text-slate-800 ${card.inactiveBorder}`
+                }`;
+
+                return (
+                  <div
+                    key={card.key}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => handleSelectGradeCard(card.gradeValue)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        handleSelectGradeCard(card.gradeValue);
+                      }
+                    }}
+                    className={cardClassName}
+                    title={
+                      card.isDedicatedGrade3
+                        ? 'Bấm để kết nối SSO và nhúng trực tiếp Trò chơi Học tập Khối 3 (https://dayhockhoi3.vercel.app)'
+                        : card.isDedicatedGrade4
+                        ? 'Bấm để kết nối SSO và nhúng trực tiếp Trò chơi Học tập Khối 4 (https://dayhockhoi4-eight.vercel.app/)'
+                        : `Chọn không gian trò chơi ${card.label}`
+                    }
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div
+                        className={`w-9 h-9 rounded-xl flex items-center justify-center font-extrabold text-xs shrink-0 shadow-2xs ${
+                          isSelected ? 'bg-white/20 text-white' : card.iconBg
+                        }`}
+                      >
+                        {card.key === 'all' ? (
+                          <LayoutGrid className="w-4 h-4" />
+                        ) : (
+                          <span>K{card.gradeValue.replace(/[^0-9]/g, '')}</span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1">
+                        {card.isDedicatedGrade3 && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setIsGrade3ConfigModalOpen(true);
+                            }}
+                            className={`p-1 rounded-lg transition-colors cursor-pointer ${
+                              isSelected
+                                ? 'bg-white/20 hover:bg-white/30 text-white'
+                                : 'bg-emerald-100 hover:bg-emerald-200 text-emerald-700'
+                            }`}
+                            title="Mở cấu hình liên kết dữ liệu chuyên biệt Khối 3"
+                          >
+                            <Database className="w-3 h-3" />
+                          </button>
+                        )}
+                        <span
+                          className={`text-[10px] font-extrabold px-2 py-0.5 rounded-lg whitespace-nowrap ${
+                            isSelected
+                              ? 'bg-white/20 text-white'
+                              : `${card.badgeBg} ${card.badgeText}`
+                          }`}
+                        >
+                          {card.shortTag}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="mt-2.5">
+                      <div className="flex items-baseline justify-between gap-1">
+                        <span
+                          className={`text-sm sm:text-base font-extrabold tracking-tight ${
+                            isSelected ? 'text-white' : 'text-slate-900'
+                          }`}
+                        >
+                          {card.label}
+                        </span>
+                      </div>
+
+                      <p
+                        className={`text-[11px] mt-0.5 truncate ${
+                          isSelected ? 'text-white/85 font-medium' : 'text-slate-500'
+                        }`}
+                      >
+                        {card.subtitle}
+                      </p>
+                    </div>
+
+                    <div
+                      className={`mt-2 pt-1.5 border-t flex items-center justify-between text-[10px] font-semibold tabular-nums ${
+                        isSelected
+                          ? 'border-white/15 text-white/90'
+                          : 'border-slate-100 text-slate-400'
+                      }`}
+                    >
+                      {card.isDedicatedGrade3 ? (
+                        <>
+                          <span
+                            className={`flex items-center gap-1 font-bold ${
+                              isSelected ? 'text-emerald-100' : 'text-emerald-700'
+                            }`}
+                          >
+                            <Monitor className="w-3 h-3" />
+                            <span>Nhúng trực tiếp K3</span>
+                          </span>
+                          <span className="font-mono">{grade3LatencyMs}ms</span>
+                        </>
+                      ) : card.isDedicatedGrade4 ? (
+                        <>
+                          <span
+                            className={`flex items-center gap-1 font-bold ${
+                              isSelected ? 'text-sky-100' : 'text-sky-700'
+                            }`}
+                          >
+                            <Monitor className="w-3 h-3" />
+                            <span>Nhúng trực tiếp K4</span>
+                          </span>
+                          <span className="font-mono">{grade3LatencyMs}ms</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>Đấu trường AI</span>
+                          <span>GDPT 2018</span>
+                        </>
+                      )}
+                    </div>
                   </div>
-                  <div className="text-[10px] font-black uppercase tracking-wider text-indigo-100 mt-0.5">TRÒ CHƠI QUIZZI CÁ NHÂN</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-emerald-600 rounded-xl p-5 text-white flex flex-col justify-center relative overflow-hidden">
-              <HelpCircle className="w-20 h-20 absolute -right-4 -bottom-4 text-emerald-700/50" />
-              <div className="flex items-center gap-4 relative z-10">
-                <div className="w-12 h-12 bg-emerald-700/50 rounded-full flex items-center justify-center shrink-0">
-                  <HelpCircle className="w-6 h-6 text-emerald-100" />
-                </div>
-                <div>
-                  <div className="text-3xl font-black">74</div>
-                  <div className="text-[10px] font-black uppercase tracking-wider text-emerald-100 mt-0.5">CÂU HỎI CÓ SẴN TỪ NGÂN HÀNG</div>
-                </div>
-              </div>
+                );
+              })}
             </div>
           </div>
+
+          {/* KHUNG NHÚNG TRỰC TIẾP GIAO DIỆN TRÒ CHƠI HỌC TẬP KHỐI 3 NGAY TRONG APP MẸ */}
+          {filterGrade === 'Khối 3' && showDedicatedGradeIframe && (
+            <div className="bg-white rounded-3xl border border-emerald-200/90 shadow-sm overflow-hidden flex flex-col animate-in fade-in duration-200">
+              <div className="bg-gradient-to-r from-emerald-50/95 via-teal-50/80 to-cyan-50/85 border-b border-emerald-200/80 px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                  <span className="font-extrabold text-emerald-950 truncate">
+                    Đang hiển thị trực tiếp: Trò Chơi Học Tập Chuyên biệt Khối 3 ({grade3DbConfig.externalAppUrl || DEFAULT_GRADE3_APP_URL})
+                  </span>
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-white/95 px-2.5 py-0.5 rounded-lg border border-emerald-200 shrink-0">
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>SSO: {gradeSsoPayload.name}</span>
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsGrade3IframeLoading(true);
+                      setGrade3IframeKey((prev) => prev + 1);
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-white hover:bg-emerald-50 text-emerald-800 border border-emerald-300 text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs whitespace-nowrap"
+                  >
+                    <RefreshCw
+                      className={`w-3.5 h-3.5 text-emerald-600 ${
+                        isGrade3IframeLoading ? 'animate-spin' : ''
+                      }`}
+                    />
+                    <span>Tải lại khung K3</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsGrade3ConfigModalOpen(true)}
+                    className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer shadow-xs whitespace-nowrap"
+                  >
+                    <Settings className="w-3.5 h-3.5" />
+                    <span>Cấu hình</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowDedicatedGradeIframe(false)}
+                    className="px-3 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                    <span>Xem kho trò chơi tại App Mẹ</span>
+                  </button>
+                </div>
+              </div>
+
+              <div
+                className="relative w-full bg-slate-50"
+                style={{ height: 'calc(100vh - 200px)', minHeight: '760px' }}
+              >
+                {isGrade3IframeLoading && (
+                  <div className="absolute inset-0 z-10 bg-white/85 backdrop-blur-xs flex flex-col items-center justify-center gap-3">
+                    <div className="w-12 h-12 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-600 flex items-center justify-center shadow-xs">
+                      <RefreshCw className="w-6 h-6 animate-spin" />
+                    </div>
+                    <div className="text-center space-y-1">
+                      <p className="text-sm font-extrabold text-slate-800">
+                        Đang tải giao diện Trò Chơi Học Tập Khối 3 ngay trong ứng dụng...
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        Tự động đồng bộ phiên đăng nhập SSO của {gradeSsoPayload.name}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                <iframe
+                  ref={grade3IframeRef}
+                  key={`src-games-k3-${grade3IframeKey}-${grade3EmbeddedUrlWithSso}`}
+                  src={grade3EmbeddedUrlWithSso}
+                  onLoad={handleGrade3IframeLoad}
+                  title="Giao diện Trò Chơi Học Tập Chuyên biệt Khối 3"
+                  className="w-full h-full border-0 bg-white"
+                  allow="fullscreen; clipboard-read; clipboard-write; microphone; camera; autoplay"
+                />
+              </div>
+            </div>
+          )}
+
+          {/* KHUNG NHÚNG TRỰC TIẾP GIAO DIỆN TRÒ CHƠI HỌC TẬP KHỐI 4 NGAY TRONG APP MẸ */}
+          {filterGrade === 'Khối 4' && showDedicatedGradeIframe && (
+            <div className="bg-white rounded-3xl border border-sky-200/90 shadow-sm overflow-hidden flex flex-col animate-in fade-in duration-200">
+              <div className="bg-gradient-to-r from-sky-50/95 via-blue-50/80 to-indigo-50/85 border-b border-sky-200/80 px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className="w-2.5 h-2.5 rounded-full bg-sky-500 animate-pulse shrink-0" />
+                  <span className="font-extrabold text-sky-950 truncate">
+                    Đang hiển thị trực tiếp: Trò Chơi Học Tập Chuyên biệt Khối 4 ({DEFAULT_GRADE4_APP_URL})
+                  </span>
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-sky-700 bg-white/95 px-2.5 py-0.5 rounded-lg border border-sky-200 shrink-0">
+                    <ShieldCheck className="w-3.5 h-3.5 text-sky-600" />
+                    <span>SSO: {gradeSsoPayload.name}</span>
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsGrade4IframeLoading(true);
+                      setGrade4IframeKey((prev) => prev + 1);
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-white hover:bg-sky-50 text-sky-800 border border-sky-300 text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer shadow-2xs whitespace-nowrap"
+                  >
+                    <RefreshCw
+                      className={`w-3.5 h-3.5 text-sky-600 ${
+                        isGrade4IframeLoading ? 'animate-spin' : ''
+                      }`}
+                    />
+                    <span>Tải lại khung K4</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowDedicatedGradeIframe(false)}
+                    className="px-3 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                    <span>Xem kho trò chơi tại App Mẹ</span>
+                  </button>
+                </div>
+              </div>
+
+              <div
+                className="relative w-full bg-slate-50"
+                style={{ height: 'calc(100vh - 200px)', minHeight: '760px' }}
+              >
+                {isGrade4IframeLoading && (
+                  <div className="absolute inset-0 z-10 bg-white/85 backdrop-blur-xs flex flex-col items-center justify-center gap-3">
+                    <div className="w-12 h-12 rounded-2xl bg-sky-50 border border-sky-200 text-sky-600 flex items-center justify-center shadow-xs">
+                      <RefreshCw className="w-6 h-6 animate-spin" />
+                    </div>
+                    <div className="text-center space-y-1">
+                      <p className="text-sm font-extrabold text-slate-800">
+                        Đang tải giao diện Trò Chơi Học Tập Khối 4 ngay trong ứng dụng...
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        Tự động đồng bộ phiên đăng nhập SSO của {gradeSsoPayload.name}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                <iframe
+                  ref={grade4IframeRef}
+                  key={`src-games-k4-${grade4IframeKey}-${grade4EmbeddedUrlWithSso}`}
+                  src={grade4EmbeddedUrlWithSso}
+                  onLoad={handleGrade4IframeLoad}
+                  title="Giao diện Trò Chơi Học Tập Chuyên biệt Khối 4"
+                  className="w-full h-full border-0 bg-white"
+                  allow="fullscreen; clipboard-read; clipboard-write; microphone; camera; autoplay"
+                />
+              </div>
+            </div>
+          )}
 
           {/* Resource Ownership Tabs for Teachers */}
           {(userRole as string) !== 'student' && (
@@ -2009,7 +2743,11 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
           {/* 3D Mode Selector & AI Quick-Play Generator for Teachers */}
           <GameLobbyShowcase
             userRole={userRole}
-            defaultGrade="Khối 3"
+            defaultGrade={
+              filterGrade !== 'Tất cả các khối' && filterGrade !== 'Tất cả khối'
+                ? filterGrade
+                : 'Khối 3'
+            }
             defaultClassInfo={filterClass !== 'Tất cả các lớp' ? filterClass : 'Lớp 3A'}
             selectedMode={selectedLobbyMode}
             onSelectMode={setSelectedLobbyMode}
@@ -2057,19 +2795,11 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                   )}
                 </div>
                 
-                                {/* Filters */}
+                {/* Filters (Đồng bộ Khối từ thanh chọn khối phía trên, chỉ giữ lọc Lớp & Môn học gọn gàng) */}
                 <div className="flex flex-wrap items-center gap-3">
-                  <div className="relative">
-                    <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-full text-xs font-bold text-slate-600">
-                      <Filter className="w-3.5 h-3.5 text-slate-400" />
-                      <select value={filterGrade} onChange={(e) => { setFilterGrade(e.target.value); setFilterClass('Tất cả các lớp'); }} className="bg-transparent appearance-none pr-4 outline-none cursor-pointer">
-<option value="Tất cả các khối">Tất cả các khối</option>
-{GRADES.map((grade) => (
-            <option key={grade} value={grade}>{grade}</option>
-          ))}
-</select>
-                      <ChevronDown className="w-3 h-3 absolute right-3 pointer-events-none" />
-                    </div>
+                  <div className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 border border-indigo-200 rounded-full text-xs font-extrabold text-indigo-700">
+                    <Layers className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>{filterGrade}</span>
                   </div>
                   <div className="relative">
                     <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-full text-xs font-bold text-slate-600">
@@ -2087,11 +2817,11 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                     <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-full text-xs font-bold text-slate-600">
                       <BookOpen className="w-3.5 h-3.5 text-slate-400" />
                       <select value={filterSubject} onChange={(e) => setFilterSubject(e.target.value)} className="bg-transparent appearance-none pr-4 outline-none cursor-pointer">
-<option value="Tất cả các môn">Tất cả các môn</option>
-{SUBJECTS.map((subject) => (
-            <option key={subject} value={subject}>{subject}</option>
-          ))}
-</select>
+                        <option value="Tất cả các môn">Tất cả các môn</option>
+                        {SUBJECTS.map((subject) => (
+                          <option key={subject} value={subject}>{subject}</option>
+                        ))}
+                      </select>
                       <ChevronDown className="w-3 h-3 absolute right-3 pointer-events-none" />
                     </div>
                   </div>
@@ -2347,20 +3077,14 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
                   </div>
                 </div>
 
-                                {/* Filters container */}
+                {/* Filters container */}
                 <div className="border border-slate-200 rounded-xl p-3 flex flex-wrap items-center gap-4 bg-white">
                   <div className="flex items-center gap-2">
-                    <Filter className="w-3.5 h-3.5 text-slate-400" />
-                    <span className="text-xs font-bold text-slate-500">Khối:</span>
-                    <div className="relative">
-                      <select value={filterGrade} onChange={(e) => { setFilterGrade(e.target.value); setFilterClass('Tất cả các lớp'); }} className="bg-transparent appearance-none pr-4 outline-none cursor-pointer">
-<option value="Tất cả các khối">Tất cả các khối</option>
-{GRADES.map((grade) => (
-            <option key={grade} value={grade}>{grade}</option>
-          ))}
-</select>
-                      <ChevronDown className="w-3 h-3 text-slate-400 absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                    </div>
+                    <Filter className="w-3.5 h-3.5 text-indigo-500" />
+                    <span className="text-xs font-bold text-slate-500">Đang lọc:</span>
+                    <span className="px-2.5 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 border border-indigo-200 text-xs font-extrabold">
+                      {filterGrade}
+                    </span>
                   </div>
                   
                   <div className="flex items-center gap-2">
@@ -2763,6 +3487,14 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
         }}
         onSave={handleSaveQuizziGames}
         initialData={editingQuizziGame}
+        defaultGrade={filterGrade !== 'Tất cả các khối' && filterGrade !== 'Tất cả khối' ? filterGrade : 'Khối 3'}
+      />
+
+      <Grade3DatabaseConfigModal
+        isOpen={isGrade3ConfigModalOpen}
+        onClose={() => setIsGrade3ConfigModalOpen(false)}
+        grade3Lessons={[]}
+        onSynced={(updatedConfig) => setGrade3DbConfig(updatedConfig)}
       />
 
       {/* Game Catalog & QR Export Modal (Word .docx & QR Images) */}
@@ -3023,7 +3755,7 @@ export const InteractiveGamesModule: React.FC<InteractiveGamesModuleProps> = ({
         onConfirm={async () => {
           if (gameToDelete) {
             try {
-              await deleteQuizziGameFromFirestore(gameToDelete.id);
+              await deleteQuizziGameFromFirestore(String(gameToDelete.id));
               setQuizziGames(prev => prev.filter(g => String(g.id) !== String(gameToDelete.id)));
               setDeletedCards(prev => [...prev, gameToDelete.id]);
               setToastMessage(`🗑️ Đã xóa vĩnh viễn trò chơi Quizzi "${gameToDelete.title}" trên Cloud Firestore`);

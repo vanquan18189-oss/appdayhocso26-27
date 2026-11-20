@@ -353,7 +353,6 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
   const [assignmentRetryLimit, setAssignmentRetryLimit] = useState(0);
   const [assignmentShuffleQuestions, setAssignmentShuffleQuestions] = useState(false);
   const [assignmentShuffleAnswers, setAssignmentShuffleAnswers] = useState(false);
-  const [assignmentEnableRealtimeLeaderboard, setAssignmentEnableRealtimeLeaderboard] = useState(false);
   const [assignmentTarget, setAssignmentTarget] = useState('Cả lớp');
 
   // Filter available classes strictly by exam grade (e.g. "Khối 5" -> "Lớp 5C", "Lớp 5D")
@@ -419,7 +418,6 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
       : [];
 
     setAssignmentClasses(existingClasses);
-    setAssignmentEnableRealtimeLeaderboard(exam.enableRealtimeLeaderboard === true);
     setIsAssignmentModalOpen(true);
     setOpenActionMenuId(null);
   };
@@ -501,7 +499,6 @@ export const ExamManagementModule: React.FC<ExamManagementModuleProps> = ({
         endTime: endISO,
         submissionsCount: assignmentExam.submissionsCount || 0,
         totalStudents: uniqueClasses.length * 35,
-        enableRealtimeLeaderboard: assignmentEnableRealtimeLeaderboard,
       };
 
       onSaveExam(masterExam);
@@ -3820,7 +3817,7 @@ return (
                           )}
                         </div>
 
-                        <div className="space-y-4">
+                        <div className="space-y-3 pt-1">
                           <label className="flex items-center gap-2 cursor-pointer text-sm font-semibold text-slate-700">
                             <input type="checkbox" checked={assignmentShuffleQuestions} onChange={(e) => setAssignmentShuffleQuestions(e.target.checked)} className="text-indigo-600 focus:ring-indigo-500 rounded w-4 h-4 cursor-pointer" />
                             Đảo thứ tự câu hỏi
@@ -3832,22 +3829,6 @@ return (
                         </div>
                       </div>
                     )}
-                  </div>
-
-                  {/* Real-time Leaderboard Switch / Checkbox */}
-                  <div className="p-4 rounded-2xl border border-indigo-100 bg-indigo-50/40 space-y-2">
-                    <label className="flex items-center gap-2.5 cursor-pointer select-none">
-                      <input 
-                        type="checkbox" 
-                        checked={assignmentEnableRealtimeLeaderboard} 
-                        onChange={(e) => setAssignmentEnableRealtimeLeaderboard(e.target.checked)} 
-                        className="text-indigo-600 focus:ring-indigo-500 rounded w-4 h-4 cursor-pointer" 
-                      />
-                      <span className="text-sm font-bold text-slate-800">Bật bảng xếp hạng thi đấu trực tiếp (Real-time)</span>
-                    </label>
-                    <p className="text-xs text-slate-500 pl-6.5 leading-relaxed">
-                      Bật khi thi đấu tính điểm; Tắt khi học sinh luyện tập bình thường để tiết kiệm lượt đọc/ghi cơ sở dữ liệu.
-                    </p>
                   </div>
 
                   {/* Target */}

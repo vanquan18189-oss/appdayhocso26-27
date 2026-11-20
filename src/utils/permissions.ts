@@ -1,0 +1,15 @@
+export {
+  type AccessContext,
+  type ContentPermissions,
+  type ResourceFilterTab,
+  getCurrentAccessContext,
+  isContentOwner,
+  isContentSharedWithTeacher,
+  getContentPermissions,
+  filterAccessibleItems,
+  canTeacherAccessClass,
+  filterAccessibleClasses,
+  attachOwnershipOnCreate,
+  invalidateQueryCache,
+  queryAccessibleCollection,
+} from '../services/permissionService';

@@ -96,6 +96,13 @@ export const GameLobbyShowcase: React.FC<GameLobbyShowcaseProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (defaultGrade && GRADES.includes(defaultGrade) && defaultGrade !== grade) {
+      setGrade(defaultGrade);
+      setSelectedClass(`Tất cả lớp ${defaultGrade}`);
+    }
+  }, [defaultGrade]);
+
   const { gradeClasses, loading: classesLoading } = useFirestoreClassesByGrade(grade);
 
   // Đồng bộ lựa chọn lớp khi danh sách lớp từ Firestore thay đổi hoặc khi đổi khối

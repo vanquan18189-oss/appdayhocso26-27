@@ -162,10 +162,13 @@ export const studentResultService = {
 
       const docRef = doc(db, STUDENT_RESULTS_COLLECTION, studentCode);
 
-      const updatePayload = {
+      const updatePayload: Record<string, any> = {
         studentCode,
+        ...(resultData.className ? { className: resultData.className } : {}),
+        ...(resultData.studentName ? { studentName: resultData.studentName } : {}),
         [`games.${gameId}`]: {
           ...resultData,
+          studentCode,
           updatedAt: new Date().toISOString(),
         },
         updatedAt: new Date().toISOString(),
